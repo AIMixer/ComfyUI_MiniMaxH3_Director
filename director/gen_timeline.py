@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 import torch
 
@@ -24,6 +25,14 @@ GEN_TASK_KEYS = GEN_BLANK_KEYS | GEN_IMAGE_KEYS | FL2V_KEYS
 PROMPT_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v"})
 VIDEO_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v"})
 IMAGE_BATCH_KEYS = frozenset()
+
+# Only group-local references count here.  The shared prompt commonly defines
+# every character, so scanning the concatenated prompt would re-enable all
+# shared images for every group.
+_GROUP_REF_RE = re.compile(
+    r"<(?:picture|subject)\s*(\d+)>|(?:图片|图)\s*(\d+)",
+    re.IGNORECASE,
+)
 
 MIN_GEN_FRAMES = 1
 MIN_GEN_VIDEO_FRAMES = 4
@@ -75,6 +84,20 @@ def _min_frames_for_task(task_key: str) -> int:
     if task_key in ("t2v", "i2v", "r2v"):
         return MIN_GEN_VIDEO_FRAMES
     return MIN_GEN_VIDEO_FRAMES
+
+
+def _shared_refs_used_by_group(common_refs, group_prompt: str):
+    """Return shared references explicitly used by this group's prompt.
+
+    Reference slots are zero-based internally while prompts are one-based.
+    A group may name either ``<Picture N>`` or its matching ``<Subject N>``.
+    """
+    used = {
+        int(picture or subject) - 1
+        for picture, subject in _GROUP_REF_RE.findall(group_prompt or "")
+        if int(picture or subject) > 0
+    }
+    return [ref for ref in common_refs if int(ref.index) in used]
 
 
 def _segment_frame_count(raw: dict, *, default: int, task_key: str) -> int:
@@ -374,10 +397,14 @@ def build_gen_director_plan(
                 seg_prompt = concat_common_segment_prompt(prompt, local_prompt)
             else:
                 seg_prompt = local_prompt or prompt
-            # r2v/r2i + commonEnabled: merge shared global.refs; same slot → group wins.
+            # r2v/r2i + commonEnabled: load only shared refs used by this
+            # group; same slot → group-local ref wins.
             local_refs = _load_refs(seg_data.get("refs") or [])
             if seg_task_key_preview in ("r2v", "r2i") and common_enabled and global_refs:
-                seg_refs = merge_indexed_refs(global_refs, local_refs)
+                seg_refs = merge_indexed_refs(
+                    _shared_refs_used_by_group(global_refs, local_prompt),
+                    local_refs,
+                )
             else:
                 seg_refs = local_refs
             seg_negative = (

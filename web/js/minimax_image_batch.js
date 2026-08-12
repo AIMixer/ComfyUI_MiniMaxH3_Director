@@ -96,6 +96,38 @@ export function listCommonImageRefs(editor) {
         .sort((a, b) => Number(a.index ?? a.slot ?? 0) - Number(b.index ?? b.slot ?? 0));
 }
 
+function listCommonImageRefsUsedByGroup(editor, seg) {
+    // Match the backend's common-ref rule.  Only the group prompt is scanned:
+    // the public prompt intentionally defines every shared character.
+    const used = new Set();
+    const matches = String(seg?.prompt || "").matchAll(
+        /<(?:picture|subject)\s*(\d+)>|(?:图片|图)\s*(\d+)/gi,
+    );
+    for (const match of matches) {
+        const ordinal = Number(match[1] || match[2]);
+        if (ordinal > 0) used.add(ordinal - 1);
+    }
+    return listCommonImageRefs(editor).map((ref) => ({
+        ...ref,
+        usedByGroup: used.has(Number(ref.index ?? ref.slot ?? 0)),
+    }));
+}
+
+function updateCommonImageUsagePreview(card, prompt) {
+    const used = new Set();
+    for (const match of String(prompt || "").matchAll(
+        /<(?:picture|subject)\s*(\d+)>|(?:图片|图)\s*(\d+)/gi,
+    )) {
+        const ordinal = Number(match[1] || match[2]);
+        if (ordinal > 0) used.add(ordinal - 1);
+    }
+    for (const slot of card?.querySelectorAll?.("[data-common-ref-index]") || []) {
+        const active = used.has(Number(slot.dataset.commonRefIndex));
+        slot.classList.toggle("bd-r2v-common-unused", !active);
+        slot.querySelector(".bd-r2v-common-unused-label")?.classList.toggle("hidden", active);
+    }
+}
+
 export function listCommonVideoRefs(editor) {
     if (!editor?.isR2vCommonEnabled?.()) return [];
     return [...(editor.timeline?.global?.refVideos || [])]
@@ -456,6 +488,11 @@ export const IMAGE_BATCH_STYLES = `
 .bd-r2v-common-inherit .bd-batch-ref{cursor:default;border-color:#2a3a4a}
 .bd-r2v-common-inherit .bd-batch-ref:hover{border-color:#2a3a4a;background:#080808;transform:none}
 .bd-r2v-common-inherit .bd-batch-ref .cap{color:#8af}
+.bd-r2v-common-inherit .bd-batch-ref.bd-r2v-common-unused{border-color:#3a3a3a}
+.bd-r2v-common-inherit .bd-batch-ref.bd-r2v-common-unused img{filter:grayscale(1);opacity:.42}
+.bd-r2v-common-unused-label{position:absolute;left:0;right:0;bottom:4px;color:#d0d0d0;font-size:10px;font-weight:600;text-align:center;pointer-events:none;z-index:3}
+.bd-r2v-common-unused-label.hidden{display:none}
+.bd-r2v-common-inherit .bd-batch-ref.bd-r2v-common-unused .cap{bottom:17px;padding-bottom:1px}
 .bd-r2v-slot-hint{font-size:10px;color:#6a7a8a;line-height:1.35;margin:0}
 .bd-batch-src{width:88px;height:88px;border:1px dashed #555;border-radius:4px;background:#111;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;color:#666;font-size:9px;text-align:center;padding:4px;box-sizing:border-box}
 .bd-batch-src.has-img{border-style:solid;border-color:#444}
@@ -1333,7 +1370,7 @@ function appendR2vMediaSections(card, seg, index, editor) {
     const audSlots = Math.max(0, MAX_REFERENCE_AUDIOS - audOffset);
     const vidSlots = Math.max(0, MAX_REFERENCE_VIDEOS - vidOffset);
     const counts = countFilledRefs(seg, { picOffset, audOffset, vidOffset });
-    const commonImgs = listCommonImageRefs(editor);
+    const commonImgs = listCommonImageRefsUsedByGroup(editor, seg);
     const commonVids = listCommonVideoRefs(editor);
     const body = document.createElement("div");
     body.className = "bd-batch-r2v-body";
@@ -1354,6 +1391,8 @@ function appendR2vMediaSections(card, seg, index, editor) {
             const abs = Number(ref.index ?? ref.slot ?? 0);
             const slot = document.createElement("div");
             slot.className = "bd-batch-ref has-img";
+            slot.dataset.commonRefIndex = String(abs);
+            slot.classList.toggle("bd-r2v-common-unused", !ref.usedByGroup);
             slot.title = t("batch.r2v.commonInheritTip", { label: refImageLabel(abs) });
             const img = document.createElement("img");
             img.src = viewUrl(ref.imageFile);
@@ -1363,6 +1402,11 @@ function appendR2vMediaSections(card, seg, index, editor) {
             cap.className = "cap";
             cap.textContent = refImageLabel(abs);
             slot.appendChild(cap);
+            const unused = document.createElement("span");
+            unused.className = "bd-r2v-common-unused-label";
+            unused.classList.toggle("hidden", !!ref.usedByGroup);
+            unused.textContent = "未引用";
+            slot.appendChild(unused);
             inheritGrid.appendChild(slot);
         }
         inherit.appendChild(inheritGrid);
@@ -2033,6 +2077,7 @@ export function renderImageBatchGroups(editor) {
             if (!live) return;
             live.prompt = e.target.value;
             live.negativePrompt = live.negativePrompt ?? "";
+            updateCommonImageUsagePreview(card, live.prompt);
             editor.scheduleTimelineSync();
             // External groups execute from Group-node widgets — keep them aligned.
             editor.writeExternalGroupPrompt?.(segIndex, live.prompt);
