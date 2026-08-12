@@ -83,6 +83,9 @@ const MENTION_STYLES = `
   font-size:10px;line-height:1;background:rgba(0,0,0,.35);color:inherit
 }
 .bd-token-label{max-width:7em;overflow:hidden;text-overflow:ellipsis}
+.bd-token-hover-preview{position:fixed;z-index:10060;display:none;pointer-events:none;max-width:360px;padding:6px;background:#181818;border:1px solid #4a4a4a;border-radius:7px;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.bd-token-hover-preview img{display:block;max-width:348px;max-height:260px;object-fit:contain;border-radius:4px}
+.bd-token-hover-preview audio{display:block;width:300px;max-width:calc(100vw - 32px)}
 `;
 
 let stylesInjected = false;
@@ -148,6 +151,7 @@ function listAvailableMentions(refs, audios, videos) {
             label: refImageLabel(index),
             tag: refImagePromptTag(index),
             thumb: refThumbUrl(r),
+            source: refThumbUrl(r),
         });
     }
     for (const v of [...(videos || [])]
@@ -172,6 +176,7 @@ function listAvailableMentions(refs, audios, videos) {
             label: refAudioLabel(index),
             tag: refAudioPromptTag(index),
             thumb: "",
+            source: inputViewUrl(a.audioFile || a.fileName, "input"),
         });
     }
     return items;
@@ -212,7 +217,7 @@ function appendTextWithBreaks(parent, text) {
     });
 }
 
-function makeTokenChip(kind, ordinal1, mediaItem, { onActivate } = {}) {
+function makeTokenChip(kind, ordinal1, mediaItem, { onActivate, onHover } = {}) {
     const tag = tagFor(kind, ordinal1);
     const chip = document.createElement("span");
     chip.className = `${TOKEN_CLASS} bd-token-${kind}`;
@@ -262,6 +267,12 @@ function makeTokenChip(kind, ordinal1, mediaItem, { onActivate } = {}) {
             onActivate({ kind, ordinal: Number(chip.dataset.ordinal) || 1, tag });
         }
     });
+
+    if (mediaItem?.source && typeof onHover === "function") {
+        chip.addEventListener("pointerenter", (event) => onHover("show", mediaItem, event));
+        chip.addEventListener("pointermove", (event) => onHover("move", mediaItem, event));
+        chip.addEventListener("pointerleave", () => onHover("hide"));
+    }
 
     return chip;
 }
@@ -620,6 +631,54 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
     injectStyles();
 
     const rich = ensureTokenShell(textarea);
+    let hoverPreview = null;
+    let hoverSource = "";
+    const positionHoverPreview = (event) => {
+        if (!hoverPreview || hoverPreview.style.display === "none") return;
+        const gap = 14;
+        const rect = hoverPreview.getBoundingClientRect();
+        hoverPreview.style.left = `${Math.min(event.clientX + gap, window.innerWidth - rect.width - 8)}px`;
+        hoverPreview.style.top = `${Math.min(event.clientY + gap, window.innerHeight - rect.height - 8)}px`;
+    };
+    const hideHoverPreview = () => {
+        if (!hoverPreview) return;
+        hoverPreview.querySelector("audio")?.pause();
+        hoverPreview.style.display = "none";
+        hoverSource = "";
+    };
+    const handleTokenHover = (action, item, event) => {
+        if (action === "hide") {
+            hideHoverPreview();
+            return;
+        }
+        if (!item?.source) return;
+        if (!hoverPreview) {
+            hoverPreview = document.createElement("div");
+            hoverPreview.className = "bd-token-hover-preview";
+            document.body.appendChild(hoverPreview);
+        }
+        if (hoverSource !== item.source) {
+            hoverPreview.replaceChildren();
+            if (item.kind === "audio") {
+                const audio = document.createElement("audio");
+                audio.src = item.source;
+                audio.controls = true;
+                audio.preload = "metadata";
+                hoverPreview.appendChild(audio);
+            } else {
+                const image = document.createElement("img");
+                image.src = item.source;
+                image.alt = item.label || "";
+                hoverPreview.appendChild(image);
+            }
+            hoverSource = item.source;
+        }
+        hoverPreview.style.display = "block";
+        positionHoverPreview(event);
+        if (action === "show" && item.kind === "audio") {
+            hoverPreview.querySelector("audio")?.play().catch(() => {});
+        }
+    };
     const chipOpts = {
         onActivate: ({ kind, ordinal }) => {
             try {
@@ -639,6 +698,7 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
                 setTimeout(() => sel.classList.remove("bd-ref-flash"), 900);
             }
         },
+        onHover: handleTokenHover,
     };
 
     const hydrateFromValue = (value) => {
