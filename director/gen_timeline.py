@@ -379,6 +379,8 @@ def build_gen_director_plan(
     else:
         source_video = cat_frames_variable_size(source_clips)
 
+    from .segment_continuity import resolve_segment_continuity_from_prev
+
     segments: list[SegmentPlan] = []
     for idx, (start, end, seg_data) in enumerate(segment_ranges):
         if edit_mode == "global":
@@ -497,6 +499,10 @@ def build_gen_director_plan(
                 ref_videos=seg_ref_videos,
                 negative_prompt=seg_negative,
                 source_clip=seg_source,
+                continuity_from_prev=resolve_segment_continuity_from_prev(
+                    seg_data if isinstance(seg_data, dict) else {},
+                    segment_index=idx,
+                ),
             )
         )
 

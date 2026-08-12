@@ -13,8 +13,10 @@ import {
     genLayoutHint,
     getDirectorMode,
     imageBatchRequiresFixedOutput,
+    isContinuityMasterEnabled,
     isCustomAspectRatio,
     isPromptBatchTask,
+    isSegmentContinuityFromPrev,
     isVideoBatchTask,
     MAX_GEN_FRAMES,
     MAX_REFERENCE_AUDIOS,
@@ -456,18 +458,27 @@ const STYLES = `
   display:flex;flex-direction:column
 }
 .bd-wrap.bd-batch-fill .bd-run-status{flex:0 0 auto;margin-top:0;flex-shrink:0}
+/* Fixed min so progress text wrap does not change node chrome height every tick. */
+.bd-run-status{min-height:52px;box-sizing:border-box}
 /* Solo material group (class set by syncBatchPanelFillHeight): card fills the list. */
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card{flex:1 1 auto;min-height:0;align-self:stretch}
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-r2v{display:flex;flex-direction:column}
-.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-r2v-body{flex:1 1 auto;min-height:280px;align-self:stretch}
-.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-r2v-main{flex:1 1 auto;min-height:0;height:auto}
-.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-prompts{flex:1 1 auto;min-height:0}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-r2v-body{flex:1 1 auto;min-height:280px;max-height:100%;align-self:stretch}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-r2v-main{flex:1 1 auto;min-height:0;height:auto;max-height:100%}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-prompts{flex:1 1 auto;min-height:0;max-height:100%;overflow:hidden}
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-token-wrap,
-.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-token-editor{flex:1 1 auto;min-height:200px;height:auto!important}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-token-editor{
+  flex:1 1 auto;min-height:200px;max-height:100%;height:auto!important;overflow:auto
+}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-r2v .bd-token-wrap,
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-r2v .bd-token-editor,
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-r2v .bd-batch-prompts textarea{
+  max-height:100%
+}
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-plain,
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-source{align-content:stretch}
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-plain .bd-batch-prompts,
-.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-source .bd-batch-prompts{height:100%;min-height:0}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-source .bd-batch-prompts{height:100%;min-height:0;max-height:100%;overflow:hidden}
 .bd-modal-overlay{position:absolute;inset:0;z-index:200;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:10px;box-sizing:border-box;border-radius:6px}
 .bd-modal{background:#1e1e1e;border:1px solid #333;border-radius:6px;padding:12px;width:100%;max-width:460px;max-height:calc(100% - 8px);display:flex;flex-direction:column;gap:10px;box-shadow:0 10px 28px rgba(0,0,0,.5)}
 .bd-modal-title{color:#e0e0e0;font-size:12px;font-weight:600;line-height:1.35}
@@ -587,6 +598,8 @@ const STYLES = `
 .bd-panel.bd-rv2v-panel>b,.bd-panel.bd-v2v-panel>b,.bd-seg-head>b{color:#f0f0f0;font-size:13px;font-weight:650;letter-spacing:.02em}
 .bd-seg-head{display:flex;align-items:baseline;justify-content:flex-start;gap:10px;flex-wrap:wrap;min-width:0}
 .bd-seg-head>b{flex-shrink:0;margin:0}
+.bd-seg-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
+.bd-seg-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
 .bd-seg-head .bd-meta,.bd-panel.bd-v2v-panel .bd-seg-head .bd-meta,.bd-panel.bd-rv2v-panel .bd-seg-head .bd-meta{color:#8a8a8a;font-size:11px;line-height:1.45;padding:0;min-width:0}
 .bd-prompt-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(110px,38%);gap:8px;align-items:stretch}
 .bd-prompt-layout>.bd-prompt-col{order:1}
@@ -965,30 +978,57 @@ function hookTaskTypeWidget(node) {
 }
 
 /**
- * Snap absurdly tall nodes (corruption / old stretch ratchet) back to content size.
- * Does not run on every progress tick — only init / explicit heal.
+ * Only snap *runaway* heights (old infinite-growth corruption).
+ * ideal+1200 was far too aggressive: r2v users routinely drag taller, and init heal
+ * wiped the workflow-saved size on every Comfy restart (#7 regression).
  */
+const DIRECTOR_UI_RUNAWAY_ABS_H = 12000;
+const DIRECTOR_UI_RUNAWAY_EXTRA_H = 8000;
+
 function healOversizedDirectorNode(node, editor) {
     if (!node?.size || !node.computeSize) return false;
     bindDomWidgetContentComputeSize(editor);
     const ideal = node.computeSize()?.[1];
     if (ideal == null) return false;
     const curH = node.size[1] || 0;
-    const maxOk = ideal + DIRECTOR_UI_MAX_EXTRA_H;
-    if (curH <= maxOk) return false;
-    node.setSize([node.size[0], ideal]);
+    const runaway = curH > DIRECTOR_UI_RUNAWAY_ABS_H
+        || curH > ideal + DIRECTOR_UI_RUNAWAY_EXTRA_H;
+    if (!runaway) return false;
+    // Keep a modest stretch so heal does not feel like a hard snap to content min.
+    const safeH = Math.max(ideal, Math.min(curH, ideal + DIRECTOR_UI_MAX_EXTRA_H));
+    node.setSize([node.size[0], safeH]);
     node.setDirtyCanvas?.(true, true);
     return true;
+}
+
+/** After graph load / init: re-fill once LiteGraph assigns computedHeight from saved size. */
+function scheduleDirectorLayoutSettle(editor) {
+    if (!editor) return;
+    const run = () => {
+        if (editor.isPlaying || editor._pauseSettling) return;
+        bindDomWidgetContentComputeSize(editor);
+        // Do not ensure/heal here — preserve workflow size; only re-fill batch panel.
+        syncBatchPanelFillHeight(editor, { settle: true });
+    };
+    requestAnimationFrame(() => {
+        run();
+        requestAnimationFrame(run);
+        setTimeout(run, 80);
+        setTimeout(run, 250);
+    });
 }
 
 /** Grow once when content min increases (mode switch); never shrink; never use stretch. */
 function ensureDirectorNodeFitsContent(node, editor) {
     if (!node?.size || !node.computeSize) return false;
+    // Progress ticks must not grow the node — status text / rebuild noise used to ratchet.
+    if (editor?.runStatusEl?.classList?.contains("active")) return false;
     bindDomWidgetContentComputeSize(editor);
     const ideal = node.computeSize()?.[1];
     if (ideal == null) return false;
     if ((node.size[1] || 0) >= ideal - 2) return false;
-    node.setSize([node.size[0], ideal]);
+    const maxOk = ideal + DIRECTOR_UI_MAX_EXTRA_H;
+    node.setSize([node.size[0], Math.min(ideal, maxOk)]);
     node.setDirtyCanvas?.(true, true);
     return true;
 }
@@ -1081,8 +1121,10 @@ function initDirectorEditor(node) {
         node._minimaxEditor = new MiniMaxH3DirectorEditor(node, container, node._minimaxDomWidget);
         ensureDirectorDomWidgetWidth(node);
         bindDirectorDomWidgetSizing(node, node._minimaxDomWidget, () => node._minimaxEditor);
+        // Only clamp true runaway; never steal normal user/workflow height (#7).
         healOversizedDirectorNode(node, node._minimaxEditor);
         syncDirectorNodeSize(node, node._minimaxEditor);
+        scheduleDirectorLayoutSettle(node._minimaxEditor);
         return node._minimaxEditor;
     } catch (err) {
         console.error("[MiniMax H3Director] UI init failed:", err);
@@ -1716,17 +1758,32 @@ class MiniMaxH3DirectorEditor {
         return getDirectorUiHeight(this);
     }
 
-    updateDomWidgetHeight() {
+    updateDomWidgetHeight(opts = {}) {
         const h = contentDomWidgetMinHeight(this) || getDirectorUiHeight(this);
         this.container?.style.setProperty("--comfy-widget-min-height", `${h}px`);
         if (this.container) this.container.style.minHeight = `${h}px`;
         // Content min only — never bake node.size / stretch into computeSize.
         bindDomWidgetContentComputeSize(this);
+        const runActive = !!this.runStatusEl?.classList?.contains("active");
         // Grow only when content needs more room (e.g. mode switch). Never shrink
-        // a user-enlarged node (#7). Ideal height is content-based, so this cannot
-        // ratchet the way stretch-from-node.size did.
-        if (!this.isPlaying) ensureDirectorNodeFitsContent(this.node, this);
-        syncBatchPanelFillHeight(this);
+        // a user-enlarged node (#7). During live progress: never grow; heal runaway.
+        if (!this.isPlaying) {
+            if (runActive) healOversizedDirectorNode(this.node, this);
+            else ensureDirectorNodeFitsContent(this.node, this);
+        }
+        syncBatchPanelFillHeight(this, {
+            settle: opts.settle !== false && !runActive,
+        });
+    }
+
+    /** Patch batch card `.running` without tearing down the list (progress path). */
+    _syncBatchRunHighlight() {
+        if (!this.isImageBatch?.() || !this.batchList) return;
+        const runningIdx = this._runHighlightSeg;
+        this.batchList.querySelectorAll(".bd-batch-card").forEach((card, i) => {
+            card.classList.toggle("running", i === runningIdx);
+        });
+        this._syncR2vCardSelection?.();
     }
 
     scheduleRender() {
@@ -1800,7 +1857,7 @@ class MiniMaxH3DirectorEditor {
                     ...(i2iSrc?.width > 0 ? { sourceWidth: i2iSrc.width, sourceHeight: i2iSrc.height } : {}),
                 },
                 output,
-                segments: this.timeline.segments.map((s) => {
+                segments: this.timeline.segments.map((s, i) => {
                     const clean = sanitizeSegmentForPayload(s);
                     return {
                         id: clean.id,
@@ -1815,6 +1872,8 @@ class MiniMaxH3DirectorEditor {
                         refAudios: clean.refAudios || [],
                         refVideos: clean.refVideos || [],
                         genImage: clean.genImage || { imageFile: "" },
+                        // Persist per-segment「引用上段」(default true when unset).
+                        continuityFromPrev: isSegmentContinuityFromPrev(clean, i),
                     };
                 }),
                 ...this._runSelectionPayload(),
@@ -2200,6 +2259,10 @@ class MiniMaxH3DirectorEditor {
             <div class="bd-panel" data-r="segment-panel" style="display:none">
                 <div class="bd-seg-head">
                     <b data-r="seg-label">片段 1</b>
+                    <label class="bd-seg-continuity hidden" data-r="seg-continuity-from-prev-wrap" hidden>
+                        <input type="checkbox" data-r="seg-continuity-from-prev">
+                        <span data-i18n="batch.continuityFromPrev">引用上段</span>
+                    </label>
                     <div class="bd-meta" data-r="seg-info"></div>
                 </div>
                 <div class="bd-prompt-layout" data-r="seg-prompt-layout">
@@ -2330,6 +2393,8 @@ class MiniMaxH3DirectorEditor {
         this.segRefAudiosWrap = this.root.querySelector('[data-r="seg-ref-audios-wrap"]');
         this.segRefAudiosBox = this.root.querySelector('[data-r="seg-ref-audios"]');
         this.segLabel = this.root.querySelector('[data-r="seg-label"]');
+        this.segContinuityFromPrevWrap = this.root.querySelector('[data-r="seg-continuity-from-prev-wrap"]');
+        this.segContinuityFromPrevCb = this.root.querySelector('[data-r="seg-continuity-from-prev"]');
         this.segInfo = this.root.querySelector('[data-r="seg-info"]');
         this.segPrompt = this.root.querySelector('[data-r="seg-prompt"]');
         this.segNegative = this.root.querySelector('[data-r="seg-negative"]');
@@ -2589,6 +2654,18 @@ class MiniMaxH3DirectorEditor {
             this.segmentContinuityOverlap.oninput = applyOverlap;
             this.segmentContinuityOverlap.addEventListener("keydown", (e) => e.stopPropagation());
             this.segmentContinuityOverlap.addEventListener("keyup", (e) => e.stopPropagation());
+        }
+        if (this.segContinuityFromPrevCb) {
+            this.segContinuityFromPrevCb.onchange = () => {
+                const seg = this.timeline.segments?.[this.selectedIndex];
+                if (!seg || this.selectedIndex <= 0) return;
+                seg.continuityFromPrev = !!this.segContinuityFromPrevCb.checked;
+                this.commit(true);
+            };
+            this.segContinuityFromPrevWrap?.setAttribute(
+                "title",
+                t("tooltip.segmentContinuityFromPrev"),
+            );
         }
 
         this.genGlobalImg?.addEventListener("click", (e) => { stopDomEvent(e); this.pickGenSrcImage(true); });
@@ -4756,6 +4833,24 @@ class MiniMaxH3DirectorEditor {
             // Keep DOM aligned with timeline; eligibility only gates visibility.
             this.segmentContinuityCb.checked = isContinuityEnabled(this.timeline.output);
         }
+        this.syncSegmentContinuityFromPrevUI();
+    }
+
+    /** Per-segment「引用上段」on v2v/rv2v segment panel (index>0 + master on). */
+    syncSegmentContinuityFromPrevUI() {
+        const wrap = this.segContinuityFromPrevWrap;
+        const cb = this.segContinuityFromPrevCb;
+        if (!wrap || !cb) return;
+        const idx = this.selectedIndex ?? 0;
+        const masterOn = isContinuityEligible(this)
+            && isContinuityMasterEnabled(this.timeline?.output);
+        const show = masterOn && idx > 0 && !this.isImageBatch() && !this.isFl2vMode();
+        wrap.classList.toggle("hidden", !show);
+        wrap.hidden = !show;
+        if (!show) return;
+        const seg = this.timeline.segments?.[idx];
+        cb.checked = isSegmentContinuityFromPrev(seg, idx);
+        wrap.title = t("tooltip.segmentContinuityFromPrev");
     }
 
     /** Apply ResolutionSelector → fixed width/height on timeline + node widgets. */
@@ -4996,6 +5091,11 @@ class MiniMaxH3DirectorEditor {
         }
         this.syncOutputUIFromTimeline();
         if (this.isFl2vMode()) updateFl2vDetailUI(this);
+        // Refresh per-segment「引用上段」checkboxes when master toggle changes.
+        if (key === "continuityEnabled") {
+            if (this.isImageBatch()) this.renderImageBatchGroups?.();
+            this.syncSegmentContinuityFromPrevUI?.();
+        }
         this.commit();
         this.flushTimelineSync();
     }
@@ -7888,6 +7988,7 @@ class MiniMaxH3DirectorEditor {
         const liveSeg = (this._previewSegments || this.timeline.segments)?.[this.selectedIndex] || seg;
         const segKey = resolveTaskKey(liveSeg.taskType || this.timeline.global?.taskType || this.getTaskKey());
         this.segLabel.textContent = t("panel.segmentN", { n: this.selectedIndex + 1 });
+        this.syncSegmentContinuityFromPrevUI();
         this._updateSegInfoFromSegment(liveSeg);
         this.segPrompt.value = liveSeg.prompt || "";
         if (taskUsesReferenceImages(segKey)) {
@@ -8759,6 +8860,7 @@ class MiniMaxH3DirectorEditor {
             this.runOverallEl.style.width = "100%";
             this.runPhaseEl.style.width = "100%";
             this._runHighlightSeg = -1;
+            this._runProgressSegKey = null;
             this.updateRunSelectUI();
             if (this.isImageBatch()) this.renderImageBatchGroups();
             else this.scheduleRender();
@@ -8804,11 +8906,19 @@ class MiniMaxH3DirectorEditor {
         this.runDetailEl.textContent = parts.join(" · ");
         this.runOverallEl.style.width = `${overallPct}%`;
         this.runPhaseEl.style.width = `${phasePct}%`;
-        // Progress text can grow the status bar — resize host so the timeline
-        // canvas is not flex-squashed (fl2v repeat thumbs look stretched).
-        syncDirectorNodeSize(this.node, this);
-        if (this.isImageBatch()) this.renderImageBatchGroups();
-        else this.scheduleRender();
+        // Do NOT syncDirectorNodeSize / full batch rebuild every tick — that was the
+        // cross-mode (t2v/i2v/r2v/…) infinite-height feedback loop. Status has a fixed
+        // min-height; live previews patch in place via minimax_director_preview.
+        const segKey = `${timelineSeg}|${detail.phase}|${runSeg}`;
+        const segChanged = this._runProgressSegKey !== segKey;
+        this._runProgressSegKey = segKey;
+        if (this.isImageBatch()) {
+            this._syncBatchRunHighlight();
+            if (segChanged) healOversizedDirectorNode(this.node, this);
+        } else if (segChanged) {
+            this.scheduleRender();
+            healOversizedDirectorNode(this.node, this);
+        }
     }
 
     clearRunProgress(title, detail) {
@@ -8819,6 +8929,7 @@ class MiniMaxH3DirectorEditor {
         this.runOverallEl.style.width = "0%";
         this.runPhaseEl.style.width = "0%";
         this._runHighlightSeg = -1;
+        this._runProgressSegKey = null;
         this.updateRunSelectUI();
         if (this.isImageBatch()) this.renderImageBatchGroups();
         else this.scheduleRender();
@@ -8832,6 +8943,7 @@ class MiniMaxH3DirectorEditor {
         if (this.runOverallEl) this.runOverallEl.style.width = "0%";
         if (this.runPhaseEl) this.runPhaseEl.style.width = "0%";
         this._runHighlightSeg = -1;
+        this._runProgressSegKey = null;
         this.updateRunSelectUI();
         this.scheduleRender();
     }
@@ -9709,8 +9821,10 @@ app.registerExtension({
         finalizeDirectorWidgetOrder(node);
         ensureDirectorDomWidgetWidth(node);
         bindDirectorDomWidgetSizing(node, node._minimaxDomWidget, () => node._minimaxEditor);
-        initDirectorEditor(node);
-        node._minimaxEditor?.scheduleRender?.();
+        const editor = initDirectorEditor(node);
+        editor?.scheduleRender?.();
+        // Workflow size is already on node.size — settle fill after widgets arrange.
+        scheduleDirectorLayoutSettle(editor);
     },
     async getCustomWidgets() {
         return {

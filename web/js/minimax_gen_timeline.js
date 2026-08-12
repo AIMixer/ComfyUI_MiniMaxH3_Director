@@ -339,6 +339,35 @@ export function genLayoutHint(taskKey) {
     return "";
 }
 
+/** Master「段间引导」truthy check (timeline.output). */
+export function isContinuityMasterEnabled(output) {
+    if (!output) return false;
+    const raw = output.continuityEnabled ?? output.continuity_enabled;
+    if (raw === true || raw === 1) return true;
+    if (typeof raw === "string") {
+        const s = raw.trim().toLowerCase();
+        return s === "true" || s === "1" || s === "yes" || s === "on";
+    }
+    return false;
+}
+
+/**
+ * Per-segment「引用上段」. Default true when unset (master ON ⇒ pin unless opted out).
+ * Index 0 never pins.
+ */
+export function isSegmentContinuityFromPrev(segOrShot, index) {
+    if (!(Number(index) > 0)) return false;
+    if (!segOrShot || typeof segOrShot !== "object") return true;
+    const raw = segOrShot.continuityFromPrev ?? segOrShot.continuity_from_prev;
+    if (raw === undefined || raw === null) return true;
+    if (raw === true || raw === 1) return true;
+    if (typeof raw === "string") {
+        const s = raw.trim().toLowerCase();
+        return s === "true" || s === "1" || s === "yes" || s === "on";
+    }
+    return false;
+}
+
 export function newBatchSegment(overrides = {}) {
     const taskKey = resolveTaskKey(overrides.taskType || overrides.task_type || "");
     const isVideo = isVideoBatchTask(taskKey);

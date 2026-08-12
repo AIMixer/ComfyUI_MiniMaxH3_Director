@@ -9,6 +9,8 @@ import {
     defaultDurationSec,
     defaultFrameCount,
     durationToMiniMaxFrames,
+    isContinuityMasterEnabled,
+    isSegmentContinuityFromPrev,
     MAX_GEN_FRAMES,
     maxDurationSec,
     minDurationSec,
@@ -37,6 +39,8 @@ export const FL2V_STYLES = `
 .bd-fl2v-shot-head{display:flex;align-items:center;justify-content:space-between;gap:6px;cursor:grab;user-select:none}
 .bd-fl2v-shot-head:active{cursor:grabbing}
 .bd-fl2v-shot-head b{color:#ccc;font-size:12px}
+.bd-fl2v-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;margin-left:auto;margin-right:8px}
+.bd-fl2v-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
 .bd-fl2v-shot-meta{color:#888;font-size:10px}
 .bd-fl2v-slots{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .bd-fl2v-slot-wrap{position:relative;min-width:0}
@@ -259,6 +263,7 @@ export function flattenFl2vShotsToSegments(editor) {
             durationSec: shot.durationSec,
             prompt: shot.prompt || "",
             negativePrompt: shot.negativePrompt || DEFAULT_FL2V_NEGATIVE,
+            continuityFromPrev: shot.continuityFromPrev,
             taskType: "",
             refs: [],
             // Do not mark start when end-only — canvas badges / thumbs key off these.
@@ -1068,9 +1073,13 @@ function renderFl2vShotCards(editor) {
             : (shot.endImage?.imageFile && !shot.startImage?.imageFile
                 ? t("fl2v.badge.endOnly")
                 : t("fl2v.badge.i2v"));
+        const masterCont = isContinuityMasterEnabled(editor.timeline?.output);
+        const showCont = masterCont && i > 0 && (shots.length >= 2);
+        const contChecked = isSegmentContinuityFromPrev(shot, i);
         card.innerHTML = `
             <div class="bd-fl2v-shot-head">
                 <b>${t("panel.fl2v.shotN", { n: i + 1 })}</b>
+                ${showCont ? `<label class="bd-fl2v-continuity" title="${t("tooltip.segmentContinuityFromPrev")}"><input type="checkbox" data-r="shot-continuity" ${contChecked ? "checked" : ""}><span>${t("batch.continuityFromPrev")}</span></label>` : ""}
                 <span class="bd-fl2v-shot-meta">${badge} · ${fc}f</span>
             </div>
             <div class="bd-fl2v-slots">
@@ -1096,13 +1105,26 @@ function renderFl2vShotCards(editor) {
             </label>
         `;
         card.addEventListener("click", (e) => {
-            if (e.target.closest("[data-slot], [data-clear], input, .bd-fl2v-slot-wrap")) return;
+            if (e.target.closest("[data-slot], [data-clear], input, .bd-fl2v-slot-wrap, .bd-fl2v-continuity")) return;
             if (editor._fl2vShotDrag || editor._fl2vSlotDrag) return;
             if (editor.selectedIndex !== i) flushFl2vPromptDraft(editor);
             editor.selectedIndex = i;
             updateFl2vDetailUI(editor);
             editor.scheduleRender?.();
         });
+        const contInput = card.querySelector('[data-r="shot-continuity"]');
+        if (contInput) {
+            contInput.addEventListener("click", (e) => e.stopPropagation());
+            contInput.addEventListener("change", (e) => {
+                e.stopPropagation();
+                shot.continuityFromPrev = !!contInput.checked;
+                // Keep derived segments[] in sync when present.
+                if (Array.isArray(editor.timeline?.segments) && editor.timeline.segments[i]) {
+                    editor.timeline.segments[i].continuityFromPrev = !!contInput.checked;
+                }
+                editor.commit?.(true);
+            });
+        }
         bindFl2vShotCardDnD(editor, card, i);
         card.querySelectorAll("[data-slot]").forEach((slot) => {
             const kind = slot.dataset.slot;
@@ -1415,11 +1437,12 @@ export function buildFl2vPayloadFields(editor) {
     ensureFl2vTimeline(editor);
     syncFl2vFromShots(editor);
     const total = getFl2vSampleFrames(editor);
-    const shots = (editor.timeline.shots || []).map((s) => ({
+    const shots = (editor.timeline.shots || []).map((s, i) => ({
         id: s.id,
         durationSec: s.durationSec,
         prompt: s.prompt || "",
         negativePrompt: s.negativePrompt || DEFAULT_FL2V_NEGATIVE,
+        continuityFromPrev: isSegmentContinuityFromPrev(s, i),
         startImage: s.startImage
             ? {
                 imageFile: s.startImage.imageFile || "",
@@ -1440,7 +1463,7 @@ export function buildFl2vPayloadFields(editor) {
         editMode: "segment",
         shots,
         keyframes: editor.timeline.keyframes || [],
-        segments: (editor.timeline.segments || []).map((s) => ({
+        segments: (editor.timeline.segments || []).map((s, i) => ({
             id: s.id,
             start: s.start,
             length: s.length,
@@ -1448,6 +1471,7 @@ export function buildFl2vPayloadFields(editor) {
             durationSec: s.durationSec,
             prompt: s.prompt || "",
             negativePrompt: s.negativePrompt || DEFAULT_FL2V_NEGATIVE,
+            continuityFromPrev: isSegmentContinuityFromPrev(s, i),
             isStartFrame: !!(s.genImage?.imageFile || s.imageFile),
             isEndFrame: !!s.endImage?.imageFile,
             genImage: {

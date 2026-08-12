@@ -621,6 +621,8 @@ def build_fl2v_director_plan(
     if used_explicit_shots:
         timeline_total = max(MIN_FL2V_FRAMES, content_total)
 
+    from .segment_continuity import resolve_segment_continuity_from_prev
+
     segments: list[SegmentPlan] = []
     source_clips: list[torch.Tensor] = []
     selected_plan_indices: list[int] = []
@@ -701,6 +703,10 @@ def build_fl2v_director_plan(
                 refs=refs,
                 negative_prompt=shot_negative,
                 source_clip=source_clip,
+                continuity_from_prev=resolve_segment_continuity_from_prev(
+                    shot if isinstance(shot, dict) else {},
+                    segment_index=plan_index,
+                ),
             )
         )
         plan_index += 1

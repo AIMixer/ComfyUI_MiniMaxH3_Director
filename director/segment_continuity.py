@@ -134,6 +134,43 @@ def resolve_continuity_settings(timeline: dict, *, segment_count: int) -> tuple[
     return True, snap_context_frames(raw)
 
 
+def resolve_segment_continuity_from_prev(
+    seg_data: dict | None,
+    *,
+    segment_index: int,
+) -> bool:
+    """Per-segment「引用上段」flag.
+
+    Master「段间引导」must also be on (checked by ``is_continuity_active``).
+    Missing field defaults to True so existing workflows keep pinning every segment.
+    Segment index 0 never pins.
+    """
+    if int(segment_index) <= 0:
+        return False
+    if not isinstance(seg_data, dict):
+        return True
+    if "continuityFromPrev" in seg_data:
+        raw = seg_data.get("continuityFromPrev")
+    elif "continuity_from_prev" in seg_data:
+        raw = seg_data.get("continuity_from_prev")
+    else:
+        return True
+    return _truthy_continuity_flag(raw)
+
+
+def timeline_row_for_index(timeline: dict | None, index: int) -> dict:
+    """Best-effort segment/shot/group row from timeline for per-segment flags."""
+    if not isinstance(timeline, dict) or int(index) < 0:
+        return {}
+    for key in ("segments", "shots", "r2vGroups", "fl2vGroups"):
+        rows = timeline.get(key)
+        if isinstance(rows, list) and int(index) < len(rows):
+            row = rows[int(index)]
+            if isinstance(row, dict):
+                return row
+    return {}
+
+
 def resolve_continuity_lock_pixels(overlap_frames: int) -> int:
     """SCAIL prefix length in pixels (Wan 4n+1, for clean VAE round-trip)."""
     ov = max(MIN_CONTINUITY_OVERLAP, min(MAX_CONTINUITY_OVERLAP, int(overlap_frames)))
@@ -245,12 +282,14 @@ def is_continuity_active(plan: DirectorPlan, seg: SegmentPlan) -> bool:
     When False, the executor must stay on the official MiniMax H3 path
     (stock ImageToVideo / ReferenceToVideo, no motion-context pin/patch/trim).
     Supported tasks: t2v / i2v / fl2v / r2v / v2v / rv2v.
+    Per-segment ``continuity_from_prev`` (default True) can opt out while master is on.
     """
     return (
         plan.continuity_enabled
         and plan.segment_count >= 2
         and seg.index > 0
         and seg.task_key in CONTINUITY_TASK_KEYS
+        and bool(getattr(seg, "continuity_from_prev", True))
     )
 
 

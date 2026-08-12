@@ -10,6 +10,8 @@ import {
     durationToMiniMaxFrames,
     framesToDurationSec,
     imageBatchVariant,
+    isContinuityMasterEnabled,
+    isSegmentContinuityFromPrev,
     isVideoBatchTask,
     MAX_GEN_FRAMES,
     MAX_REFERENCE_AUDIOS,
@@ -466,6 +468,9 @@ export const IMAGE_BATCH_STYLES = `
 .bd-batch-head b{color:#ccc;font-size:11px}
 .bd-batch-r2v .bd-batch-head b{color:#f0f0f0;font-size:13px;font-weight:650;letter-spacing:.02em}
 .bd-batch-run-check{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#4fff8f;flex-shrink:0}
+.bd-batch-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
+.bd-batch-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff;flex-shrink:0}
+.bd-batch-continuity span{white-space:nowrap}
 .bd-batch-head-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
 .bd-batch-fc{display:flex;align-items:center;gap:6px;color:#aaa;font-size:12px}
 .bd-batch-r2v .bd-batch-fc{color:#c8c8c8;font-size:12px;gap:8px;background:#0e0e0e;border:1px solid #2a2a2a;border-radius:8px;padding:5px 10px}
@@ -558,8 +563,8 @@ export const IMAGE_BATCH_STYLES = `
 .bd-batch-prompts textarea,.bd-batch-prompts .bd-token-wrap{width:100%;min-height:88px;box-sizing:border-box}
 .bd-batch-prompts textarea{background:#181818;border:1px solid #333;border-radius:4px;color:#eee;padding:6px;resize:vertical;font-size:11px;font-family:inherit;line-height:1.35}
 .bd-batch-plain .bd-batch-prompts textarea,.bd-batch-source .bd-batch-prompts textarea,
-.bd-batch-plain .bd-batch-prompts .bd-token-wrap,.bd-batch-source .bd-batch-prompts .bd-token-wrap{min-height:120px;height:100%;resize:vertical}
-.bd-batch-r2v .bd-batch-prompts textarea,.bd-batch-r2v .bd-batch-prompts .bd-token-wrap{min-height:360px;height:100%;flex:1;resize:vertical}
+.bd-batch-plain .bd-batch-prompts .bd-token-wrap,.bd-batch-source .bd-batch-prompts .bd-token-wrap{min-height:120px;height:100%;resize:vertical;overflow:auto}
+.bd-batch-r2v .bd-batch-prompts textarea,.bd-batch-r2v .bd-batch-prompts .bd-token-wrap{min-height:360px;height:100%;flex:1;resize:vertical;overflow:auto}
 .bd-batch-r2v .bd-batch-prompts textarea{background:#101010;border-color:#2e2e2e;border-radius:8px;padding:10px;font-size:12px;line-height:1.45}
 .bd-batch-preview{background:#0d0d0d;border:1px solid #333;border-radius:4px;min-height:100px;display:flex;flex-direction:column;align-items:stretch;justify-content:center;overflow:hidden;color:#555;font-size:10px;text-align:center;padding:4px;box-sizing:border-box}
 .bd-batch-plain .bd-batch-preview,.bd-batch-source .bd-batch-preview,.bd-batch-refs:not(.bd-batch-r2v) .bd-batch-preview{width:100%;max-width:220px;min-height:160px;justify-self:end}
@@ -1958,6 +1963,31 @@ export function renderImageBatchGroups(editor) {
         const title = document.createElement("b");
         title.textContent = t(isR2v ? "batch.groupTitle.asset" : "batch.groupTitle.prompt", { n: index + 1 });
         head.appendChild(title);
+        // Per-segment continuity (master「段间引导」must be on; skip segment 1).
+        const masterCont = isContinuityMasterEnabled(editor.timeline?.output);
+        if (masterCont && index > 0 && isVideo) {
+            const contLabel = document.createElement("label");
+            contLabel.className = "bd-batch-continuity";
+            contLabel.title = t("tooltip.segmentContinuityFromPrev");
+            const contCb = document.createElement("input");
+            contCb.type = "checkbox";
+            contCb.className = "bd-batch-continuity-check";
+            contCb.checked = isSegmentContinuityFromPrev(seg, index);
+            contCb.onchange = (e) => {
+                e.stopPropagation();
+                seg.continuityFromPrev = !!contCb.checked;
+                // Flush timeline_data immediately so Queue Prompt cannot race the debounce.
+                editor.commit?.(false, { syncTimeline: true });
+                editor.flushTimelineSync?.();
+            };
+            contCb.onclick = (e) => e.stopPropagation();
+            const contText = document.createElement("span");
+            contText.setAttribute("data-i18n", "batch.continuityFromPrev");
+            contText.textContent = t("batch.continuityFromPrev");
+            contLabel.appendChild(contCb);
+            contLabel.appendChild(contText);
+            head.appendChild(contLabel);
+        }
         const meta = document.createElement("div");
         meta.className = "bd-batch-head-meta";
         if (isVideo) {
@@ -2233,33 +2263,55 @@ function _clearBatchListFillStyles(list, host, wrap, panel) {
     }
 }
 
-/** Read-only: pixel height LiteGraph/ComfyUI currently allocates to the DOM widget. */
-function measureWidgetSlotHeight(editor) {
-    const widget = editor?.domWidget;
-    const computed = Number(widget?.computedHeight);
-    if (Number.isFinite(computed) && computed > 0) return computed;
-    const el = widget?.element || editor?.container;
-    const elH = Number(el?.clientHeight || el?.offsetHeight);
-    const minH = contentDomWidgetMinHeight(editor);
-    if (Number.isFinite(elH) && elH > minH + 2) return elH;
-    const node = editor?.node;
-    if (!node?.size || !widget) return minH;
-    let other = 48;
-    for (const w of node.widgets || []) {
-        if (w === widget) continue;
-        try {
-            const s = w.computeSize?.(node.size[0]);
-            const wh = Array.isArray(s) ? Number(s[1]) : Number(s);
-            other += Number.isFinite(wh) && wh > 0 ? wh : 20;
-        } catch {
-            other += 20;
-        }
-    }
-    return Math.max(minH, (node.size[1] || 0) - other);
-}
-
 /** Soft cap above content min — blocks Vue ResizeObserver / stretch feedback runaway. */
 export const DIRECTOR_UI_MAX_EXTRA_H = 1200;
+
+function _mmxHeightDebug(...args) {
+    try {
+        if (typeof localStorage !== "undefined" && localStorage.getItem("mmxHeightDebug") === "1") {
+            console.debug("[mmx-height]", ...args);
+        }
+    } catch {
+        /* ignore */
+    }
+}
+
+/**
+ * Trusted pixel height LiteGraph/ComfyUI allocates to the DOM widget.
+ * Never derive from node.size (other-widgets underestimate → write-back loop) or from
+ * host.clientHeight after we stamped style.height (self-referential ratchet).
+ *
+ * Do NOT clamp to DIRECTOR_UI_MAX_EXTRA_H here — that cap is only for heal/runaway.
+ * Clamping fill caused "drag taller → content stops → huge blank below".
+ */
+function measureWidgetSlotHeight(editor) {
+    const widget = editor?.domWidget;
+    const minH = contentDomWidgetMinHeight(editor);
+    const computed = Number(widget?.computedHeight);
+    if (Number.isFinite(computed) && computed > 0) {
+        return computed;
+    }
+    // Only read element box when we have not forced an inline height (avoids self-inflate).
+    const el = widget?.element;
+    if (el && !el.style.height) {
+        const elH = Number(el.clientHeight || el.offsetHeight);
+        if (Number.isFinite(elH) && elH > 0) return Math.max(elH, minH);
+    }
+    const host = editor?.container;
+    const parent = host?.parentElement;
+    if (parent && host && !host.style.height) {
+        const pH = Number(parent.clientHeight);
+        if (Number.isFinite(pH) && pH > minH) return pH;
+    }
+    // No trusted slot → content min only. Callers must not invent height from node.size.
+    return minH;
+}
+
+/** True when measure came from LiteGraph computedHeight (safe to allocate px inside). */
+function hasTrustedComputedSlot(editor) {
+    const computed = Number(editor?.domWidget?.computedHeight);
+    return Number.isFinite(computed) && computed > 0;
+}
 
 export function contentDomWidgetMinHeight(editor) {
     const minH = typeof editor?.getDirectorUiMinHeight === "function"
@@ -2304,8 +2356,10 @@ export function bindDomWidgetContentComputeSize(editor) {
  * Grow the 素材组 list into leftover node height when the user drags the Director taller.
  * Uses the widget slot height for *layout only* — never writes it into getMinHeight
  * (that was the infinite-growth / 公共参数挤压 bug).
+ *
+ * @param {{ settle?: boolean }} [opts] settle=false skips rAF (progress path); default one rAF.
  */
-export function syncBatchPanelFillHeight(editor) {
+export function syncBatchPanelFillHeight(editor, opts = {}) {
     const list = editor?.batchList;
     const wrap = editor?.root;
     const host = editor?.container;
@@ -2335,21 +2389,23 @@ export function syncBatchPanelFillHeight(editor) {
         const widget = editor.domWidget;
         const margin = Number(widget?.margin ?? widget?.options?.margin ?? 10);
         const inset = Math.max(12, margin * 2 + 4);
+        const trusted = hasTrustedComputedSlot(editor);
         const rawSlot = measureWidgetSlotHeight(editor);
+        // Full LiteGraph slot (minus widget margin). Never EXTRA-cap — user drag must fill.
         const slotH = Math.max(0, rawSlot - inset);
-        if (slotH > 0) {
-            host.style.height = `${slotH}px`;
-            host.style.maxHeight = `${slotH}px`;
-            wrap.style.height = `${slotH}px`;
-            wrap.style.maxHeight = `${slotH}px`;
-            wrap.style.minHeight = "0";
-        }
+
+        // Fill the allocated widget box. Prefer % so we never paint shorter than parent
+        // (pixel maxHeight < computed was the "blank below 素材组" bug after EXTRA clamp).
+        host.style.height = "";
+        wrap.style.height = "";
+        wrap.style.minHeight = "0";
+        host.style.maxHeight = "100%";
+        wrap.style.maxHeight = "100%";
         host.style.overflow = "hidden";
         wrap.style.overflow = "hidden";
 
         const status = wrap.querySelector(".bd-run-status");
         const statusH = status ? (status.offsetHeight + 6) : 0;
-        // Everything in wrap above .bd-main (toolbar / messages).
         let topChrome = 0;
         for (const child of wrap.children) {
             if (child === main || child === status) continue;
@@ -2357,17 +2413,25 @@ export function syncBatchPanelFillHeight(editor) {
             if (getComputedStyle(child).display === "none") continue;
             topChrome += child.offsetHeight + 6;
         }
-        // Never force main taller than remaining space (was overflowing the node).
-        const mainH = Math.max(0, (slotH || wrap.clientHeight || host.clientHeight) - statusH - topChrome);
+
+        const budget = slotH > 0
+            ? slotH
+            : Math.max(minH, Number(wrap.clientHeight || host.clientHeight) || minH);
+        const mainH = Math.max(0, budget - statusH - topChrome);
+
         if (main) {
             main.style.flex = "1 1 0";
             main.style.minHeight = "0";
-            main.style.height = `${mainH}px`;
-            main.style.maxHeight = `${mainH}px`;
             main.style.overflow = "hidden";
+            if (trusted && slotH > 0) {
+                main.style.height = `${mainH}px`;
+                main.style.maxHeight = `${mainH}px`;
+            } else {
+                main.style.height = "";
+                main.style.maxHeight = "";
+            }
         }
 
-        // Space already used by timeline / 公共参数 / etc. inside main.
         let used = 0;
         let visible = 0;
         if (main) {
@@ -2383,9 +2447,14 @@ export function syncBatchPanelFillHeight(editor) {
         const batchH = Math.max(0, Math.floor(mainH - used - gaps));
         panel.style.flex = "1 1 0";
         panel.style.minHeight = "0";
-        panel.style.height = `${batchH}px`;
-        panel.style.maxHeight = `${batchH}px`;
         panel.style.overflow = "hidden";
+        if (trusted && slotH > 0) {
+            panel.style.height = `${batchH}px`;
+            panel.style.maxHeight = `${batchH}px`;
+        } else {
+            panel.style.height = "";
+            panel.style.maxHeight = "";
+        }
 
         const batchToolbar = panel.querySelector?.(".bd-batch-toolbar");
         const notice = panel.querySelector?.(".bd-batch-i2v-notice");
@@ -2395,14 +2464,19 @@ export function syncBatchPanelFillHeight(editor) {
             batchH - (batchToolbar?.offsetHeight || 0) - noticeH - 10,
         );
         list.style.flex = "1 1 0";
-        list.style.height = `${listH}px`;
-        list.style.maxHeight = `${listH}px`;
         list.style.minHeight = "0";
+        if (trusted && slotH > 0) {
+            list.style.height = `${listH}px`;
+            list.style.maxHeight = `${listH}px`;
+        } else {
+            list.style.height = "";
+            list.style.maxHeight = "";
+        }
 
         const solo = (editor.timeline?.segments?.length || 0) <= 1;
         list.classList.toggle("bd-batch-solo", solo);
         for (const card of list.querySelectorAll(".bd-batch-card")) {
-            if (solo && listH > 0) {
+            if (solo && (listH > 0 || !trusted)) {
                 card.style.flex = "1 1 auto";
                 card.style.minHeight = "0";
                 card.style.height = "100%";
@@ -2412,11 +2486,23 @@ export function syncBatchPanelFillHeight(editor) {
                 card.style.height = "";
             }
         }
+
+        _mmxHeightDebug({
+            task: editor.getTaskKey?.(),
+            trusted,
+            minH,
+            rawSlot,
+            slotH,
+            nodeH: editor.node?.size?.[1],
+            computed: editor.domWidget?.computedHeight,
+        });
     };
 
     applyFill();
-    requestAnimationFrame(applyFill);
-    requestAnimationFrame(() => requestAnimationFrame(applyFill));
+    // One settle frame after layout (resize / mode switch). Never triple-rAF on progress.
+    if (opts.settle !== false) {
+        requestAnimationFrame(applyFill);
+    }
 }
 
 export function setToolbarDisabledForBatch(editor, disabled) {

@@ -276,11 +276,28 @@ def execute_director_plan_core(
         )
 
     if plan.continuity_enabled:
+        pinned = [
+            seg.index + 1
+            for seg in all_segments
+            if seg.index > 0 and getattr(seg, "continuity_from_prev", True)
+        ]
+        skipped_pin = [
+            seg.index + 1
+            for seg in all_segments
+            if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
+        ]
         reports.append(
             "Segment continuity: ON — motion context "
             f"{snap_context_frames(plan.continuity_overlap_frames)}f "
             "(pin previous AV tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)."
         )
+        if pinned:
+            reports.append("  Pin from prev: #" + ", #".join(str(i) for i in pinned))
+        if skipped_pin:
+            reports.append(
+                "  Hard cut (per-segment off): #"
+                + ", #".join(str(i) for i in skipped_pin)
+            )
     else:
         reports.append(
             "Segment continuity: OFF — official MiniMax H3 per-segment path "

@@ -111,6 +111,8 @@ class SegmentPlan:
     # When external groups filter by「选择运行」, plan.index is the compact run
     # order (0..N-1) while ui_index keeps the Director timeline card index.
     ui_index: int | None = None
+    # Per-segment「引用上段」; master「段间引导」must also be on. Default True.
+    continuity_from_prev: bool = True
 
     @property
     def frame_count(self) -> int:
@@ -659,11 +661,19 @@ def build_director_plan(
             "Upload the content-to-insert clip for this segment in the Director node UI."
         )
 
-    from .segment_continuity import resolve_continuity_settings
+    from .segment_continuity import (
+        resolve_continuity_settings,
+        resolve_segment_continuity_from_prev,
+    )
 
     continuity_enabled, continuity_overlap = resolve_continuity_settings(
         timeline, segment_count=len(segments)
     )
+    for seg, (_start, _end, seg_data) in zip(segments, segment_ranges):
+        seg.continuity_from_prev = resolve_segment_continuity_from_prev(
+            seg_data if isinstance(seg_data, dict) else {},
+            segment_index=seg.index,
+        )
 
     return DirectorPlan(
         frame_rate=float(timeline.get("frameRate") or frame_rate or 24),
@@ -791,10 +801,39 @@ def plan_summary(plan: DirectorPlan) -> str:
             f"Output: {plan.width}×{plan.height} ({plan.output_mode})",
             f"Global task: {get_task_prompt_spec(plan.global_task_type).label}",
         ]
+        if plan.continuity_enabled:
+            pinned = [
+                seg.index + 1
+                for seg in plan.segments
+                if seg.index > 0 and getattr(seg, "continuity_from_prev", True)
+            ]
+            skipped_pin = [
+                seg.index + 1
+                for seg in plan.segments
+                if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
+            ]
+            lines.append(
+                f"Segment continuity: ON (motion context {plan.continuity_overlap_frames}f)"
+            )
+            if pinned:
+                lines.append("  Pin from prev: #" + ", #".join(str(i) for i in pinned))
+            if skipped_pin:
+                lines.append(
+                    "  Hard cut (per-segment off): #"
+                    + ", #".join(str(i) for i in skipped_pin)
+                )
         for seg in plan.segments:
+            pin_note = ""
+            if plan.continuity_enabled and seg.index > 0:
+                pin_note = (
+                    " — pin←prev"
+                    if getattr(seg, "continuity_from_prev", True)
+                    else " — hard cut"
+                )
             lines.append(
                 f"  #{seg.index + 1} [{seg.start_frame}:{seg.end_frame}] "
-                f"{seg.frame_count}f — {seg.task_key} — {seg.prompt[:60]}{'…' if len(seg.prompt) > 60 else ''}"
+                f"{seg.frame_count}f — {seg.task_key}{pin_note} — "
+                f"{seg.prompt[:60]}{'…' if len(seg.prompt) > 60 else ''}"
             )
         return "\n".join(lines)
 
@@ -815,10 +854,30 @@ def plan_summary(plan: DirectorPlan) -> str:
     export_label = "分段导出" if plan.export_mode == "segments" else "全部导出"
     lines.append(f"Export mode: {export_label}")
     if plan.continuity_enabled:
+        pinned = [
+            seg.index + 1
+            for seg in plan.segments
+            if seg.index > 0 and getattr(seg, "continuity_from_prev", True)
+        ]
+        skipped_pin = [
+            seg.index + 1
+            for seg in plan.segments
+            if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
+        ]
         lines.append(
             f"Segment continuity: ON (motion context {plan.continuity_overlap_frames}f "
             "→ pin previous tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)"
         )
+        if pinned:
+            lines.append(
+                "  Pin from prev: #"
+                + ", #".join(str(i) for i in pinned)
+            )
+        if skipped_pin:
+            lines.append(
+                "  Hard cut (per-segment off): #"
+                + ", #".join(str(i) for i in skipped_pin)
+            )
     elif plan.segment_count >= 2 and plan.global_task_key in {
         "t2v", "i2v", "fl2v", "r2v", "v2v", "rv2v",
     }:
@@ -837,8 +896,16 @@ def plan_summary(plan: DirectorPlan) -> str:
         )
     lines.append(f"Global task: {get_task_prompt_spec(plan.global_task_type).label}")
     for seg in plan.segments:
+        pin_note = ""
+        if plan.continuity_enabled and seg.index > 0:
+            pin_note = (
+                " — pin←prev"
+                if getattr(seg, "continuity_from_prev", True)
+                else " — hard cut"
+            )
         lines.append(
             f"  #{seg.index + 1} [{seg.start_frame}:{seg.end_frame}] "
-            f"{seg.frame_count}f — {seg.task_key} — {seg.prompt[:60]}{'…' if len(seg.prompt) > 60 else ''}"
+            f"{seg.frame_count}f — {seg.task_key}{pin_note} — "
+            f"{seg.prompt[:60]}{'…' if len(seg.prompt) > 60 else ''}"
         )
     return "\n".join(lines)

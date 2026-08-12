@@ -412,6 +412,11 @@ def build_plan_from_external_groups(
         else []
     )
 
+    from .segment_continuity import (
+        resolve_segment_continuity_from_prev,
+        timeline_row_for_index,
+    )
+
     segments: list[SegmentPlan] = []
     cursor = 0
     for plan_idx, (src_index, g) in enumerate(all_indexed):
@@ -480,6 +485,9 @@ def build_plan_from_external_groups(
                         has_start_frame=start_img is not None,
                     )
 
+            row = timeline_row_for_index(timeline, int(src_index))
+            if not row and isinstance(g, dict):
+                row = g
             segments.append(
                 SegmentPlan(
                     index=plan_idx,
@@ -493,6 +501,9 @@ def build_plan_from_external_groups(
                     negative_prompt=DEFAULT_FL2V_NEGATIVE if seg_task_key == "fl2v" else "",
                     source_clip=source_clip,
                     ui_index=int(src_index),
+                    continuity_from_prev=resolve_segment_continuity_from_prev(
+                        row, segment_index=plan_idx
+                    ),
                 )
             )
         else:
@@ -545,6 +556,9 @@ def build_plan_from_external_groups(
                 video_indices=[v.index for v in ref_videos],
                 audio_indices=[a.index for a in ref_audios],
             )
+            row = timeline_row_for_index(timeline, int(src_index))
+            if not row and isinstance(g, dict):
+                row = g
             segments.append(
                 SegmentPlan(
                     index=plan_idx,
@@ -560,6 +574,9 @@ def build_plan_from_external_groups(
                     ref_video_audios=ref_video_audios,
                     source_clip=None,
                     ui_index=int(src_index),
+                    continuity_from_prev=resolve_segment_continuity_from_prev(
+                        row, segment_index=plan_idx
+                    ),
                 )
             )
 
