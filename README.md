@@ -26,6 +26,24 @@
 | **二采 / 放大 (Refine)** | 外接 **MiniMax H3 Director Refine** 到导演台 `refine` 口。未接线 = 原来的单次采样。`refine` = 同分辨率精修；`upscale` = 先放大到目标画布再低 denoise 二采。`passes` 可多次精修（upscale 只放大一次）。可选接 `refine_model` 换二采 UNET。`images` 为二采后成片，`images_pre_refine` 为一采（放大前）画面 |
 | **运行报告** | `report` 口输出分段计划、每段任务摘要 |
 
+### 流式导出 stream_export（防 OOM）
+
+「性能」组新增开关 **`stream_export`**（默认关，向后兼容）：开启后，采样循环照旧（每段自动
+落盘缓存），导出阶段**跳过全量拼接**，从分段缓存**流式渲染成片并写 mp4 文件**——解决长片「全部
+导出」全量拼接（约 3× 帧体积）叠加模型驻留导致的内核 OOM 击杀（issue #32）。流式导出步骤本身
+峰值内存约 2 段（≈6GB）、不随总时长增长；整体峰值仍包含采样期累积的各段帧与模型权重，长片上限
+由这两者决定（本改动消除的是导出阶段的最大尖峰）。
+
+| 特性 | 说明 |
+|------|------|
+| **单次排队** | 采样 + 流式出片一次完成，无需额外脚本或节点 |
+| **流式处理** | 逐边界修复 + 逐段写入 ffmpeg + 逐段释放，峰值内存恒定 |
+| **接缝修复** | 复用 `concat_continuous_chunks` 同一套边界逻辑（亮度匹配/微桥接），效果与「全部导出」一致 |
+| **输出** | 成片 mp4 已含音轨（视频+音频）；成片路径在新增的 `video_path` 输出；开启时节点 images/audio 输出端口为空（无需连接 CreateVideo） |
+
+**用法**：Director「性能」组打开 `stream_export` → 正常排队（无需连接 CreateVideo）→ 成片在
+`output/video/MiniMaxH3_Director_stream_<时间戳>.mp4`，路径见 `video_path` 输出。
+
 ### 输入 / 输出
 
 **输入：** `model` → `video_vae` → `audio_vae` → `clip`  
