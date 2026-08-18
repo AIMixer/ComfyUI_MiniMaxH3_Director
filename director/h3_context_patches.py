@@ -65,6 +65,29 @@ def _has_marker(fn, markers: tuple[str, ...]) -> str | None:
     return None
 
 
+def _describe_patcher(fn) -> str:
+    """Human-readable identity of the function currently patching a class attr."""
+    if fn is None:
+        return "<none>"
+    name = getattr(fn, "__name__", type(fn).__name__)
+    mod = getattr(fn, "__module__", None) or "?"
+    try:
+        file = getattr(inspect.getmodule(fn), "__file__", None) or "?"
+    except Exception:
+        file = "?"
+    markers = [
+        m
+        for m in (
+            LAYOUT_MARKER,
+            PAYLOAD_MARKER,
+            "_h3_motion_context_layout_patch",
+            "_h3_motion_context_payload_patch",
+        )
+        if getattr(fn, m, False)
+    ]
+    return f"{name} (module={mod}, file={file}, markers={markers or 'none'})"
+
+
 def _target_origin(layout) -> float:
     """Time coordinate where the target video segment begins."""
     a, b, kind = layout.segments[-1]
@@ -345,12 +368,14 @@ def ensure_layout_patch() -> bool:
         raise RuntimeError(
             "Director continuity: standalone ComfyUI-H3-Motion-Context (or a fork) "
             "already patched MiniMax H3 layout. Disable that custom node pack and "
-            "restart ComfyUI — both packs cannot own PackedLayout.__init__."
+            "restart ComfyUI — both packs cannot own PackedLayout.__init__.\n"
+            f"  current PackedLayout.__init__ -> {_describe_patcher(init)}"
         )
     if owner == "foreign_other":
         raise RuntimeError(
             "Director continuity: another pack already patched MiniMax H3 "
-            "PackedLayout.__init__. Disable the other pack and restart ComfyUI."
+            "PackedLayout.__init__. Disable the other pack and restart ComfyUI.\n"
+            f"  current PackedLayout.__init__ -> {_describe_patcher(init)}"
         )
     mm = _mm()
     if not hasattr(mm, "PackedLayout") or not hasattr(mm, "FRAME_RESCALE"):
@@ -423,6 +448,14 @@ def _classify_payload_owner() -> str | None:
     return None
 
 
+def _current_extra_conds():
+    """Fetch the function currently installed on MiniMaxH3.extra_conds."""
+    import comfy.model_base as model_base
+
+    cls = getattr(model_base, "MiniMaxH3", None)
+    return getattr(cls, "extra_conds", None) if cls is not None else None
+
+
 def ensure_payload_patch() -> bool:
     """Install payload merge patch when audio refs coexist with keyframes."""
     global _payload_orig, _payload_applied
@@ -435,12 +468,14 @@ def ensure_payload_patch() -> bool:
     if owner == "foreign_mc":
         raise RuntimeError(
             "Director continuity: standalone ComfyUI-H3-Motion-Context already patched "
-            "MiniMaxH3.extra_conds. Disable that pack and restart ComfyUI."
+            "MiniMaxH3.extra_conds. Disable that pack and restart ComfyUI.\n"
+            f"  current MiniMaxH3.extra_conds -> {_describe_patcher(_current_extra_conds())}"
         )
     if owner == "foreign_other":
         raise RuntimeError(
             "Director continuity: another pack already patched MiniMaxH3.extra_conds. "
-            "Disable the other pack and restart ComfyUI."
+            "Disable the other pack and restart ComfyUI.\n"
+            f"  current MiniMaxH3.extra_conds -> {_describe_patcher(_current_extra_conds())}"
         )
     import comfy.model_base as model_base
 
