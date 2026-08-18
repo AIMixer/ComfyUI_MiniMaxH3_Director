@@ -454,9 +454,9 @@ def _parse_run_selection(timeline: dict, segment_count: int) -> frozenset[int] |
         return None
     indices = {int(i) for i in raw if 0 <= int(i) < segment_count}
     if not indices:
-        raise ValueError(
-            "MiniMax H3 Director: 「选择运行」已开启但未勾选任何片段/提示词组。请至少勾选一组再执行。"
-        )
+        # 空选择 = 纯导出模式：不采样任何片段，全部从缓存加载并导出。
+        # 主循环 run_indices 为空集时走缓存加载路径（load_segment_cache）。
+        return frozenset()
     if len(indices) >= segment_count:
         return None
     return frozenset(indices)

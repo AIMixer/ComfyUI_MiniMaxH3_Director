@@ -375,8 +375,7 @@ def build_plan_from_external_groups(
     )
 
     indices = _run_selection_filter(timeline, len(groups))
-    if not indices:
-        raise ValueError("External groups: no groups selected to run.")
+    # 空选择 = 纯导出模式：不采样任何组，全部从缓存加载并导出。
 
     # Keep the full group list so「段间引导」can pin the true previous neighbor
     # (via cache) even when「选择运行」only samples a subset — same model as

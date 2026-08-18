@@ -1204,6 +1204,12 @@ def execute_director_plan_core(
         )
 
     if not output_chunks and not segment_outputs and not completed_outputs:
+        if plan.run_indices is not None and not plan.run_indices and skipped_no_cache:
+            raise ValueError(
+                "MiniMax H3 Director: 纯导出模式（「选择运行」全不选）没有任何可导出内容——"
+                f"片段 {skipped_no_cache} 缺少缓存。请先完整采样一次（或取消「选择运行」后运行）"
+                "生成缓存，再开启全不选直接导出。"
+            )
         raise ValueError("Director plan produced no segments.")
 
     report_director_finish(node_id, seg_total)

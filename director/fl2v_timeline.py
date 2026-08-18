@@ -572,7 +572,7 @@ def build_fl2v_director_plan(
     # Keep full shot list for continuity neighbors; honor selection via run_indices.
     run_count = len(timeline.get("shots") or []) if used_explicit_shots else len(keyframes)
     run_sel = _parse_run_selection(timeline, max(1, run_count))
-    if run_sel is not None:
+    if run_sel is not None and run_sel:
         if not any(int(s["source_index"]) in run_sel for s in shots):
             raise ValueError(
                 "MiniMax H3 Director: 「选择运行」已开启，但未勾选任何首尾帧组。"
@@ -715,7 +715,7 @@ def build_fl2v_director_plan(
         raise ValueError(
             "fl2v: 没有可运行的组。请添加一组并上传首帧和/或尾帧。"
         )
-    if run_sel is not None and not selected_plan_indices:
+    if run_sel is not None and run_sel and not selected_plan_indices:
         raise ValueError(
             "MiniMax H3 Director: 「选择运行」已开启，但未勾选任何首尾帧组。"
             "请勾选至少一组再执行。"

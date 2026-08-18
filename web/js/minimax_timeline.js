@@ -3116,7 +3116,7 @@ class MiniMaxH3DirectorEditor {
         if (!this.runSelectSummary) return;
         if (!count) {
             this.runSelectSummary.textContent = t("runSelect.noneChecked", { unit: label });
-            this.runSelectSummary.style.color = "#f88";
+            this.runSelectSummary.style.color = "#f0a35c";
         } else if (count >= n) {
             this.runSelectSummary.textContent = t("runSelect.all", { n, unit: label });
             this.runSelectSummary.style.color = "#aaa";
