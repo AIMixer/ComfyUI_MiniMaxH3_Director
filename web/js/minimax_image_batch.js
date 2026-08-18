@@ -423,6 +423,10 @@ export const IMAGE_BATCH_STYLES = `
 .bd-batch-i2v-notice.visible{display:block}
 .bd-batch-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .bd-batch-run-select.active{background:#1a3a2a;color:#4fff8f;border-color:#4fff8f}
+.bd-btn-follow-seg.active{background:#1a3a2a;color:#4fff8f;border-color:#4fff8f}
+.bd-btn-follow-seg.hidden{display:none!important}
+.bd-batch-follow-hint{color:#8fdfb0;font-size:11px;white-space:nowrap}
+.bd-batch-follow-hint.hidden{display:none!important}
 .bd-batch-run-all{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#aaa;cursor:pointer;user-select:none}
 .bd-batch-run-all.hidden{display:none!important}
 .bd-batch-run-all input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#4fff8f}
@@ -650,6 +654,8 @@ export function mountImageBatchPanel(root) {
                 <input type="checkbox" data-r="batch-run-all-cb">
                 <span data-i18n="toolbar.selectAll">全选</span>
             </label>
+            <button type="button" class="bd-btn bd-btn-follow-seg active hidden" data-a="batch-follow-seg" data-i18n="batch.followSeg" data-i18n-title="tooltip.followSeg">跟随片段</button>
+            <span class="bd-meta bd-batch-follow-hint hidden" data-r="batch-follow-hint"></span>
             <span class="bd-meta" data-r="batch-hint" data-i18n="batch.hint.defaultImage">每组生成 1 张图片</span>
         </div>
         <div class="bd-batch-i2v-notice" data-r="batch-i2v-notice"></div>
@@ -664,6 +670,8 @@ export function mountImageBatchPanel(root) {
         runSelectBtn: panel.querySelector('[data-a="batch-run-select"]'),
         runSelectAllWrap: panel.querySelector('[data-r="batch-run-all-wrap"]'),
         runSelectAllCb: panel.querySelector('[data-r="batch-run-all-cb"]'),
+        followSegBtn: panel.querySelector('[data-a="batch-follow-seg"]'),
+        followHint: panel.querySelector('[data-r="batch-follow-hint"]'),
     };
 }
 
@@ -679,6 +687,10 @@ export function wireBatchRunSelectControls(editor, batchUi) {
         e.stopPropagation();
         if (!editor.isRunSelectEnabled?.()) return;
         editor.setRunSelectionAll?.(batchUi.runSelectAllCb.checked);
+    });
+    batchUi.followSegBtn?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        editor.toggleBatchFollowSeg?.();
     });
 }
 
@@ -2126,8 +2138,51 @@ export function renderImageBatchGroups(editor) {
         list.appendChild(card);
     });
     refreshPromptTokenEditors(list);
+    // 跟随片段模式：只显示选中片段对应的素材组，其余隐藏。
+    applyBatchFollowVisibility(editor);
     // Batch list is scroll-capped; refresh node/widget height after card count changes.
     editor.updateDomWidgetHeight?.();
+}
+
+/**
+ * 跟随片段模式（batchFollowSeg=true，默认开启）：batch 列表只显示
+ * 当前选中片段（selectedIndex）对应的素材组卡片，其余卡片 display:none，
+ * 并强制 bd-batch-solo 让单卡片填满可用高度（省画布空间）。
+ * 运行中优先跟随 _runHighlightSeg（当前采样片段）。点击时间轴片段 →
+ * updateSelectionUI → _syncR2vCardSelection 会再次调用本函数即时切换。
+ */
+export function applyBatchFollowVisibility(editor) {
+    const list = editor?.batchList;
+    if (!list || !editor.isImageBatch?.()) return;
+    const follow = !!editor.batchFollowSeg;
+    const cards = list.querySelectorAll(".bd-batch-card");
+    const n = cards.length;
+    const running = Number(editor._runHighlightSeg ?? -1);
+    const focus = (running >= 0 && running < n) ? running : (editor.selectedIndex ?? 0);
+    cards.forEach((card, i) => {
+        card.style.display = (follow && i !== focus) ? "none" : "";
+    });
+    const panel = list.closest(".bd-batch");
+    const btn = panel?.querySelector('[data-a="batch-follow-seg"]');
+    if (btn) {
+        btn.classList.toggle("active", follow);
+        btn.classList.toggle("hidden", !follow && n <= 1);
+        // 文案随模式变化；同步 data-i18n 保证语言切换时不被旧 key 覆盖。
+        btn.dataset.i18n = follow ? "batch.followSeg" : "batch.showAll";
+        btn.textContent = t(follow ? "batch.followSeg" : "batch.showAll");
+    }
+    const hint = panel?.querySelector('[data-r="batch-follow-hint"]');
+    if (hint) {
+        const show = follow && n > 1;
+        hint.classList.toggle("hidden", !show);
+        if (show) {
+            const isR2v = editor.getTaskKey?.() === "r2v";
+            hint.textContent = t(isR2v ? "batch.followHint" : "batch.followHintPrompt", {
+                n: focus + 1,
+                total: n,
+            });
+        }
+    }
 }
 
 export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {}) {
@@ -2452,7 +2507,9 @@ export function syncBatchPanelFillHeight(editor, opts = {}) {
             list.style.maxHeight = "";
         }
 
-        const solo = (editor.timeline?.segments?.length || 0) <= 1;
+        // 跟随片段模式：只显示一个卡片 → 强制 solo 让该卡片填满剩余高度。
+        const follow = !!editor.batchFollowSeg;
+        const solo = follow || (editor.timeline?.segments?.length || 0) <= 1;
         list.classList.toggle("bd-batch-solo", solo);
         for (const card of list.querySelectorAll(".bd-batch-card")) {
             if (solo && (listH > 0 || !trusted)) {

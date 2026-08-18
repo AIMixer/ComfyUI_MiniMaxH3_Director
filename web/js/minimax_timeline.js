@@ -44,6 +44,7 @@ import {
 import {
     IMAGE_BATCH_STYLES,
     addImageBatchGroup,
+    applyBatchFollowVisibility,
     bindImageBatchEvents,
     bindR2vMediaPlayback,
     deleteImageBatchGroup,
@@ -1424,6 +1425,8 @@ class MiniMaxH3DirectorEditor {
         this.domWidget = domWidget;
         this.zoom = 1;
         this.selectedIndex = 0;
+        /** 跟随片段模式：batch 列表只显示选中片段的素材组（默认开启，省画布空间）。 */
+        this.batchFollowSeg = true;
         /** @type {number|null} Selected editable split-point frame (logical). */
         this.selectedSplitFrame = null;
         this.currentFrame = 0;
@@ -3192,6 +3195,18 @@ class MiniMaxH3DirectorEditor {
             const cb = el.querySelector(".bd-batch-run-check");
             if (cb) cb.checked = runOn;
         });
+        // 跟随片段模式：选中变化（时间轴点击/卡片点击/恢复）后即时切换可见卡片。
+        applyBatchFollowVisibility(this);
+    }
+
+    /** 切换「跟随片段 / 全部展示」：默认跟随片段，只显示选中片段的素材组。 */
+    toggleBatchFollowSeg() {
+        if (!this.isImageBatch?.()) return;
+        this.batchFollowSeg = !this.batchFollowSeg;
+        applyBatchFollowVisibility(this);
+        syncBatchPanelFillHeight(this, { settle: false });
+        this.updateDomWidgetHeight?.();
+        this.scheduleRender?.();
     }
 
     onTaskTypeChanged(value) {
