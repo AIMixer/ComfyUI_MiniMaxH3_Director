@@ -402,7 +402,7 @@ function stopPlayer(el) {
     if (!st) return;
     st.playing = false;
     if (st.timer) {
-        clearInterval(st.timer);
+        cancelAnimationFrame(st.timer);
         st.timer = null;
     }
 }
@@ -1763,7 +1763,7 @@ function mountVideoPreview(el, seg, running, fps, editor) {
     wrap.appendChild(meta);
     el.appendChild(wrap);
 
-    const state = { playing: false, timer: null, idx: 0, images: null };
+    const state = { playing: false, timer: null, idx: 0, images: null, lastFrame: 0 };
     _players.set(wrap, state);
 
     loadFrameImages(frames).then((images) => {
@@ -1778,19 +1778,26 @@ function mountVideoPreview(el, seg, running, fps, editor) {
         if (!state.images?.length) return;
         if (state.playing) {
             state.playing = false;
-            if (state.timer) clearInterval(state.timer);
+            if (state.timer) cancelAnimationFrame(state.timer);
             state.timer = null;
             playBtn.textContent = t("batch.play");
             return;
         }
         state.playing = true;
+        state.lastFrame = 0;
         playBtn.textContent = t("batch.pause");
-        const interval = Math.max(20, 1000 / Math.max(1, fps));
-        state.timer = setInterval(() => {
-            if (!state.images?.length) return;
-            state.idx = (state.idx + 1) % state.images.length;
-            drawFrame(canvas, state.images[state.idx]);
-        }, interval);
+        const interval = Math.max(16, 1000 / Math.max(1, fps));
+        const tick = (ts) => {
+            if (!state.playing) return;
+            if (ts - state.lastFrame >= interval) {
+                state.lastFrame = ts;
+                if (!state.images?.length) return;
+                state.idx = (state.idx + 1) % state.images.length;
+                drawFrame(canvas, state.images[state.idx]);
+            }
+            state.timer = requestAnimationFrame(tick);
+        };
+        state.timer = requestAnimationFrame(tick);
     };
 }
 
@@ -1846,9 +1853,42 @@ function renderPreview(el, seg, running, isVideo, fps, editor) {
     else renderImagePreview(el, seg, running, editor);
 }
 
-export function renderImageBatchGroups(editor) {
+/**
+ * Lightweight patch: update card classes (.selected, .running, .done, .run-on, .run-skipped)
+ * without tearing down the DOM. Used for selection changes, run highlights, and run-toggles.
+ */
+function patchBatchCardClasses(editor) {
+    const list = editor.batchList;
+    if (!list) return false;
+    const key = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
+    const isR2v = key === "r2v";
+    const cards = list.querySelectorAll(".bd-batch-card");
+    if (cards.length !== editor.timeline.segments.length) return false;
+    const runSelectOn = !!(editor.isRunSelectEnabled?.() && editor.supportsRunSelect?.());
+    const runningIdx = editor._runHighlightSeg;
+    cards.forEach((card, i) => {
+        const seg = editor.timeline.segments[i];
+        const runEnabled = !runSelectOn || !!editor.isSegmentRunEnabled?.(i);
+        const hasPreview = key === "r2v"
+            ? (seg?.previewFrames?.length > 0 || seg?.previewB64)
+            : !!seg?.previewB64;
+        if (isR2v) card.classList.toggle("selected", i === editor.selectedIndex);
+        card.classList.toggle("running", i === runningIdx);
+        card.classList.toggle("run-on", runSelectOn && runEnabled);
+        card.classList.toggle("run-skipped", runSelectOn && !runEnabled);
+        card.classList.toggle("done", hasPreview && i !== runningIdx);
+    });
+    return true;
+}
+
+export function renderImageBatchGroups(editor, { lightweight = false } = {}) {
     const list = editor.batchList;
     if (!list) return;
+    // Fast path: if only CSS classes changed (selection, run highlight), patch in-place.
+    if (lightweight && patchBatchCardClasses(editor)) {
+        applyBatchFollowVisibility(editor);
+        return;
+    }
     // Recover drafts before wiping the DOM (duration flush also flushes prompts).
     flushBatchPromptInputs(editor);
     flushBatchDurationInputs(editor);

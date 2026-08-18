@@ -867,21 +867,16 @@ export function t(key, vars) {
 /** Apply data-i18n / data-i18n-title / data-i18n-placeholder / data-i18n-html on a subtree. */
 export function applyI18nDom(root) {
     if (!root?.querySelectorAll) return;
-    for (const el of root.querySelectorAll("[data-i18n]")) {
-        const key = el.getAttribute("data-i18n");
-        if (key) el.textContent = t(key);
-    }
-    for (const el of root.querySelectorAll("[data-i18n-html]")) {
-        const key = el.getAttribute("data-i18n-html");
-        if (key) el.innerHTML = t(key);
-    }
-    for (const el of root.querySelectorAll("[data-i18n-title]")) {
-        const key = el.getAttribute("data-i18n-title");
-        if (key) el.title = t(key);
-    }
-    for (const el of root.querySelectorAll("[data-i18n-placeholder]")) {
-        const key = el.getAttribute("data-i18n-placeholder");
-        if (key) el.placeholder = t(key);
+    // Single pass instead of 4 separate querySelectorAll calls.
+    for (const el of root.querySelectorAll("[data-i18n], [data-i18n-html], [data-i18n-title], [data-i18n-placeholder]")) {
+        const iKey = el.getAttribute("data-i18n");
+        if (iKey) el.textContent = t(iKey);
+        const hKey = el.getAttribute("data-i18n-html");
+        if (hKey) el.innerHTML = t(hKey);
+        const tKey = el.getAttribute("data-i18n-title");
+        if (tKey) el.title = t(tKey);
+        const pKey = el.getAttribute("data-i18n-placeholder");
+        if (pKey) el.placeholder = t(pKey);
     }
 }
 

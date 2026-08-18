@@ -1779,20 +1779,13 @@ class MiniMaxH3DirectorEditor {
     scheduleSettleRender() {
         this.scheduleRender();
         if (this._settleRenderTimer != null) return;
+        // Single delayed pass after ComfyUI node size / graph zoom finishes applying.
+        // The immediate scheduleRender() above handles the first frame; this catches the
+        // late layout settle that previously required 3+ extra RAF/timeout passes.
         this._settleRenderTimer = setTimeout(() => {
             this._settleRenderTimer = null;
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                    if (!this.isPlaying) this.scheduleRender();
-                });
-            });
-        }, 0);
-        // Extra pass after ComfyUI node size / graph zoom finishes applying.
-        clearTimeout(this._settleRenderLateTimer);
-        this._settleRenderLateTimer = setTimeout(() => {
-            this._settleRenderLateTimer = null;
             if (!this.isPlaying) this.scheduleRender();
-        }, 100);
+        }, 60);
     }
 
     _capturePlayCanvasWidth() {
@@ -2774,6 +2767,10 @@ class MiniMaxH3DirectorEditor {
         this._onMouseUp = () => this.onMouseUp();
         this._onCanvasHover = (e) => {
             if (this._drag || this.isPlaying) return;
+            // Throttle hover hit-test to ~1 frame (16ms) to avoid O(n) hitTest per mouse event.
+            const now = performance.now();
+            if (this._lastHoverTime && now - this._lastHoverTime < 16) return;
+            this._lastHoverTime = now;
             const { x, y } = this.getMousePos(e);
             const hit = this.hitTest(x, y);
             this.canvas.classList.remove("bd-grab");
@@ -3046,7 +3043,7 @@ class MiniMaxH3DirectorEditor {
         this.timeline.runSelection = [...sel].sort((a, b) => a - b);
         this.updateRunSelectUI();
         this.commit(false, { syncTimeline: true });
-        if (this.isImageBatch()) this.renderImageBatchGroups();
+        if (this.isImageBatch()) this.renderImageBatchGroups({ lightweight: true });
         else this.scheduleRender();
     }
 
@@ -3084,7 +3081,7 @@ class MiniMaxH3DirectorEditor {
         this.timeline.runSelection = on ? Array.from({ length: n }, (_, i) => i) : [];
         this.updateRunSelectUI();
         this.commit(false, { syncTimeline: true });
-        if (this.isImageBatch()) this.renderImageBatchGroups();
+        if (this.isImageBatch()) this.renderImageBatchGroups({ lightweight: true });
         else this.scheduleRender();
     }
 
@@ -6710,6 +6707,10 @@ class MiniMaxH3DirectorEditor {
     _syncLiveDurationUiFromPreview() {
         const segs = this._previewSegments;
         if (!segs?.length) return;
+        // Throttle DOM-heavy sync to ~30fps during rapid edge drag.
+        const now = performance.now();
+        if (this._lastDurationSyncTime && now - this._lastDurationSyncTime < 33) return;
+        this._lastDurationSyncTime = now;
 
         if (this.isR2vBatch() || (this.isImageBatch() && isVideoBatchTask(this.getTaskKey()))) {
             for (const input of this.batchList?.querySelectorAll("input[data-batch-sec-index]") || []) {
@@ -7297,6 +7298,40 @@ class MiniMaxH3DirectorEditor {
         return this._thumbCache.get(frameIndex) || null;
     }
 
+    /** Cache ctx.measureText results keyed by "font|text" to avoid per-frame reflow. */
+    _measureTextCached(ctx, text) {
+        const key = `${ctx.font}|${text}`;
+        let w = this._textMeasureCache?.get(key);
+        if (w === undefined) {
+            w = ctx.measureText(text).width;
+            if (!this._textMeasureCache) this._textMeasureCache = new Map();
+            this._textMeasureCache.set(key, w);
+            // Evict when cache grows too large (throttled draw may accumulate many keys).
+            if (this._textMeasureCache.size > 512) {
+                const first = this._textMeasureCache.keys().next().value;
+                this._textMeasureCache.delete(first);
+            }
+        }
+        return w;
+    }
+
+    /** Truncate `text` to fit `maxW` pixels, appending "…" when clipped. Cached. */
+    _truncateToWidth(ctx, text, maxW) {
+        if (this._measureTextCached(ctx, text) <= maxW) return text;
+        let lo = 0, hi = text.length;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (this._measureTextCached(ctx, text.slice(0, mid) + "…") <= maxW) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo > 0 ? text.slice(0, lo) + "…" : "…";
+    }
+
+    /** Clear the text-measure cache (call when font changes or frame ends). */
+    _clearTextMeasureCache() {
+        this._textMeasureCache?.clear?.();
+    }
+
     drawSegmentThumbnails(ctx, seg, startX, pxWidth, y0, h) {
         if (this.isFl2vMode()) {
             drawFl2vSegmentThumbnails(this, ctx, seg, startX, pxWidth, y0, h);
@@ -7581,12 +7616,7 @@ class MiniMaxH3DirectorEditor {
         ctx.fillStyle = "#e0e3ed";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        let label = prompt;
-        const maxW = pxWidth - 10;
-        if (ctx.measureText(label).width > maxW) {
-            while (label.length > 0 && ctx.measureText(label + "…").width > maxW) label = label.slice(0, -1);
-            label += "…";
-        }
+        const label = this._truncateToWidth(ctx, prompt, pxWidth - 10);
         ctx.fillText(label, startX + pxWidth / 2, overlayY + overlayH / 2);
         ctx.restore();
     }
@@ -7716,13 +7746,7 @@ class MiniMaxH3DirectorEditor {
             const showSegSel = this.isR2vBatch() || this.isFl2vMode()
                 || !(this.isImageBatch() || this.isGenMode());
             this.ctx.fillStyle = (showSegSel && i === this.selectedIndex) ? "#eee" : "#9a9a9a";
-            let draw = rangeText;
-            if (this.ctx.measureText(draw).width > pxW - 6) {
-                while (draw.length > 1 && this.ctx.measureText(`${draw}…`).width > pxW - 6) {
-                    draw = draw.slice(0, -1);
-                }
-                draw = draw.length < rangeText.length ? `${draw}…` : draw;
-            }
+            const draw = this._truncateToWidth(this.ctx, rangeText, pxW - 6);
             this.ctx.fillText(draw, x0 + 4, RULER_H + SEG_LABEL_H / 2);
         }
 
@@ -7948,6 +7972,7 @@ class MiniMaxH3DirectorEditor {
             this.ctx.font = "10px sans-serif";
             this.ctx.fillText(t("canvas.exportCap", { n: exportTotal }), capX + 4, TRACK_Y + 12);
         }
+        this._clearTextMeasureCache();
     }
 
     _updateTimelineDom({ skipSeek = false } = {}) {
@@ -8966,7 +8991,7 @@ class MiniMaxH3DirectorEditor {
             this._runProgressSegKey = null;
             this._followRunSelection(timelineSeg);
             this.updateRunSelectUI();
-            if (this.isImageBatch()) this.renderImageBatchGroups();
+            if (this.isImageBatch()) this.renderImageBatchGroups({ lightweight: true });
             else this.scheduleRender();
             return;
         }
