@@ -1204,13 +1204,21 @@ def execute_director_plan_core(
         )
 
     if not output_chunks and not segment_outputs and not completed_outputs:
-        if plan.run_indices is not None and not plan.run_indices and skipped_no_cache:
-            raise ValueError(
-                "MiniMax H3 Director: 纯导出模式（「选择运行」全不选）没有任何可导出内容——"
-                f"片段 {skipped_no_cache} 缺少缓存。请先完整采样一次（或取消「选择运行」后运行）"
-                "生成缓存，再开启全不选直接导出。"
-            )
-        raise ValueError("Director plan produced no segments.")
+        pure_export = plan.run_indices is not None and not plan.run_indices
+        if pure_export:
+            if stream_export:
+                # 流式导出不依赖内存拼接，交由 stream_render_from_cache 从磁盘缓存渲染；
+                # 无缓存时该函数会给出明确报错（含 cache 路径）。
+                pass
+            else:
+                missing = skipped_no_cache or [i + 1 for i in range(len(all_segments))]
+                raise ValueError(
+                    "MiniMax H3 Director: 纯导出模式（「选择运行」全不选）没有任何可导出内容——"
+                    f"片段 {missing} 缺少缓存。请先完整采样一次（或取消「选择运行」后运行）"
+                    "生成缓存，再开启全不选直接导出。"
+                )
+        else:
+            raise ValueError("Director plan produced no segments.")
 
     report_director_finish(node_id, seg_total)
     # 流式导出无需内存拼接；保留空列表即可，末尾 stream_render_from_cache 直接读盘。
@@ -1277,6 +1285,7 @@ def execute_director_plan_core(
         from .cache_stream_render import stream_render_from_cache
         _, stream_frames = stream_render_from_cache(
             cache_dir, video_path, fps=int(plan.frame_rate or 24))
+        export_frame_counts = [stream_frames]
         reports.append(
             f"Stream export（流式导出）→ {video_path} "
             f"({stream_frames} 帧, 峰值内存低, 不触发 OOM)")
