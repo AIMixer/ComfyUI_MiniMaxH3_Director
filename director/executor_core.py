@@ -236,6 +236,25 @@ def _ref_video_audios_to_dict(items) -> dict | None:
     return out or None
 
 
+def _prune_completed_av_latents(completed: dict[int, dict], keep: int) -> None:
+    """Free AV latents that segment continuity can never touch again.
+
+    Motion context only ever reads the *immediately previous* segment's latent
+    (``prev_idx``), so holding every segment's full AV latent for the whole run
+    wastes GPU memory (5 videos ≈ 5 simultaneous latents). Entries older than
+    ``keep`` are dropped; the disk cache (seg_XXXX.av.pt) is the existing
+    fallback for later re-runs / partial runs.
+    """
+    stale = [i for i in completed if i != keep]
+    for idx in stale:
+        del completed[idx]
+    if stale:
+        log.debug(
+            "Pruned AV latents for segment(s) %s; keeping #%d (prev only)",
+            [i + 1 for i in stale], keep + 1,
+        )
+
+
 def execute_director_plan_core(
     plan: DirectorPlan,
     *,
@@ -441,6 +460,7 @@ def execute_director_plan_core(
                 )
                 if prev_av is not None:
                     completed_av_latents[prev_idx] = prev_av
+                    _prune_completed_av_latents(completed_av_latents, prev_idx)
             prev_handoff = completed_av_handoff.get(prev_idx)
             if prev_handoff is None and prev_seg is not None:
                 prev_handoff = load_segment_handoff_meta(
@@ -946,6 +966,7 @@ def execute_director_plan_core(
             "official_mc_length": False,
         }
         completed_av_latents[seg.index] = samples
+        _prune_completed_av_latents(completed_av_latents, seg.index)
         completed_av_handoff[seg.index] = handoff
         if isinstance(audio_dict, dict) and audio_dict.get("waveform") is not None:
             completed_audios[seg.index] = audio_dict
@@ -1058,6 +1079,7 @@ def execute_director_plan_core(
             )
             if cached_av is not None:
                 completed_av_latents[seg.index] = cached_av
+                _prune_completed_av_latents(completed_av_latents, seg.index)
             cached_handoff = load_segment_handoff_meta(
                 node_id, seg, plan, allow_stale=used_stale
             )
