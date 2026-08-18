@@ -80,10 +80,17 @@ def director_perf_inputs() -> dict:
     return {
         "bd_grp_perf": ("BDGROUP", {"default": "性能"}),
         "clear_vram_between_segments": (
-            "BOOLEAN",
+            ["unload_models", "cache_only", "off"],
             {
-                "default": True,
-                "tooltip": "段间清理显存：每段结束后卸载模型并清空 CUDA 缓存。",
+                "default": "unload_models",
+                "tooltip": "段间显存清理策略：unload_models=卸载模型+清缓存（最省显存，"
+                           "但每段重载模型较慢）；cache_only=只清缓存保留模型（省去重载尖峰，"
+                           "显存充足时推荐）；off=不清理。兼容旧版布尔值（True=unload_models，"
+                           "False=off）。"
+                           " / Segment VRAM cleanup: unload_models=unload model + empty cache "
+                           "(most VRAM-safe, slower); cache_only=empty cache only, keep models "
+                           "(avoids per-segment reload spikes, recommended with spare VRAM); "
+                           "off=skip. Legacy bools still accepted (True=unload_models, False=off).",
             },
         ),
         "export_source_images": (

@@ -195,7 +195,7 @@ class MiniMaxH3Director:
         seed=0,
         shift_video=12.0,
         shift_audio=3.0,
-        clear_vram_between_segments=True,
+        clear_vram_between_segments="unload_models",
         export_source_images=False,
         stream_export=False,
         **kwargs,
@@ -239,7 +239,7 @@ class MiniMaxH3Director:
 
         if stream_export:
             fps_out = float(plan.frame_rate or 24.0)
-            total_frames = sum(int(c.shape[0]) for c in segment_outputs)
+            total_frames = sum(int(c) for c in export_frame_counts)
             note = "\n\n流式导出已开启：成片已写入 mp4（见 video_path 输出），images/audio 输出为空。"
             return ([], [], fps_out, total_frames, [], report + note, [], video_path)
 

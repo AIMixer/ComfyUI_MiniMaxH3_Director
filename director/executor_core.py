@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import torch
@@ -71,6 +72,11 @@ from .segment_continuity import (
 from .vram_cleanup import cleanup_segment_vram
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.core")
+
+# 每段发送到浏览器的预览帧上限（首帧必含，末帧保证，其余均匀抽样）。
+_MAX_PREVIEW_FRAMES = 12
+# 每段实时 TAE 预览的最大次数（节流，避免每个 diffusion step 都 decode 一次）。
+_MAX_LIVE_PREVIEWS = 12
 
 
 def _unpack_node_output(out):
@@ -255,6 +261,29 @@ def _prune_completed_av_latents(completed: dict[int, dict], keep: int) -> None:
         )
 
 
+def _prune_completed_tensors(completed: dict[int, Any], keep: int, label: str) -> None:
+    """Free decoded outputs older than the immediately-previous segment.
+
+    Segment continuity only reads the previous segment's output (``prev_idx``);
+    with「流式导出」the final merge reads disk caches, so no code path needs every
+    segment's decoded frames resident at once. Drops everything except ``keep``.
+    """
+    stale = [i for i in completed if i != keep]
+    for idx in stale:
+        del completed[idx]
+    if stale:
+        log.debug(
+            "Pruned %s for segment(s) %s; keeping #%d (prev only)",
+            label, [i + 1 for i in stale], keep + 1,
+        )
+
+
+def _live_preview_every(steps: int) -> int:
+    """TAE 实时预览节流：每段最多约 _MAX_LIVE_PREVIEWS 次（不再每个 step decode）。"""
+    total = max(1, int(steps or 0))
+    return max(1, math.ceil(total / _MAX_LIVE_PREVIEWS))
+
+
 def execute_director_plan_core(
     plan: DirectorPlan,
     *,
@@ -289,6 +318,17 @@ def execute_director_plan_core(
     raw_live = (plan.raw or {}).get("liveTaePreview", (plan.raw or {}).get("live_tae_preview", True))
     live_tae_preview = False if raw_live in (False, 0, "0", "false", "False", "off") else True
 
+    # 段间显存清理策略：兼容旧版 BOOLEAN（True=unload_models，False=off）。
+    raw_clean = clear_vram_between_segments
+    if isinstance(raw_clean, str):
+        vram_clean_mode = str(raw_clean).lower().strip()
+    elif raw_clean in (False, None, 0):
+        vram_clean_mode = "off"
+    else:
+        vram_clean_mode = "unload_models"
+    vram_clean_on = vram_clean_mode not in ("off", "false", "0")
+    vram_unload_models = vram_clean_mode in ("unload", "unload_models", "true", "1")
+
     all_segments = plan.segments
     # Strictly honor「选择运行」— never force-sample unselected segments.
     run_indices = plan.run_indices if plan.run_indices is not None else frozenset(range(len(all_segments)))
@@ -313,13 +353,19 @@ def execute_director_plan_core(
     segment_pre_refine: list[torch.Tensor] = []
     segment_audios: list[dict[str, Any]] = []
     skipped_no_cache: list[int] = []
+    stream_frame_counts: list[int] = []
     reports: list[str] = [plan_summary(plan), "", "Execution path: ComfyUI official MiniMax H3"]
     # One timestamp folder per execute so all segments of this run stay together.
     mp4_run_dir = new_segment_mp4_run_dir(plan)
     if mp4_run_dir is not None:
         reports.append(f"Segment mp4 export dir: {mp4_run_dir}")
-    if clear_vram_between_segments:
-        reports.append("VRAM: 段间清理显存已开启。")
+    if vram_clean_on:
+        reports.append(
+            "VRAM: 段间清理显存"
+            + ("（卸载模型 + 清缓存）。" if vram_unload_models else "（仅清缓存，保留模型）。")
+        )
+    else:
+        reports.append("VRAM: 段间不清理显存。")
     if audio_mode == AUDIO_MODE_MUTE:
         reports.append("Audio: muted — skip audio VAE decode, silent AUDIO output.")
     elif audio_mode == AUDIO_MODE_SOURCE:
@@ -772,8 +818,8 @@ def execute_director_plan_core(
             phase="context_encode", phase_value=1, phase_max=1, **meta,
         )
 
-        if clear_vram_between_segments:
-            cleanup_segment_vram(enabled=True, unload_models=seg_total > 1)
+        if vram_clean_on:
+            cleanup_segment_vram(enabled=True, unload_models=vram_unload_models and seg_total > 1)
 
         def _report_sample_phase(phase: str, value: float) -> None:
             report_director_progress(
@@ -816,7 +862,7 @@ def execute_director_plan_core(
             shift_audio=shift_audio,
             on_phase=_report_sample_phase,
             on_step_preview=_report_step_preview if live_tae_preview else None,
-            preview_every=1,
+            preview_every=_live_preview_every(steps),
         )
 
         first_pass_gpu = None
@@ -914,6 +960,7 @@ def execute_director_plan_core(
             shift_audio=shift_audio,
             on_phase=_report_sample_phase,
             on_step_preview=_report_step_preview if live_tae_preview else None,
+            preview_every=_live_preview_every(steps),
             first_pass_images=upscale_frames,
             trim_frames=trim_frames,
             on_pass=_export_refine_pass if mp4_run_dir is not None else None,
@@ -1008,9 +1055,17 @@ def execute_director_plan_core(
 
         if seg.task_key in {"t2v", "i2v", "r2v", "fl2v", "v2v", "rv2v"} and decoded.shape[0] >= 1:
             try:
+                # 预览只发抽样帧：全量编码每一帧会带来 CPU 峰值 + websocket/浏览器内存
+                # 尖峰（高分辨率下每段几十~上百张 base64）。上限 _MAX_PREVIEW_FRAMES 帧，
+                # 均匀取样并确保包含最后一帧。
+                n_total = int(decoded.shape[0])
+                preview_step = max(1, math.ceil((n_total - 1) / (_MAX_PREVIEW_FRAMES - 1)))
+                preview_pick = list(range(0, n_total, preview_step))
+                if preview_pick[-1] != n_total - 1:
+                    preview_pick.append(n_total - 1)
                 frames_b64 = [
                     tensor_frame_to_jpeg_b64(decoded[i])
-                    for i in range(int(decoded.shape[0]))
+                    for i in preview_pick
                 ]
                 h, w = int(decoded.shape[1]), int(decoded.shape[2])
                 report_director_segment_preview(
@@ -1025,8 +1080,8 @@ def execute_director_plan_core(
             except Exception as exc:
                 log.debug("Segment video preview skipped: %s", exc)
 
-        if clear_vram_between_segments:
-            cleanup_segment_vram(enabled=True)
+        if vram_clean_on:
+            cleanup_segment_vram(enabled=True, unload_models=vram_unload_models)
 
         reports.append(
             f"Segment {ui_idx + 1}/{timeline_seg_total}: {task_hint} "
@@ -1041,11 +1096,26 @@ def execute_director_plan_core(
 
     for seg in all_segments:
         if seg.index in run_indices:
-            if clear_vram_between_segments and segment_outputs:
-                cleanup_segment_vram(enabled=True)
+            if vram_clean_on and segment_outputs:
+                cleanup_segment_vram(enabled=True, unload_models=vram_unload_models)
             chunk, audio_dict, pre_chunk = _run_one_segment(
                 seg, progress_index=progress_pos[seg.index]
             )
+            if stream_export:
+                # 流式导出：最终成片由磁盘缓存流式渲染，无需全片拼接。写完缓存后
+                # 只保留紧邻前一段的解码帧 / 音频（motion context 只读 prev_idx），
+                # 其余立即释放，避免全片解码帧常驻内存。
+                stream_frame_counts.append(int(chunk.shape[0]))
+                _prune_completed_tensors(
+                    completed_outputs, keep=seg.index, label="decoded outputs"
+                )
+                _prune_completed_tensors(
+                    completed_pre_refine, keep=seg.index, label="pre-refine outputs"
+                )
+                for idx in [i for i in completed_audios if i != seg.index]:
+                    del completed_audios[idx]
+                continue
+
             segment_outputs.append(chunk)
             segment_pre_refine.append(pre_chunk)
             segment_audios.append(audio_dict or {})
@@ -1056,6 +1126,9 @@ def execute_director_plan_core(
             continue
 
         if plan.export_mode != "all":
+            continue
+        if stream_export:
+            # 未勾选段只依赖磁盘缓存（流式渲染直接读盘），无需加载进内存。
             continue
 
         # Prefer exact cache; fall back to stale disk render (never gray gen canvas).
@@ -1130,10 +1203,11 @@ def execute_director_plan_core(
             "(勾选重跑或先全跑可补上)."
         )
 
-    if not output_chunks and not segment_outputs:
+    if not output_chunks and not segment_outputs and not completed_outputs:
         raise ValueError("Director plan produced no segments.")
 
     report_director_finish(node_id, seg_total)
+    # 流式导出无需内存拼接；保留空列表即可，末尾 stream_render_from_cache 直接读盘。
     export_chunks = output_chunks if output_chunks else segment_outputs
     export_pre_chunks = output_pre_chunks if output_pre_chunks else segment_pre_refine
     export_segments = (
@@ -1176,6 +1250,8 @@ def execute_director_plan_core(
             for pos, idx in enumerate(run_list)
         ]
         export_frame_counts = [int(t.shape[0]) for t in segment_outputs]
+    if stream_export:
+        export_frame_counts = stream_frame_counts
     video_path = ""
     if stream_export:
         # 流式导出（防 OOM）：从磁盘分段缓存流式渲染成片，跳过全量拼接。
