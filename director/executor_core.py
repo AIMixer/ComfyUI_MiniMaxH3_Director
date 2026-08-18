@@ -1218,6 +1218,8 @@ def execute_director_plan_core(
     # Prefer completed_outputs: motion-context may have trimmed a prev export
     # tail (phase-align pin gap) after that chunk was already appended here.
     for i, seg in enumerate(export_segments):
+        if i >= len(export_chunks):
+            break
         patched = completed_outputs.get(seg.index)
         if patched is not None:
             export_chunks[i] = patched
