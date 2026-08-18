@@ -1889,9 +1889,39 @@ export function renderImageBatchGroups(editor, { lightweight = false } = {}) {
         applyBatchFollowVisibility(editor);
         return;
     }
+    // Protect the actively-edited duration input: save its raw value before rebuild,
+    // skip flushing it (so segment data isn't corrupted mid-keystroke), then restore
+    // the user's typed value on the newly created input after rebuild.
+    let focusedDurIdx = -1;
+    let focusedDurRaw = "";
+    let focusedDurSelStart = -1;
+    let focusedDurSelEnd = -1;
+    const focusedEl = document.activeElement;
+    if (focusedEl?.tagName === "INPUT" && focusedEl?.getAttribute("data-batch-sec-index") != null
+        && list.contains(focusedEl)) {
+        focusedDurIdx = parseInt(focusedEl.getAttribute("data-batch-sec-index"), 10);
+        focusedDurRaw = focusedEl.value;
+        focusedDurSelStart = focusedEl.selectionStart;
+        focusedDurSelEnd = focusedEl.selectionEnd;
+        // Cancel any pending debounce so flushBatchDurationInputs won't fire.
+        clearTimeout(focusedEl._t);
+        focusedEl._t = null;
+    }
     // Recover drafts before wiping the DOM (duration flush also flushes prompts).
     flushBatchPromptInputs(editor);
-    flushBatchDurationInputs(editor);
+    if (focusedDurIdx < 0) {
+        // No duration input is being edited — flush normally.
+        flushBatchDurationInputs(editor);
+    } else {
+        // A duration input is focused — skip flush to preserve the user's raw typed value.
+        // Clear pending debounce timers on all other duration inputs.
+        for (const inp of list.querySelectorAll("input[data-batch-sec-index]")) {
+            if (parseInt(inp.getAttribute("data-batch-sec-index"), 10) !== focusedDurIdx) {
+                clearTimeout(inp._t);
+                inp._t = null;
+            }
+        }
+    }
     stopAllPlayers(list);
     const key = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
     const variant = imageBatchVariant(key);
@@ -2180,6 +2210,17 @@ export function renderImageBatchGroups(editor, { lightweight = false } = {}) {
     refreshPromptTokenEditors(list);
     // 跟随片段模式：只显示选中片段对应的素材组，其余隐藏。
     applyBatchFollowVisibility(editor);
+    // Restore the actively-edited duration input so the user can keep typing seamlessly.
+    if (focusedDurIdx >= 0) {
+        const newInput = list.querySelector(`input[data-batch-sec-index="${focusedDurIdx}"]`);
+        if (newInput) {
+            newInput.value = focusedDurRaw;
+            newInput.focus();
+            if (focusedDurSelStart >= 0) {
+                try { newInput.setSelectionRange(focusedDurSelStart, focusedDurSelEnd); } catch (_) {}
+            }
+        }
+    }
     // Batch list is scroll-capped; refresh node/widget height after card count changes.
     editor.updateDomWidgetHeight?.();
 }
