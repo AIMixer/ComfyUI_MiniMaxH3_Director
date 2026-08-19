@@ -113,6 +113,21 @@ def _join_av(video_latent: dict, audio_latent, template: dict) -> dict:
         return out
 
 
+def _latent_upscale_video(video_latent: dict, width: int, height: int) -> dict:
+    """Upscale the video latent in latent space (no VAE round trip).
+
+    Audio latent is intentionally left untouched by the caller. Reuses ComfyUI's
+    LatentUpscale (bilinear, spatial-only; H3 video latent is (B, C, T, H, W)).
+    """
+    from nodes import LatentUpscale
+
+    tw, th = ensure_minimax_canvas(int(width), int(height))
+    out = LatentUpscale().upscale(video_latent, "bilinear", tw, th, "disabled")
+    if isinstance(out, (tuple, list)):
+        return out[0]
+    return out
+
+
 def _scale_images(images: torch.Tensor, width: int, height: int) -> torch.Tensor:
     from comfy.utils import common_upscale
 
@@ -275,6 +290,7 @@ def apply_segment_refine(
     first_pass_images: torch.Tensor | None = None,
     trim_frames: int = 0,
     on_pass: RefinePassCallback | None = None,
+    sampler_obj=None,
 ) -> tuple[dict, str]:
     """Run optional refine/upscale second sample. Never raises — returns first-pass on failure.
 
@@ -322,61 +338,90 @@ def apply_segment_refine(
             if on_phase:
                 on_phase("upscale", 0)
             video_latent, audio_latent = _split_av(work)
-            if first_pass_images is not None:
-                frames = first_pass_images
-            else:
-                frames = _decode_video(vae, video_latent)
             method = pack.get("upscale_method") or "lanczos"
-            if method == "nvidia_rtx_vsr":
-                how = "nvidia_rtx_vsr"
-            elif pack.get("has_upscale_model"):
-                how = "upscale_model"
+            if method == "latent":
+                log.info(
+                    "Director upscale: latent-space × → %d×%d",
+                    int(tw),
+                    int(th),
+                )
+                up_video = _latent_upscale_video(video_latent, tw, th)
+                work = _join_av(up_video, audio_latent, work)
+                if pin_frames > 0:
+                    try:
+                        frames = _decode_video(vae, up_video)
+                        refine_positive, pinned = _repin_after_upscale(
+                            refine_positive,
+                            work,
+                            vae=vae,
+                            prefix_frames=frames,
+                            trim_frames=pin_frames,
+                            task_key=task_key,
+                        )
+                        if pinned:
+                            note_parts.append(f"re-pin {pin_frames}f")
+                    except Exception as exc:
+                        log.warning(
+                            "Segment %s refine latent upscale re-pin failed (%s); "
+                            "second sample continues without a new pin.",
+                            int(getattr(seg, "index", 0)) + 1,
+                            exc,
+                        )
+                note_parts.append(f"{tw}×{th} latent")
             else:
-                how = "lanczos"
-            log.info(
-                "Director upscale: %d frames via %s → %d×%d",
-                int(frames.shape[0]),
-                how,
-                tw,
-                th,
-            )
-            frames = upscale_image_batch(
-                frames,
-                width=tw,
-                height=th,
-                upscale_model=pack.get("upscale_model"),
-                upscale_method=method,
-                on_phase=on_phase,
-            )
-            encoded = _encode_video(vae, frames)
-            work = _join_av(encoded, audio_latent, work)
-            if pin_frames > 0:
-                try:
-                    refine_positive, pinned = _repin_after_upscale(
-                        refine_positive,
-                        work,
-                        vae=vae,
-                        prefix_frames=frames,
-                        trim_frames=pin_frames,
-                        task_key=task_key,
-                    )
-                    if pinned:
-                        note_parts.append(f"re-pin {pin_frames}f")
-                except Exception as exc:
-                    log.warning(
-                        "Segment %s refine upscale re-pin failed (%s); "
-                        "second sample continues without a new pin.",
-                        int(getattr(seg, "index", 0)) + 1,
-                        exc,
-                    )
-            note_parts.append(f"{tw}×{th}")
-            method = pack.get("upscale_method") or "lanczos"
-            if method == "nvidia_rtx_vsr":
-                note_parts.append("nvidia_rtx_vsr")
-            elif pack.get("has_upscale_model"):
-                note_parts.append("upscale_model")
-            else:
-                note_parts.append("lanczos")
+                if first_pass_images is not None:
+                    frames = first_pass_images
+                else:
+                    frames = _decode_video(vae, video_latent)
+                if method == "nvidia_rtx_vsr":
+                    how = "nvidia_rtx_vsr"
+                elif pack.get("has_upscale_model"):
+                    how = "upscale_model"
+                else:
+                    how = "lanczos"
+                log.info(
+                    "Director upscale: %d frames via %s → %d×%d",
+                    int(frames.shape[0]),
+                    how,
+                    tw,
+                    th,
+                )
+                frames = upscale_image_batch(
+                    frames,
+                    width=tw,
+                    height=th,
+                    upscale_model=pack.get("upscale_model"),
+                    upscale_method=method,
+                    on_phase=on_phase,
+                )
+                encoded = _encode_video(vae, frames)
+                work = _join_av(encoded, audio_latent, work)
+                if pin_frames > 0:
+                    try:
+                        refine_positive, pinned = _repin_after_upscale(
+                            refine_positive,
+                            work,
+                            vae=vae,
+                            prefix_frames=frames,
+                            trim_frames=pin_frames,
+                            task_key=task_key,
+                        )
+                        if pinned:
+                            note_parts.append(f"re-pin {pin_frames}f")
+                    except Exception as exc:
+                        log.warning(
+                            "Segment %s refine upscale re-pin failed (%s); "
+                            "second sample continues without a new pin.",
+                            int(getattr(seg, "index", 0)) + 1,
+                            exc,
+                        )
+                note_parts.append(f"{tw}×{th}")
+                if method == "nvidia_rtx_vsr":
+                    note_parts.append("nvidia_rtx_vsr")
+                elif pack.get("has_upscale_model"):
+                    note_parts.append("upscale_model")
+                else:
+                    note_parts.append("lanczos")
             if on_phase:
                 on_phase("upscale", 1)
 
@@ -404,6 +449,7 @@ def apply_segment_refine(
                 shift_video=shift_video,
                 shift_audio=shift_audio,
                 denoise=denoise,
+                sampler_obj=sampler_obj,
                 on_phase=None,
                 on_step_preview=on_step_preview,
                 preview_every=(

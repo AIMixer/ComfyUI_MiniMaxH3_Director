@@ -47,6 +47,8 @@ class MiniMaxH3DirectorRefine:
                         "tooltip": (
                             "仅 mode=upscale。"
                             "lanczos = 插值；若接了放大模型则先跑模型再收到目标尺寸。"
+                            "latent = 潜空间放大（视频 latent 直接放大，音频不动），"
+                            "不经 VAE 解码，细节更真，推荐。"
                             "nvidia_rtx_vsr = NVIDIA RTX Video Super Resolution，按目标宽高出图"
                             "（需 nvidia-vfx + NVIDIA GPU，与 KJNodes Resize 同类）。"
                         ),

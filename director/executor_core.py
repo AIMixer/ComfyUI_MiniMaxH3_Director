@@ -299,6 +299,10 @@ def execute_director_plan_core(
     scheduler: str = "simple",
     shift_video: float = 12.0,
     shift_audio: float = 3.0,
+    sampler_obj=None,
+    sigmas=None,
+    sigma_refine: bool = False,
+    sigma_tail_steps: int = 1,
     clear_vram_between_segments: bool = True,
     stream_export: bool = False,
 ) -> tuple[
@@ -355,6 +359,12 @@ def execute_director_plan_core(
     skipped_no_cache: list[int] = []
     stream_frame_counts: list[int] = []
     reports: list[str] = [plan_summary(plan), "", "Execution path: ComfyUI official MiniMax H3"]
+    if sampler_obj is not None:
+        reports.append("Sampling: external SAMPLER node overrides sampler.")
+    if sigmas is not None:
+        reports.append("Sampling: external SIGMAS node overrides scheduler (re-mapped through sigma shift).")
+    if sigma_refine:
+        reports.append(f"Sampling: Sigma 精修 ON (+{max(0, int(sigma_tail_steps))} low-sigma tail step(s)).")
     # One timestamp folder per execute so all segments of this run stay together.
     mp4_run_dir = new_segment_mp4_run_dir(plan)
     if mp4_run_dir is not None:
@@ -860,6 +870,10 @@ def execute_director_plan_core(
             scheduler=scheduler,
             shift_video=shift_video,
             shift_audio=shift_audio,
+            sampler_obj=sampler_obj,
+            sigmas=sigmas,
+            sigma_refine=sigma_refine,
+            sigma_tail_steps=sigma_tail_steps,
             on_phase=_report_sample_phase,
             on_step_preview=_report_step_preview if live_tae_preview else None,
             preview_every=_live_preview_every(steps),
@@ -964,6 +978,7 @@ def execute_director_plan_core(
             first_pass_images=upscale_frames,
             trim_frames=trim_frames,
             on_pass=_export_refine_pass if mp4_run_dir is not None else None,
+            sampler_obj=sampler_obj,
         )
         del upscale_frames
         if first_pass_gpu is not None:

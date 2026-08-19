@@ -72,7 +72,7 @@ const ASPECT_CHOICES = new Set([
     "21:9 (超宽)",
 ]);
 
-const UPSCALE_METHOD_VALUES = new Set(["lanczos", "nvidia_rtx_vsr"]);
+const UPSCALE_METHOD_VALUES = new Set(["lanczos", "nvidia_rtx_vsr", "latent"]);
 const SEED_MODE_VALUES = new Set(["inherit", "offset"]);
 
 function looksLikeUpscaleMethod(value) {

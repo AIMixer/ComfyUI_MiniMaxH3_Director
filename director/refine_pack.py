@@ -15,7 +15,7 @@ MMX_DIR_REFINE = "MMX_DIR_REFINE"
 
 REFINE_MODES = ("refine", "upscale")
 SEED_MODES = ("inherit", "offset")
-UPSCALE_METHODS = ("lanczos", "nvidia_rtx_vsr")
+UPSCALE_METHODS = ("lanczos", "nvidia_rtx_vsr", "latent")
 MAX_REFINE_PASSES = 9999
 
 FOLLOW_DIRECTOR_ASPECT = "跟随导演台"
