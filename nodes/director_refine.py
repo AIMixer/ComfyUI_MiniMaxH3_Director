@@ -51,9 +51,9 @@ class MiniMaxH3DirectorRefine:
                     {
                         "default": "h3_latent",
                         "tooltip": (
-                            "仅 mode=upscale / latent_upscale。"
-                            "h3_latent = 用下方 3D 权重放大 H3 视频 latent（推荐，再二采）。"
-                            "latent = 潜空间双线性放大视频 latent（不经 VAE 解码，音频不动）。"
+                            "仅 mode=upscale。"
+                            "h3_latent = 先按目标画布放大 H3 视频 latent，再二采"
+                            "（下方选 3D 权重）。"
                             "lanczos = 像素插值；可另接 upscale_model（RealESRGAN 等）。"
                             "nvidia_rtx_vsr = NVIDIA RTX Video Super Resolution"
                             "（需 nvidia-vfx + NVIDIA GPU）。"

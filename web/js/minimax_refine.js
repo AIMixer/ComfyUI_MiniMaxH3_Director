@@ -72,8 +72,7 @@ const ASPECT_CHOICES = new Set([
     "21:9 (超宽)",
 ]);
 
-const UPSCALE_METHOD_VALUES = new Set(["lanczos", "nvidia_rtx_vsr", "latent", "h3_latent"]);
-const SEED_MODE_VALUES = new Set(["inherit", "offset"]);
+const UPSCALE_METHOD_VALUES = new Set(["lanczos", "nvidia_rtx_vsr", "h3_latent"]);
 const SAMPLER_HINTS = new Set([
     "euler", "euler_ancestral", "heun", "heunpp2", "dpm_2", "dpm_2_ancestral",
     "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_sde",

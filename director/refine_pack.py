@@ -15,7 +15,7 @@ MMX_DIR_REFINE = "MMX_DIR_REFINE"
 
 REFINE_MODES = ("refine", "upscale", "latent_upscale")
 SEED_MODES = ("inherit", "offset")
-UPSCALE_METHODS = ("lanczos", "nvidia_rtx_vsr", "latent", "h3_latent")
+UPSCALE_METHODS = ("lanczos", "nvidia_rtx_vsr", "h3_latent")
 MAX_REFINE_PASSES = 9999
 # 海螺参考生视频二采：ManualSigmas 4 个数 = euler 3 步。
 HAILUO_REFINE_SIGMAS = (0.85, 0.7250, 0.4219, 0.0)
@@ -420,14 +420,6 @@ def refine_passes_for(pack: dict[str, Any] | None) -> int:
     except (TypeError, ValueError):
         n = 1
     return max(1, min(MAX_REFINE_PASSES, n))
-
-
-def refine_steps_for(pack: dict[str, Any], first_steps: int) -> int:
-    """Step count when no SIGMAS is wired (legacy step-based refine path)."""
-    n = int((pack or {}).get("steps") or 0)
-    if n > 0:
-        return n
-    return max(8, int(round(int(first_steps) * 0.4)))
 
 
 def refine_model_for(pack: dict[str, Any] | None, fallback):

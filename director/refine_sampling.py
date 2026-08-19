@@ -16,7 +16,7 @@ from .refine_pack import (
     refine_passes_for,
     refine_seed_for,
     refine_sigmas_override,
-    refine_steps_for,
+    refine_uses_h3_latent,
 )
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.refine")
@@ -119,21 +119,6 @@ def _join_av(video_latent: dict, audio_latent, template: dict) -> dict:
         else:
             out["samples"] = v
         return out
-
-
-def _latent_upscale_video(video_latent: dict, width: int, height: int) -> dict:
-    """Upscale the video latent in latent space (no VAE round trip).
-
-    Audio latent is intentionally left untouched by the caller. Reuses ComfyUI's
-    LatentUpscale (bilinear, spatial-only; H3 video latent is (B, C, T, H, W)).
-    """
-    from nodes import LatentUpscale
-
-    tw, th = ensure_minimax_canvas(int(width), int(height))
-    out = LatentUpscale().upscale(video_latent, "bilinear", tw, th, "disabled")
-    if isinstance(out, (tuple, list)):
-        return out[0]
-    return out
 
 
 def _scale_images(images: torch.Tensor, width: int, height: int) -> torch.Tensor:
@@ -449,11 +434,9 @@ def apply_segment_refine(
     shift_audio: float,
     on_phase: PhaseCallback | None = None,
     on_step_preview: StepPreviewCallback | None = None,
-    preview_every: int | None = None,
     first_pass_images: torch.Tensor | None = None,
     trim_frames: int = 0,
     on_pass: RefinePassCallback | None = None,
-    sampler_obj=None,
 ) -> tuple[dict, str]:
     """Run optional refine/upscale second sample. Never raises — returns first-pass on failure.
 
@@ -491,43 +474,7 @@ def apply_segment_refine(
     try:
         if refine_needs_canvas(pack):
             tw, th = _resolve_refine_canvas(plan, pack)
-            method = (pack.get("upscale_method") or "h3_latent").strip().lower()
-            if method == "latent":
-                if on_phase:
-                    on_phase("upscale", 0)
-                video_latent, audio_latent = _split_av(work)
-                log.info(
-                    "Director upscale: latent-space × → %d×%d",
-                    int(tw),
-                    int(th),
-                )
-                up_video = _latent_upscale_video(video_latent, tw, th)
-                work = _join_av(up_video, audio_latent, work)
-                if pin_frames > 0:
-                    try:
-                        frames = _decode_video(vae, up_video)
-                        refine_positive, pinned = _repin_after_upscale(
-                            refine_positive,
-                            work,
-                            vae=vae,
-                            prefix_frames=frames,
-                            trim_frames=pin_frames,
-                            task_key=task_key,
-                        )
-                        if pinned:
-                            note_parts.append(f"re-pin {pin_frames}f")
-                    except Exception as exc:
-                        log.warning(
-                            "Segment %s refine latent upscale re-pin failed (%s); "
-                            "second sample continues without a new pin.",
-                            int(getattr(seg, "index", 0)) + 1,
-                            exc,
-                        )
-                note_parts.append(f"{tw}×{th} latent")
-                if on_phase:
-                    on_phase("upscale", 1)
-                last_ok = work
-            elif method == "h3_latent":
+            if refine_uses_h3_latent(pack):
                 work, refine_positive, extra = _apply_h3_latent_upscale(
                     work,
                     pack,
@@ -551,6 +498,7 @@ def apply_segment_refine(
                     frames = first_pass_images
                 else:
                     frames = _decode_video(vae, video_latent)
+                method = pack.get("upscale_method") or "h3_latent"
                 pixel_model = pack.get("upscale_model")
                 if method == "nvidia_rtx_vsr":
                     how = "nvidia_rtx_vsr"
@@ -607,19 +555,14 @@ def apply_segment_refine(
 
         wired_sigmas = bool(pack.get("has_sigmas_tensor") or pack.get("sigmas_tensor") is not None)
         sigma_list = refine_sigmas_override(pack)
-        sigma_sampler = str(pack.get("sampler") or "euler")
-        if sigma_list is not None:
-            sigma_steps = max(1, len(sigma_list) - 1)
-            refine_denoise = 1.0
-            preview_mode = -1
-            note_parts.append(
-                f"{'sigmas' if wired_sigmas else 'sigma'} {sigma_sampler} {sigma_steps}-step"
+        if sigma_list is None:
+            raise ValueError(
+                "Refine 二采需要把 BasicScheduler 或 ManualSigmas 接到 sigmas 口。"
             )
-        else:
-            sigma_steps = refine_steps_for(pack, first_steps)
-            refine_denoise = float(pack.get("denoise") or 0.25)
-            preview_mode = 1
-            note_parts.append(f"steps={sigma_steps} denoise={refine_denoise:.2f}")
+        sigma_sampler = str(pack.get("sampler") or "euler")
+        sigma_steps = max(1, len(sigma_list) - 1)
+        how = "sigmas wired" if wired_sigmas else f"sigma {sigma_sampler}"
+        note_parts.append(f"{how} {sigma_steps}-step")
         if refine_model is not model and sigma_steps <= 4:
             log.warning(
                 "Refine sigma pass is short. "
@@ -630,9 +573,11 @@ def apply_segment_refine(
         # Pass 1 samples after optional upscale; later passes are same-canvas refine only.
         for i in range(n_passes):
             log.info(
-                "Director refine pass %d/%d (steps=%d%s)",
+                "Director refine pass %d/%d (%s %s %d-step%s)",
                 i + 1,
                 n_passes,
+                "sigmas wired" if wired_sigmas else "sigma",
+                sigma_sampler,
                 sigma_steps,
                 ", custom model" if refine_model is not model else "",
             )
@@ -650,11 +595,10 @@ def apply_segment_refine(
                 scheduler=scheduler,
                 shift_video=shift_video,
                 shift_audio=shift_audio,
-                denoise=refine_denoise,
-                sampler_obj=sampler_obj,
+                denoise=1.0,
                 on_phase=None,
                 on_step_preview=on_step_preview,
-                preview_every=preview_every if preview_every is not None else preview_mode,
+                preview_every=-1,
                 phase_name="refine",
                 sigmas=sigma_list,
                 apply_shift=True,

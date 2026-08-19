@@ -150,7 +150,6 @@ class DirectorPlan:
     continuity_overlap_frames: int = 0
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
     refine: dict | None = None
-    sampling: dict | None = None
     # 只勾「二采」（不勾一采）：skip first-pass sampling for selected segments,
     # reuse the cached AV latent on disk and run only the second-pass (refine).
     refine_only: bool = False
@@ -818,15 +817,6 @@ def plan_summary(plan: DirectorPlan) -> str:
             refine_line = None
         if refine_line:
             lines.append(refine_line)
-        sampling_line = None
-        try:
-            from .sampling_pack import sampling_report_line
-
-            sampling_line = sampling_report_line(plan)
-        except Exception:
-            sampling_line = None
-        if sampling_line:
-            lines.append(sampling_line)
         if plan.continuity_enabled:
             pinned = [
                 seg.index + 1
@@ -922,15 +912,6 @@ def plan_summary(plan: DirectorPlan) -> str:
         refine_line = None
     if refine_line:
         lines.append(refine_line)
-    sampling_line = None
-    try:
-        from .sampling_pack import sampling_report_line
-
-        sampling_line = sampling_report_line(plan)
-    except Exception:
-        sampling_line = None
-    if sampling_line:
-        lines.append(sampling_line)
     if plan.run_indices is not None:
         selected = sorted(plan.run_indices)
         skipped = [i + 1 for i in range(plan.segment_count) if i not in plan.run_indices]

@@ -76,10 +76,8 @@ def segment_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str,
         "continuity_pipeline": CONTINUITY_PIPELINE_ID,
     }
     from .refine_pack import refine_fingerprint
-    from .sampling_pack import sampling_fingerprint
 
     fp.update(refine_fingerprint(plan))
-    fp.update(sampling_fingerprint(plan))
     return fp
 
 

@@ -107,17 +107,6 @@ class MiniMaxH3Director:
                         ),
                     },
                 ),
-                "sampling": (
-                    "MMX_DIR_SAMPLING",
-                    {
-                        "tooltip": (
-                            "Optional Sampling node (MiniMax H3 Director Sampling). When connected, "
-                            "it overrides steps / sampler / scheduler / cfg / seed / shift / sigma-refine. "
-                            "Its optional SAMPLER / SIGMAS ports accept KSamplerSelect / BasicScheduler "
-                            "or any third-party sampler / scheduler node. Unconnected = this node's widgets."
-                        ),
-                    },
-                ),
                 "bd_grp_advanced": ("BDGROUP", {"default": "高级采样"}),
                 "steps": (
                     "INT",
@@ -199,7 +188,6 @@ class MiniMaxH3Director:
         i2v_groups=None,
         r2v_groups=None,
         refine=None,
-        sampling=None,
         steps=25,
         sampler="res_multistep",
         scheduler="simple",
@@ -234,7 +222,6 @@ class MiniMaxH3Director:
             i2v_groups=i2v_groups,
             r2v_groups=r2v_groups,
             refine=refine,
-            sampling=sampling,
         )
         plan.refine_only = (not bool(run_first_pass)) and bool(run_refine)
         plan.export_only = (not bool(run_first_pass)) and (not bool(run_refine))
@@ -249,33 +236,6 @@ class MiniMaxH3Director:
             log.warning("Neither export checked — defaulting to normal export.")
             run_normal_export = True
 
-        from ..director.sampling_pack import (
-            sampling_cfg_for,
-            sampling_sampler_name_for,
-            sampling_sampler_obj_for,
-            sampling_scheduler_for,
-            sampling_seed_for,
-            sampling_shift_for,
-            sampling_sigma_refine_for,
-            sampling_sigma_tail_for,
-            sampling_sigmas_for,
-            sampling_steps_for,
-        )
-
-        s_pack = getattr(plan, "sampling", None)
-        eff_steps = sampling_steps_for(s_pack, steps)
-        eff_sampler = sampling_sampler_name_for(s_pack, sampler)
-        eff_scheduler = sampling_scheduler_for(s_pack, scheduler)
-        eff_cfg = sampling_cfg_for(s_pack, cfg)
-        eff_seed = sampling_seed_for(s_pack, seed)
-        eff_shift_video, eff_shift_audio = sampling_shift_for(
-            s_pack, shift_video, shift_audio
-        )
-        eff_sampler_obj = sampling_sampler_obj_for(s_pack)
-        eff_sigmas = sampling_sigmas_for(s_pack)
-        eff_sigma_refine = sampling_sigma_refine_for(s_pack, False)
-        eff_sigma_tail = sampling_sigma_tail_for(s_pack, 1)
-
         stream_export = bool(run_stream_export)
 
         combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, video_path = (
@@ -286,17 +246,13 @@ class MiniMaxH3Director:
                 vae=video_vae,
                 audio_vae=audio_vae,
                 clip=clip,
-                cfg=eff_cfg,
-                seed=eff_seed,
-                steps=eff_steps,
-                sampler=eff_sampler,
-                scheduler=eff_scheduler,
-                shift_video=eff_shift_video,
-                shift_audio=eff_shift_audio,
-                sampler_obj=eff_sampler_obj,
-                sigmas=eff_sigmas,
-                sigma_refine=eff_sigma_refine,
-                sigma_tail_steps=eff_sigma_tail,
+                cfg=cfg,
+                seed=seed,
+                steps=steps,
+                sampler=sampler,
+                scheduler=scheduler,
+                shift_video=shift_video,
+                shift_audio=shift_audio,
                 clear_vram_between_segments=clear_vram_between_segments,
                 stream_export=stream_export,
             )
