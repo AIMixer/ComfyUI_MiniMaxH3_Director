@@ -13,10 +13,110 @@ from ..lib.image_prep import MINIMAX_CANVAS_STRIDE, ensure_minimax_canvas
 
 MMX_DIR_REFINE = "MMX_DIR_REFINE"
 
-REFINE_MODES = ("refine", "upscale")
+REFINE_MODES = ("refine", "upscale", "latent_upscale")
 SEED_MODES = ("inherit", "offset")
-UPSCALE_METHODS = ("lanczos", "nvidia_rtx_vsr", "latent")
+UPSCALE_METHODS = ("lanczos", "nvidia_rtx_vsr", "latent", "h3_latent")
 MAX_REFINE_PASSES = 9999
+# 海螺参考生视频二采：ManualSigmas 4 个数 = euler 3 步。
+HAILUO_REFINE_SIGMAS = (0.85, 0.7250, 0.4219, 0.0)
+DEFAULT_REFINE_SIGMA_SAMPLER = "euler"
+
+
+def parse_refine_sigmas(raw: Any, *, fallback: bool = False) -> tuple[float, ...]:
+    """Parse ManualSigmas text or a BasicScheduler SIGMAS tensor."""
+    vals: list[float] = []
+    from_tensor = is_refine_sigmas_tensor(raw)
+    if from_tensor:
+        try:
+            vals = [float(x) for x in raw.detach().float().cpu().reshape(-1).tolist()]
+        except Exception:
+            vals = []
+    elif isinstance(raw, (list, tuple)):
+        for part in raw:
+            try:
+                vals.append(float(part))
+            except (TypeError, ValueError):
+                continue
+    else:
+        text = str(raw or "").replace(";", ",").replace("\n", ",")
+        for part in text.split(","):
+            token = str(part).strip()
+            if not token:
+                continue
+            try:
+                vals.append(float(token))
+            except (TypeError, ValueError):
+                continue
+    if len(vals) < 2:
+        if not fallback:
+            raise ValueError(
+                "Refine SIGMAS 至少需要 2 个数（步数 + 结尾 0）。"
+                "请检查 BasicScheduler 的 steps / denoise。"
+            )
+        return HAILUO_REFINE_SIGMAS
+    if abs(vals[-1]) > 1e-8:
+        vals.append(0.0)
+    return tuple(vals)
+
+
+def is_refine_sigmas_tensor(raw: Any) -> bool:
+    return raw is not None and not isinstance(raw, (str, bytes, list, tuple)) and hasattr(raw, "reshape")
+
+
+def refine_sigmas_override(pack: dict[str, Any] | None):
+    """Wired BasicScheduler / ManualSigmas tensor. No text fallback."""
+    pack = pack or {}
+    tensor = pack.get("sigmas_tensor")
+    if tensor is None and is_refine_sigmas_tensor(pack.get("sigmas")):
+        tensor = pack.get("sigmas")
+    if tensor is None:
+        return None
+    return parse_refine_sigmas(tensor, fallback=False)
+
+
+def resolve_latent_upscale_ref(raw: Any) -> tuple[Any, str]:
+    """Return (loaded_module_or_None, filename)."""
+    if raw is None or raw is False:
+        return None, ""
+    if isinstance(raw, str):
+        name = raw.strip()
+        return None, "" if name.startswith("(") else name
+    if isinstance(raw, dict):
+        name = str(raw.get("name") or raw.get("model_name") or "").strip()
+        if name.startswith("("):
+            name = ""
+        return raw.get("model"), name
+    name = str(getattr(raw, "name", None) or getattr(raw, "_h3_name", None) or "").strip()
+    if hasattr(raw, "parameters") or hasattr(raw, "model"):
+        return raw, name or type(raw).__name__
+    return None, name
+
+
+def refine_needs_canvas(pack: dict[str, Any] | None) -> bool:
+    mode = str((pack or {}).get("mode") or "").strip().lower()
+    return mode in {"upscale", "latent_upscale"}
+
+
+def refine_uses_h3_latent(pack: dict[str, Any] | None) -> bool:
+    pack = pack or {}
+    mode = str(pack.get("mode") or "").strip().lower()
+    if mode == "latent_upscale":
+        return True
+    method = str(pack.get("upscale_method") or "").strip().lower()
+    return mode == "upscale" and method == "h3_latent"
+
+
+def latent_upscale_model_name(pack: dict[str, Any] | None) -> str:
+    pack = pack or {}
+    _model, name = resolve_latent_upscale_ref(
+        pack.get("latent_upscale_ref")
+        if pack.get("latent_upscale_ref") is not None
+        else pack.get("latent_upscale_model")
+    )
+    if name:
+        return name
+    return str(pack.get("h3_latent_model") or "").strip()
+
 
 FOLLOW_DIRECTOR_ASPECT = "跟随导演台"
 CUSTOM_ASPECT_RATIO = "自定义"
@@ -153,8 +253,6 @@ def resolve_refine_target(
 def pack_refine(
     *,
     mode: str = "refine",
-    denoise: float = 0.25,
-    steps: int = 10,
     passes: int = 1,
     seed_mode: str = "inherit",
     aspect_ratio: str = FOLLOW_DIRECTOR_ASPECT,
@@ -164,9 +262,12 @@ def pack_refine(
     target_width: int = 0,
     target_height: int = 0,
     skip_fl2v: bool = True,
-    upscale_method: str = "lanczos",
-    upscale_model=None,
+    upscale_method: str = "h3_latent",
     sample_model=None,
+    latent_upscale_model=None,
+    upscale_model=None,
+    sampler: str = "",
+    sigmas=None,
 ) -> dict[str, Any]:
     mode = str(mode or "refine").strip().lower()
     if mode not in REFINE_MODES:
@@ -174,9 +275,14 @@ def pack_refine(
     seed_mode = str(seed_mode or "inherit").strip().lower()
     if seed_mode not in SEED_MODES:
         seed_mode = "inherit"
-    method = str(upscale_method or "lanczos").strip().lower()
+    method = str(upscale_method or "h3_latent").strip().lower()
     if method not in UPSCALE_METHODS:
-        method = "lanczos"
+        method = "h3_latent"
+    sampler = str(sampler or DEFAULT_REFINE_SIGMA_SAMPLER).strip() or DEFAULT_REFINE_SIGMA_SAMPLER
+    sigma_tensor = sigmas if is_refine_sigmas_tensor(sigmas) else None
+    parsed = (
+        parse_refine_sigmas(sigma_tensor, fallback=False) if sigma_tensor is not None else ()
+    )
     ar = normalize_aspect_ratio(aspect_ratio)
     tw, th = resolve_refine_target(
         aspect_ratio=ar,
@@ -186,11 +292,10 @@ def pack_refine(
         target_width=target_width,
         target_height=target_height,
     )
+    latent_mod, latent_name = resolve_latent_upscale_ref(latent_upscale_model)
     return {
         "enabled": True,
         "mode": mode,
-        "denoise": float(max(0.05, min(0.85, denoise))),
-        "steps": int(max(0, min(200, steps))),
         "passes": refine_passes_for({"passes": passes}),
         "seed_mode": seed_mode,
         "aspect_ratio": ar,
@@ -203,6 +308,16 @@ def pack_refine(
         "has_upscale_model": upscale_model is not None,
         "sample_model": sample_model,
         "has_sample_model": sample_model is not None,
+        "latent_upscale_ref": latent_upscale_model,
+        "latent_upscale_module": latent_mod,
+        "latent_upscale_model": latent_name,
+        "h3_latent_model": latent_name,
+        "has_latent_upscale_model": latent_upscale_model is not None,
+        "sampler": sampler,
+        "sigmas": ",".join(f"{x:g}" for x in parsed),
+        "sigmas_parsed": parsed,
+        "sigmas_tensor": sigma_tensor,
+        "has_sigmas_tensor": sigma_tensor is not None,
     }
 
 
@@ -224,7 +339,7 @@ def normalize_refine_pack(
         mode = "refine"
     ar = normalize_aspect_ratio(raw.get("aspect_ratio"))
     tw, th = int(raw.get("target_width") or 0), int(raw.get("target_height") or 0)
-    if mode == "upscale" and (tw <= 0 or th <= 0):
+    if mode in {"upscale", "latent_upscale"} and (tw <= 0 or th <= 0):
         if not is_follow_director_aspect(ar) and not is_custom_aspect_ratio(ar):
             resolved = resolution_from_selector(ar, raw.get("megapixels") or DEFAULT_UPSCALE_MEGAPIXELS)
             if resolved:
@@ -236,18 +351,34 @@ def normalize_refine_pack(
     seed_mode = str(raw.get("seed_mode") or "inherit").strip().lower()
     if seed_mode not in SEED_MODES:
         seed_mode = "inherit"
-    upscale = raw.get("upscale_model")
-    method = str(raw.get("upscale_method") or "lanczos").strip().lower()
+    method = str(raw.get("upscale_method") or "h3_latent").strip().lower()
     if method not in UPSCALE_METHODS:
-        method = "lanczos"
+        method = "h3_latent"
+    sampler = str(raw.get("sampler") or DEFAULT_REFINE_SIGMA_SAMPLER).strip() or DEFAULT_REFINE_SIGMA_SAMPLER
+    sigma_tensor = raw.get("sigmas_tensor")
+    raw_sigmas = raw.get("sigmas")
+    if sigma_tensor is None and is_refine_sigmas_tensor(raw_sigmas):
+        sigma_tensor = raw_sigmas
+    parsed = raw.get("sigmas_parsed") or ()
+    if sigma_tensor is not None:
+        parsed = parse_refine_sigmas(sigma_tensor, fallback=False)
+    elif parsed:
+        parsed = parse_refine_sigmas(parsed, fallback=False)
+    else:
+        parsed = ()
     sample_model = raw.get("sample_model")
     if sample_model is None:
         sample_model = raw.get("model")
+    latent_raw = raw.get("latent_upscale_ref")
+    if latent_raw is None:
+        latent_raw = raw.get("latent_upscale_model")
+    latent_mod, latent_name = resolve_latent_upscale_ref(latent_raw)
+    if not latent_name:
+        latent_name = str(raw.get("h3_latent_model") or "").strip()
+    upscale = raw.get("upscale_model")
     return {
         "enabled": True,
         "mode": mode,
-        "denoise": float(max(0.05, min(0.85, float(raw.get("denoise") or 0.25)))),
-        "steps": int(max(0, min(200, int(raw.get("steps") or 0)))),
         "passes": refine_passes_for(raw),
         "seed_mode": seed_mode,
         "aspect_ratio": ar,
@@ -260,6 +391,16 @@ def normalize_refine_pack(
         "has_upscale_model": upscale is not None,
         "sample_model": sample_model,
         "has_sample_model": sample_model is not None,
+        "latent_upscale_ref": latent_raw,
+        "latent_upscale_module": latent_mod,
+        "latent_upscale_model": latent_name,
+        "h3_latent_model": latent_name,
+        "has_latent_upscale_model": latent_raw is not None,
+        "sampler": sampler,
+        "sigmas": ",".join(f"{x:g}" for x in parsed),
+        "sigmas_parsed": parsed,
+        "sigmas_tensor": sigma_tensor,
+        "has_sigmas_tensor": sigma_tensor is not None,
     }
 
 
@@ -273,19 +414,20 @@ def refine_will_sample(plan, seg) -> bool:
     return True
 
 
-def refine_steps_for(pack: dict[str, Any], first_steps: int) -> int:
-    n = int(pack.get("steps") or 0)
-    if n > 0:
-        return n
-    return max(8, int(round(int(first_steps) * 0.4)))
-
-
 def refine_passes_for(pack: dict[str, Any] | None) -> int:
     try:
         n = int((pack or {}).get("passes") or 1)
     except (TypeError, ValueError):
         n = 1
     return max(1, min(MAX_REFINE_PASSES, n))
+
+
+def refine_steps_for(pack: dict[str, Any], first_steps: int) -> int:
+    """Step count when no SIGMAS is wired (legacy step-based refine path)."""
+    n = int((pack or {}).get("steps") or 0)
+    if n > 0:
+        return n
+    return max(8, int(round(int(first_steps) * 0.4)))
 
 
 def refine_model_for(pack: dict[str, Any] | None, fallback):
@@ -309,15 +451,19 @@ def refine_fingerprint(plan) -> dict[str, Any]:
     return {
         "refine": True,
         "refine_mode": pack.get("mode") or "refine",
-        "refine_denoise": round(float(pack.get("denoise") or 0), 3),
-        "refine_steps": int(pack.get("steps") or 0),
         "refine_passes": refine_passes_for(pack),
         "refine_seed_mode": pack.get("seed_mode") or "inherit",
         "refine_target": f"{int(pack.get('target_width') or 0)}x{int(pack.get('target_height') or 0)}",
         "refine_aspect": pack.get("aspect_ratio") or FOLLOW_DIRECTOR_ASPECT,
         "refine_megapixels": round(float(pack.get("megapixels") or 0), 3),
-        "refine_upscale_method": pack.get("upscale_method") or "lanczos",
-        "refine_upscale_model": bool(pack.get("has_upscale_model")),
+        "refine_upscale_method": pack.get("upscale_method") or "h3_latent",
+        "refine_upscale_model": bool(pack.get("has_upscale_model") or pack.get("upscale_model") is not None),
+        "refine_latent_upscale_model": latent_upscale_model_name(pack),
+        "refine_sampler": pack.get("sampler") or "",
+        "refine_sigmas": ",".join(f"{x:.4f}" for x in (pack.get("sigmas_parsed") or ()))
+        if pack.get("has_sigmas_tensor") or pack.get("sigmas_tensor") is not None
+        else (pack.get("sigmas") or ""),
+        "refine_sigmas_wired": bool(pack.get("has_sigmas_tensor") or pack.get("sigmas_tensor") is not None),
         "refine_sample_model": bool(pack.get("has_sample_model") or pack.get("sample_model") is not None),
         "refine_skip_fl2v": bool(pack.get("skip_fl2v", True)),
     }
@@ -329,15 +475,18 @@ def refine_report_line(plan) -> str | None:
         return None
     mode = pack.get("mode") or "refine"
     extra = ""
-    if mode == "upscale":
+    if refine_needs_canvas(pack):
         ar = pack.get("aspect_ratio") or FOLLOW_DIRECTOR_ASPECT
-        method = pack.get("upscale_method") or "lanczos"
-        if method == "nvidia_rtx_vsr":
-            how = "nvidia_rtx_vsr"
-        elif pack.get("has_upscale_model"):
-            how = "upscale_model"
+        if refine_uses_h3_latent(pack):
+            how = latent_upscale_model_name(pack) or "h3_latent"
         else:
-            how = "interpolate"
+            method = pack.get("upscale_method") or "h3_latent"
+            if method == "nvidia_rtx_vsr":
+                how = "nvidia_rtx_vsr"
+            elif pack.get("has_upscale_model") or pack.get("upscale_model") is not None:
+                how = "upscale_model"
+            else:
+                how = "lanczos"
         extra = (
             f", {ar} → {int(pack.get('target_width') or 0)}×{int(pack.get('target_height') or 0)}"
             f", {how}"
@@ -347,7 +496,15 @@ def refine_report_line(plan) -> str | None:
     model_note = (
         ", 二采模型" if (pack.get("has_sample_model") or pack.get("sample_model") is not None) else ""
     )
+    wired = bool(pack.get("has_sigmas_tensor") or pack.get("sigmas_tensor") is not None)
+    parsed = pack.get("sigmas_parsed") or ()
+    sampler = pack.get("sampler") or DEFAULT_REFINE_SIGMA_SAMPLER
+    n_steps = max(1, len(parsed) - 1) if parsed else 0
+    if mode == "latent_upscale":
+        return f"Refine: ON ({mode}{model_note}{extra})"
+    how = f"sigmas {sampler}" if wired else "sigmas 未接线"
+    step_note = f" {n_steps}-step" if n_steps else ""
     return (
-        f"Refine: ON ({mode}, denoise={float(pack.get('denoise') or 0):.2f}, "
-        f"steps={int(pack.get('steps') or 0) or 'auto'}{pass_note}{model_note}{extra})"
+        f"Refine: ON ({mode}, {how}{step_note}"
+        f"{pass_note}{model_note}{extra})"
     )

@@ -66,14 +66,23 @@ const MENTION_STYLES = `
 .bd-token{
   display:inline-flex;align-items:center;gap:4px;max-width:100%;
   margin:0 2px;padding:1px 7px 1px 3px;border-radius:999px;vertical-align:baseline;
-  border:1px solid rgba(79,255,143,.35);background:rgba(79,255,143,.08);color:#d8ffe8;
+  border:1.5px solid #3dcc7a;background:rgba(61,204,122,.12);color:#c8ffd9;
   font-size:11px;font-weight:600;line-height:1.4;user-select:none;cursor:default;white-space:nowrap
 }
 .bd-token[contenteditable="false"]{-webkit-user-modify:read-only}
-.bd-token-image{border-color:rgba(79,255,143,.4);background:rgba(79,255,143,.1)}
-.bd-token-video{border-color:rgba(120,180,255,.4);background:rgba(120,180,255,.1);color:#d0e6ff}
-.bd-token-audio{border-color:rgba(255,200,120,.4);background:rgba(255,200,120,.1);color:#ffe8c8}
-.bd-token.is-missing{opacity:.55;border-style:dashed;filter:grayscale(.35)}
+.bd-token.bd-token-image{
+  border-color:#3dcc7a;background:rgba(61,204,122,.14);color:#c8ffd9;
+  box-shadow:0 0 0 1px rgba(61,204,122,.22)
+}
+.bd-token.bd-token-video{
+  border-color:#4d9fff;background:rgba(77,159,255,.16);color:#d4e9ff;
+  box-shadow:0 0 0 1px rgba(77,159,255,.28)
+}
+.bd-token.bd-token-audio{
+  border-color:#e8a23a;background:rgba(232,162,58,.16);color:#ffe6bf;
+  box-shadow:0 0 0 1px rgba(232,162,58,.28)
+}
+.bd-token.is-missing{opacity:.62;border-style:dashed}
 .bd-token.is-missing .bd-token-label{text-decoration:line-through;text-decoration-color:rgba(255,255,255,.35)}
 .bd-token-thumb{
   width:16px;height:16px;border-radius:3px;object-fit:cover;flex-shrink:0;background:#111;border:1px solid rgba(0,0,0,.35)
@@ -82,6 +91,9 @@ const MENTION_STYLES = `
   width:16px;height:16px;border-radius:3px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;
   font-size:10px;line-height:1;background:rgba(0,0,0,.35);color:inherit
 }
+.bd-token-image .bd-token-glyph{background:rgba(61,204,122,.28);color:#8dffb8}
+.bd-token-video .bd-token-glyph{background:rgba(77,159,255,.32);color:#9cc8ff}
+.bd-token-audio .bd-token-glyph{background:rgba(232,162,58,.32);color:#ffd48a}
 .bd-token-label{max-width:7em;overflow:hidden;text-overflow:ellipsis}
 `;
 

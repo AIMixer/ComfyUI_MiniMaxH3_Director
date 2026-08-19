@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import comfy.samplers
+
+from ..director.h3_latent_upscale import list_h3_latent_upscale_models
 from ..director.refine_pack import (
     ASPECT_RATIO_CHOICES,
+    DEFAULT_REFINE_SIGMA_SAMPLER,
     DEFAULT_UPSCALE_MEGAPIXELS,
     FOLLOW_DIRECTOR_ASPECT,
     MAX_REFINE_PASSES,
@@ -21,9 +25,10 @@ _CATEGORY = "MiniMaxH3"
 class MiniMaxH3DirectorRefine:
     """Pack refine/upscale settings. Connect ``refine`` to Director.refine.
 
-    ``refine``: same-resolution second sample (no upscale model).
-    ``upscale``: enlarge to target canvas then second-sample. Optional UPSCALE_MODEL
-    (RealESRGAN etc.); if omitted, frames are interpolated.
+    ``refine``: same-resolution second sample.
+    ``upscale``: enlarge to target canvas then second-sample.
+    ``latent_upscale``: H3 latent enlarge only, no second sample.
+    Second sample uses SIGMAS from BasicScheduler / ManualSigmas.
     """
 
     @classmethod
@@ -37,40 +42,43 @@ class MiniMaxH3DirectorRefine:
                         "tooltip": (
                             "refine = 同分辨率二采（精修）。"
                             "upscale = 先放大到目标画布再二采。"
+                            "latent_upscale = 只放大 H3 latent，不再二采。"
                         ),
                     },
                 ),
                 "upscale_method": (
                     list(UPSCALE_METHODS),
                     {
-                        "default": "lanczos",
+                        "default": "h3_latent",
                         "tooltip": (
-                            "仅 mode=upscale。"
-                            "lanczos = 插值；若接了放大模型则先跑模型再收到目标尺寸。"
-                            "latent = 潜空间放大（视频 latent 直接放大，音频不动），"
-                            "不经 VAE 解码，细节更真，推荐。"
-                            "nvidia_rtx_vsr = NVIDIA RTX Video Super Resolution，按目标宽高出图"
-                            "（需 nvidia-vfx + NVIDIA GPU，与 KJNodes Resize 同类）。"
+                            "仅 mode=upscale / latent_upscale。"
+                            "h3_latent = 用下方 3D 权重放大 H3 视频 latent（推荐，再二采）。"
+                            "latent = 潜空间双线性放大视频 latent（不经 VAE 解码，音频不动）。"
+                            "lanczos = 像素插值；可另接 upscale_model（RealESRGAN 等）。"
+                            "nvidia_rtx_vsr = NVIDIA RTX Video Super Resolution"
+                            "（需 nvidia-vfx + NVIDIA GPU）。"
                         ),
                     },
                 ),
-                "denoise": (
-                    "FLOAT",
+                "latent_upscale_model": (
+                    list_h3_latent_upscale_models(),
                     {
-                        "default": 0.25,
-                        "min": 0.05,
-                        "max": 0.85,
-                        "step": 0.01,
-                        "tooltip": "二采 denoise。默认 0.25；越大改动越大。",
+                        "tooltip": (
+                            "H3 3D latent 放大权重。"
+                            "放到 ComfyUI/models/latent_upscale_models/，"
+                            "文件名含 3d（如 minimax_h3_latent_upscaler_3d_*.safetensors）。"
+                            "mode=latent_upscale，或 upscale + h3_latent 时使用。"
+                        ),
                     },
                 ),
-                "steps": (
-                    "INT",
+                "sampler": (
+                    comfy.samplers.KSampler.SAMPLERS,
                     {
-                        "default": 10,
-                        "min": 0,
-                        "max": 200,
-                        "tooltip": "二采步数。0 = 自动（约导演台 steps 的 40%，最少 8）。",
+                        "default": DEFAULT_REFINE_SIGMA_SAMPLER,
+                        "tooltip": (
+                            "二采采样器。海螺案例用 euler；"
+                            "BasicScheduler 高质量二采常用 res_multistep。"
+                        ),
                     },
                 ),
                 "passes": (
@@ -82,6 +90,7 @@ class MiniMaxH3DirectorRefine:
                         "tooltip": (
                             "精修次数。1 = 一次二采。"
                             "upscale 时只有第 1 次放大，之后都是同分辨率精修。"
+                            "latent_upscale 不二采，此值无效。"
                         ),
                     },
                 ),
@@ -94,6 +103,28 @@ class MiniMaxH3DirectorRefine:
                             "Second-pass UNET (二采模型)。"
                             "不接则用导演台主模型。"
                             "适合一采挂 Turbo LoRA、二采卸掉或换另一套。"
+                        ),
+                    },
+                ),
+                "sigmas": (
+                    "SIGMAS",
+                    {
+                        "forceInput": True,
+                        "tooltip": (
+                            "二采噪声表。接 Comfy 自带 BasicScheduler 或 ManualSigmas。"
+                            "mode=refine / upscale 时必须接线。"
+                            "BasicScheduler 请接和二采相同的 MODEL（导演台主模型或 refine_model）。"
+                            "H3 的 SigmaShift 仍由 Refine 内部套上。"
+                        ),
+                    },
+                ),
+                "upscale_model": (
+                    "UPSCALE_MODEL",
+                    {
+                        "tooltip": (
+                            "可选。用「加载放大模型」接入，例如 RealESRGAN_x2plus。"
+                            "仅 mode=upscale 且 upscale_method=lanczos 时使用。"
+                            "不接则纯 lanczos 插值。选 nvidia_rtx_vsr / h3_latent 时忽略此口。"
                         ),
                     },
                 ),
@@ -110,7 +141,8 @@ class MiniMaxH3DirectorRefine:
                         "default": FOLLOW_DIRECTOR_ASPECT,
                         "tooltip": (
                             "放大目标画布，算法同导演台「输出分辨率」。"
-                            "跟随导演台：按导演台画布比例推 720P 档。"
+                            "导演台是一采分辨率（例如 0.4 MP），这里是放大后的目标"
+                            "（例如 1.0 MP）。跟随导演台：按导演台画布比例推 720P 档。"
                             "比例预设：配合百万像素。"
                             "自定义：直接填宽高（对齐 ×32）。"
                         ),
@@ -156,17 +188,7 @@ class MiniMaxH3DirectorRefine:
                         "tooltip": (
                             "跳过首尾帧（fl2v）镜头的二采/放大。"
                             "二采会改画面，容易把钉死的首尾帧画飘；默认跳过以保护关键帧。"
-                            "关掉则 fl2v 也走精修。"
-                        ),
-                    },
-                ),
-                "upscale_model": (
-                    "UPSCALE_MODEL",
-                    {
-                        "tooltip": (
-                            "可选。用「加载放大模型」接入，例如 RealESRGAN_x2plus。"
-                            "仅 mode=upscale 且 upscale_method=lanczos 时使用。"
-                            "选 nvidia_rtx_vsr 时忽略此口。"
+                            "关掉则 fl2v 也走精修 / latent 放大。"
                         ),
                     },
                 ),
@@ -186,7 +208,9 @@ class MiniMaxH3DirectorRefine:
         "MiniMax H3 Director Refine: connect to Director.refine. "
         "Director.images is the refined / upscaled result; "
         "Director.images_pre_refine is the first-pass video (before second sample). "
-        "Upscale canvas uses the same aspect + megapixels / custom W×H as Director. "
+        "Second sample uses SIGMAS from BasicScheduler / ManualSigmas. "
+        "Upscale / latent_upscale canvas uses the same aspect + megapixels / custom W×H as Director. "
+        "Director first-pass stays at its own resolution; Refine target is the enlarge size. "
         "width / height are the resolved target canvas (×32). "
         "Does not sample by itself — no IMAGE output."
     )
@@ -194,8 +218,8 @@ class MiniMaxH3DirectorRefine:
     def pack(
         self,
         mode="refine",
-        denoise=0.25,
-        steps=10,
+        upscale_method="h3_latent",
+        sampler="",
         passes=1,
         seed_mode="inherit",
         aspect_ratio=FOLLOW_DIRECTOR_ASPECT,
@@ -203,8 +227,10 @@ class MiniMaxH3DirectorRefine:
         width=1280,
         height=720,
         skip_fl2v=True,
-        upscale_method="lanczos",
+        latent_upscale_model=None,
         upscale_model=None,
+        h3_latent_model="",
+        sigmas=None,
         refine_model=None,
         model=None,
         target_width=0,
@@ -234,10 +260,10 @@ class MiniMaxH3DirectorRefine:
             n_passes = int(passes or 1)
         except (TypeError, ValueError):
             n_passes = 1
+        if n_passes < 1:
+            n_passes = 1
         pack = pack_refine(
             mode=mode,
-            denoise=denoise,
-            steps=steps,
             passes=n_passes,
             seed_mode=seed_mode,
             aspect_ratio=aspect_ratio,
@@ -248,8 +274,11 @@ class MiniMaxH3DirectorRefine:
             target_height=target_height,
             skip_fl2v=skip_fl2v,
             upscale_method=upscale_method,
-            upscale_model=upscale_model,
             sample_model=refine_model if refine_model is not None else model,
+            latent_upscale_model=latent_upscale_model if latent_upscale_model is not None else h3_latent_model,
+            upscale_model=upscale_model,
+            sampler=sampler,
+            sigmas=sigmas,
         )
         out_w = int(pack.get("target_width") or 0)
         out_h = int(pack.get("target_height") or 0)

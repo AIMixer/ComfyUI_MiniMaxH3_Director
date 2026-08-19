@@ -12,7 +12,7 @@ from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_e
 from ..lib.task_modes import SUPPORTED_TASK_KEYS
 from ..nodes.conditioning import run_minimax_conditioning
 from .core_sampling import sample_single_stage
-from .refine_pack import refine_passes_for, refine_will_sample
+from .refine_pack import refine_needs_canvas, refine_passes_for, refine_will_sample
 from .refine_sampling import apply_segment_refine
 from .frame_align import minimax_align_frame_count, pad_or_trim_frames
 from .audio_export import (
@@ -1000,7 +1000,7 @@ def execute_director_plan_core(
         pack = getattr(plan, "refine", None)
         upscale_frames = (
             first_pass_gpu
-            if isinstance(pack, dict) and (pack.get("mode") or "") == "upscale"
+            if isinstance(pack, dict) and refine_needs_canvas(pack)
             else None
         )
         if first_pass_gpu is not None and upscale_frames is None:
@@ -1152,6 +1152,8 @@ def execute_director_plan_core(
             pre_frames=pre_chunk,
         )
         n_refine = refine_passes_for(getattr(plan, "refine", None)) if will_refine else 1
+        if isinstance(pack, dict) and (pack.get("mode") or "") == "latent_upscale":
+            n_refine = 1
         if n_refine > 1:
             last_alias = copy_segment_mp4_suffix(
                 mp4_run_dir, plan, seg, dest_suffix=f"p{n_refine}",

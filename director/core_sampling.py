@@ -1,9 +1,11 @@
 """Single-stage sampling for MiniMax H3 (SigmaShift + KSampler).
 
-Supports the official ComfyUI pipeline plus the flexible external-sampling path:
-- ``sampler_obj`` (SAMPLER from KSamplerSelect / third-party nodes) and ``sigmas``
-  (SIGMAS from BasicScheduler / third-party scheduler nodes).
-- ``sigma_refine``: densify the low-sigma tail of the first pass (Sigma 精修).
+Pass ``sigmas`` to override the KSampler schedule (ManualSigmas-style /
+external BasicScheduler SIGMAS). ``sampler_obj`` (SAMPLER from
+KSamplerSelect / third-party nodes) switches to ``sample_custom``.
+``sigma_refine`` densifies the low-sigma tail of the first pass (Sigma 精修).
+``apply_shift=False`` skips ``MiniMaxH3SigmaShift``; Refine still applies it
+so video/audio timesteps match the first pass.
 """
 
 from __future__ import annotations
@@ -135,6 +137,7 @@ def sample_single_stage(
     phase_name: str = "sample",
     sampler_obj=None,
     sigmas=None,
+    apply_shift: bool = True,
     sigma_refine: bool = False,
     sigma_tail_steps: int = 1,
     sigma_tail_frac: float = 0.3,
@@ -149,14 +152,24 @@ def sample_single_stage(
             on_phase(phase, value)
 
     notify(phase_name, 0)
-    shifted = MiniMaxH3SigmaShift.execute(model, float(shift_video), float(shift_audio))
-    model_shifted = _unpack_node_output(shifted)[0]
+    model_use = model
+    if apply_shift:
+        shifted = MiniMaxH3SigmaShift.execute(model, float(shift_video), float(shift_audio))
+        model_use = _unpack_node_output(shifted)[0]
 
     neg = negative if negative else []
-    steps = int(steps)
+    if sigmas is not None:
+        import torch
+
+        if torch.is_tensor(sigmas):
+            steps = max(1, int(sigmas.detach().float().cpu().reshape(-1).numel()) - 1)
+        else:
+            steps = max(1, int(len(sigmas)) - 1)
+    else:
+        steps = int(steps)
     latent_image = latent["samples"]
     latent_image = comfy.sample.fix_empty_latent_channels(
-        model_shifted,
+        model_use,
         latent_image,
         latent.get("downscale_ratio_spacial", None),
         latent.get("downscale_ratio_temporal", None),
@@ -172,10 +185,13 @@ def sample_single_stage(
     # Resolve the sigma schedule: external SIGMAS > sigma-refine / sampler path.
     run_sigmas = None
     if sigmas is not None:
-        run_sigmas = _remap_sigmas_through_shift(model, model_shifted, sigmas)
+        if apply_shift:
+            run_sigmas = _remap_sigmas_through_shift(model, model_use, sigmas)
+        else:
+            run_sigmas = sigmas
     elif sampler_obj is not None or sigma_refine:
         run_sigmas = _build_sigmas(
-            model_shifted,
+            model_use,
             scheduler=scheduler,
             steps=steps,
             denoise=denoise,
@@ -188,13 +204,19 @@ def sample_single_stage(
         run_sigmas = run_sigmas.to(dtype=latent_image.dtype) if len(run_sigmas) else run_sigmas
 
     n_steps = int(len(run_sigmas) - 1) if run_sigmas is not None and len(run_sigmas) > 0 else steps
-    base_cb = latent_preview.prepare_callback(model_shifted, n_steps)
+    base_cb = latent_preview.prepare_callback(model_use, n_steps)
     every = max(1, int(preview_every))
 
     def callback(step, x0, x, total_steps):
         if on_step_preview is not None:
             try:
-                if step % every == 0 or step >= max(0, int(total_steps) - 1):
+                last = max(0, int(total_steps) - 1)
+                # preview_every < 0 → only the last step (sigma refine starts dirty).
+                if int(preview_every) < 0:
+                    show = step >= last
+                else:
+                    show = step % every == 0 or step >= last
+                if show:
                     on_step_preview(int(step), int(total_steps), x0)
             except Exception as exc:
                 log.debug("Step preview callback skipped: %s", exc)
@@ -202,11 +224,10 @@ def sample_single_stage(
             base_cb(step, x0, x, total_steps)
 
     disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
-
     if sampler_obj is not None:
         if run_sigmas is None:
             run_sigmas = _build_sigmas(
-                model_shifted,
+                model_use,
                 scheduler=scheduler,
                 steps=steps,
                 denoise=denoise,
@@ -216,7 +237,7 @@ def sample_single_stage(
             )
             run_sigmas = run_sigmas.to(device=latent_image.device).to(dtype=latent_image.dtype)
         samples = comfy.sample.sample_custom(
-            model_shifted,
+            model_use,
             noise,
             float(cfg),
             sampler_obj,
@@ -231,7 +252,7 @@ def sample_single_stage(
         )
     else:
         samples = comfy.sample.sample(
-            model_shifted,
+            model_use,
             noise,
             steps,
             float(cfg),
@@ -240,7 +261,7 @@ def sample_single_stage(
             positive,
             neg,
             latent_image,
-            denoise=float(max(0.0, min(1.0, denoise))),
+            denoise=1.0 if run_sigmas is not None else float(max(0.0, min(1.0, denoise))),
             noise_mask=noise_mask,
             sigmas=run_sigmas,
             callback=callback,
