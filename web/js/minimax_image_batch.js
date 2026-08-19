@@ -460,6 +460,7 @@ export const IMAGE_BATCH_STYLES = `
 .bd-batch-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
 .bd-batch-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff;flex-shrink:0}
 .bd-batch-continuity span{white-space:nowrap}
+.bd-batch-run-times{font-size:10px;color:#a5e8ad;background:rgba(0,0,0,.55);border:1px solid rgba(79,255,143,.18);border-radius:4px;padding:1px 6px;line-height:1.5;white-space:nowrap;user-select:none;flex-shrink:0}
 .bd-batch-head-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
 .bd-batch-fc{display:flex;align-items:center;gap:6px;color:#aaa;font-size:12px}
 .bd-batch-r2v .bd-batch-fc{color:#c8c8c8;font-size:12px;gap:8px;background:#0e0e0e;border:1px solid #2a2a2a;border-radius:8px;padding:5px 10px}
@@ -1853,6 +1854,24 @@ function renderPreview(el, seg, running, isVideo, fps, editor) {
     else renderImagePreview(el, seg, running, editor);
 }
 
+function formatBatchRunTimes(seg) {
+    const st = seg?.runStartTime;
+    const en = seg?.runEndTime;
+    if (st && en) return `${st}→${en}`;
+    if (st || en) return st || en;
+    return "";
+}
+
+function syncBatchRunTimesBadge(card, seg) {
+    const badge = card.querySelector?.(".bd-batch-run-times");
+    if (!badge) return;
+    badge.textContent = formatBatchRunTimes(seg);
+    badge.classList.toggle("hidden", !badge.textContent);
+    badge.title = seg?.runDurationMs != null
+        ? `${(Number(seg.runDurationMs) / 1000).toFixed(1)}s`
+        : "";
+}
+
 /**
  * Lightweight patch: update card classes (.selected, .running, .done, .run-on, .run-skipped)
  * without tearing down the DOM. Used for selection changes, run highlights, and run-toggles.
@@ -1877,6 +1896,7 @@ function patchBatchCardClasses(editor) {
         card.classList.toggle("run-on", runSelectOn && runEnabled);
         card.classList.toggle("run-skipped", runSelectOn && !runEnabled);
         card.classList.toggle("done", hasPreview && i !== runningIdx);
+        syncBatchRunTimesBadge(card, seg);
     });
     return true;
 }
@@ -2021,6 +2041,14 @@ export function renderImageBatchGroups(editor, { lightweight = false } = {}) {
         const title = document.createElement("b");
         title.textContent = t(isR2v ? "batch.groupTitle.asset" : "batch.groupTitle.prompt", { n: index + 1 });
         head.appendChild(title);
+        const runTimes = document.createElement("span");
+        runTimes.className = "bd-batch-run-times";
+        runTimes.textContent = formatBatchRunTimes(seg);
+        runTimes.classList.toggle("hidden", !runTimes.textContent);
+        runTimes.title = seg?.runDurationMs != null
+            ? `${(Number(seg.runDurationMs) / 1000).toFixed(1)}s`
+            : "";
+        head.appendChild(runTimes);
         // Per-segment continuity (master「段间引导」must be on; skip segment 1).
         const masterCont = isContinuityMasterEnabled(editor.timeline?.output);
         if (masterCont && index > 0 && isVideo) {

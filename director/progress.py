@@ -150,6 +150,34 @@ def report_director_segment_preview(
         log.debug("Director preview send skipped: %s", exc)
 
 
+def report_director_segment_times(
+    node_id: str | None,
+    *,
+    segment_index: int,
+    start_time: str,
+    end_time: str,
+    duration_ms: int,
+) -> None:
+    """Push a segment's wall-clock run window so the browser can tag its card."""
+    if not node_id:
+        return
+    payload = {
+        "node_id": str(node_id),
+        "segment_index": int(segment_index),
+        "start_time": start_time,
+        "end_time": end_time,
+        "duration_ms": int(duration_ms),
+    }
+    try:
+        from server import PromptServer
+
+        srv = PromptServer.instance
+        if srv:
+            srv.send_sync("minimax_director_segment_times", payload, srv.client_id)
+    except Exception as exc:
+        log.debug("Director segment times send skipped: %s", exc)
+
+
 def report_director_finish(node_id: str | None, segment_total: int) -> None:
     report_director_progress(
         node_id,

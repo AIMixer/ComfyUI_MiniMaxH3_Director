@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from datetime import datetime
 from typing import Any
 
 import torch
@@ -40,7 +41,12 @@ from .plan import (
     reinforce_rv2v_prompt,
     reinforce_v2v_prompt,
 )
-from .progress import report_director_finish, report_director_progress, report_director_segment_preview
+from .progress import (
+    report_director_finish,
+    report_director_progress,
+    report_director_segment_preview,
+    report_director_segment_times,
+)
 from .h3_motion_context import (
     DEFAULT_AUDIO_CONTEXT_FRAMES,
     apply_motion_context,
@@ -488,6 +494,7 @@ def execute_director_plan_core(
     def _run_one_segment(
         seg, *, progress_index: int
     ) -> tuple[torch.Tensor, dict[str, Any] | None, torch.Tensor]:
+        seg_start = datetime.now()
         if seg.task_key not in SUPPORTED_TASK_KEYS:
             raise ValueError(
                 f"Task '{seg.task_key}' is not supported on MiniMax H3 Director. "
@@ -1180,10 +1187,21 @@ def execute_director_plan_core(
         if vram_clean_on:
             cleanup_segment_vram(enabled=True, unload_models=vram_unload_models)
 
+        seg_end = datetime.now()
+        seg_elapsed = (seg_end - seg_start).total_seconds()
         reports.append(
             f"Segment {ui_idx + 1}/{timeline_seg_total}: {task_hint} "
             f"({target_len} frames, seed={seed}"
-            f"{', ' + refine_note if refine_note else ''})"
+            f"{', ' + refine_note if refine_note else ''}) "
+            f"— start {seg_start:%H:%M:%S} → end {seg_end:%H:%M:%S} "
+            f"({seg_elapsed:.1f}s)"
+        )
+        report_director_segment_times(
+            node_id,
+            segment_index=ui_idx,
+            start_time=seg_start.strftime("%H:%M:%S"),
+            end_time=seg_end.strftime("%H:%M:%S"),
+            duration_ms=int(seg_elapsed * 1000),
         )
         log.info(
             "MiniMax H3 Director segment %d/%d done (%d frames, task=%s)",

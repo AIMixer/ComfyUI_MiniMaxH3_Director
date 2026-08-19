@@ -7567,6 +7567,30 @@ class MiniMaxH3DirectorEditor {
         ctx.restore();
     }
 
+    _drawSegmentRunTimes(seg, x0, pxW) {
+        const st = seg?.runStartTime;
+        const en = seg?.runEndTime;
+        if (!st && !en) return;
+        const label = st && en ? `${st}→${en}` : (st || en);
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.font = "9px sans-serif";
+        const tw = Math.ceil(ctx.measureText(label).width) + 8;
+        if (pxW < tw + 6) {
+            ctx.restore();
+            return;
+        }
+        const x = x0 + 3;
+        const y = TRACK_Y + TRACK_H - 15;
+        ctx.fillStyle = "rgba(0,0,0,0.66)";
+        ctx.fillRect(x, y, tw, 13);
+        ctx.fillStyle = "#a5e8ad";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, x + 4, y + 6.5);
+        ctx.restore();
+    }
+
     _drawReorderInsertMarker(ix) {
         const ctx = this.ctx;
         const y0 = TRACK_Y;
@@ -7906,6 +7930,7 @@ class MiniMaxH3DirectorEditor {
                 const g = this._runCheckGeometry(seg, width);
                 this._drawSegmentRunCheck(g.boxX, g.boxY, runOn);
             }
+            this._drawSegmentRunTimes(seg, x0, pxW);
         }
 
         // fl2v: dashed overlay for the region past the sampling window.
@@ -8983,6 +9008,22 @@ class MiniMaxH3DirectorEditor {
         this.scheduleRender();
     }
 
+    /** Record per-segment wall-clock run window from minimax_director_segment_times. */
+    setSegmentRunTimes(detail) {
+        const idx = Number(detail?.segment_index ?? -1);
+        const segs = this.timeline?.segments || [];
+        if (!Number.isFinite(idx) || idx < 0 || idx >= segs.length) return;
+        const seg = segs[idx];
+        if (detail?.start_time) seg.runStartTime = detail.start_time;
+        if (detail?.end_time) seg.runEndTime = detail.end_time;
+        if (detail?.duration_ms != null) seg.runDurationMs = Number(detail.duration_ms);
+        if (this.isImageBatch?.()) {
+            this.renderImageBatchGroups?.({ lightweight: true });
+        } else {
+            this.scheduleRender();
+        }
+    }
+
     setRunProgress(detail) {
         if (!this.runStatusEl) return;
         const timelineTotal = this.timeline?.segments?.length || 0;
@@ -9903,6 +9944,12 @@ app.registerExtension({
 
         api.addEventListener("minimax_director_progress", ({ detail }) => {
             findDirectorNode(detail?.node_id)?._minimaxEditor?.setRunProgress?.(detail);
+        });
+
+        api.addEventListener("minimax_director_segment_times", ({ detail }) => {
+            const editor = findDirectorNode(detail?.node_id)?._minimaxEditor;
+            if (!editor) return;
+            editor.setSegmentRunTimes?.(detail);
         });
 
         api.addEventListener("minimax_director_preview", ({ detail }) => {
