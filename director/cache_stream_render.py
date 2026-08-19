@@ -106,6 +106,83 @@ class _FrameWriter:
         return self.proc.wait()
 
 
+def _audio_waves(paths: list[str]) -> tuple[list[torch.Tensor], int]:
+    """Load per-segment audio cache files into (waves, sample_rate)."""
+    waves: list[torch.Tensor] = []
+    sr = 32000
+    for p in paths:
+        try:
+            a = torch.load(p, map_location="cpu")
+        except Exception:
+            continue
+        if isinstance(a, dict) and "waveform" in a:
+            waves.append(a["waveform"])
+            sr = int(a.get("sample_rate", 32000))
+    return waves, sr
+
+
+def _finalize_video(raw: str, out_path: str, waves: list[torch.Tensor], sample_rate: int = 32000) -> None:
+    """Mux waveform(s) into the raw mp4, or move it as-is when silent."""
+    if not waves:
+        os.replace(raw, out_path)
+        return
+    audio = torch.cat(waves, dim=-1)[0].contiguous()
+    if audio.is_floating_point():
+        audio = audio.clamp(-1.0, 1.0)
+    wav = out_path + ".tmp.wav"
+    try:
+        from scipy.io import wavfile
+        wavfile.write(wav, sample_rate, (audio.numpy() * 32767.0).astype("int16").T)
+    except ImportError:
+        raise RuntimeError("scipy is required to mux cache audio")
+    r = subprocess.run([_ffmpeg_exe(), "-y", "-loglevel", "error",
+                        "-i", raw, "-i", wav,
+                        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                        "-shortest", out_path])
+    os.remove(wav)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg mux failed rc={r.returncode}")
+    os.remove(raw)
+
+
+def render_segments_from_cache(
+    cache_dir: str,
+    out_dir: str,
+    fps: int = 24,
+) -> tuple[list[str], list[int]]:
+    """Render each cached segment into its own mp4 (分段流式导出).
+
+    Peak memory ≈ 1 segment (independent clips need no seam fix, so each
+    segment is written as soon as its frames load). Each clip muxes its own
+    audio. Returns (paths, per-segment frame counts).
+    """
+    files = _seg_files(cache_dir)
+    if not files:
+        raise RuntimeError(f"MiniMax H3 cache render: no seg_XXXX.pt in {cache_dir}")
+
+    os.makedirs(out_dir, exist_ok=True)
+    paths: list[str] = []
+    counts: list[int] = []
+    for f in files:
+        base = os.path.splitext(os.path.basename(f))[0]
+        frames = torch.load(f, map_location="cpu")
+        H, W = int(frames.shape[1]), int(frames.shape[2])
+        mp4 = os.path.join(out_dir, base + ".mp4")
+        raw = mp4 + ".raw.mp4"
+        writer = _FrameWriter(W, H, int(fps), raw)
+        writer.write(frames)
+        rc = writer.close()
+        if rc != 0:
+            raise RuntimeError(f"ffmpeg video encode failed rc={rc}")
+        waves, sr = _audio_waves([os.path.join(cache_dir, base + ".audio.pt")])
+        _finalize_video(raw, mp4, waves, sr)
+        counts.append(int(frames.shape[0]))
+        paths.append(mp4)
+        del frames
+        _log.info("cache segment render: %s (%d frames)", mp4, counts[-1])
+    return paths, counts
+
+
 def stream_render_from_cache(
     cache_dir: str,
     out_path: str,
@@ -178,35 +255,8 @@ def stream_render_from_cache(
 
     # ---- audio: per-segment export waveforms are small; concat + mux ----
     audio_files = sorted(glob.glob(os.path.join(cache_dir, "seg_*.audio.pt")))
-    if audio_files:
-        waves, sr = [], 32000
-        for f in audio_files:
-            a = torch.load(f, map_location="cpu")
-            if isinstance(a, dict) and "waveform" in a:
-                waves.append(a["waveform"])
-                sr = int(a.get("sample_rate", 32000))
-        if waves:
-            audio = torch.cat(waves, dim=-1)[0].contiguous()
-            if audio.is_floating_point():
-                audio = audio.clamp(-1.0, 1.0)
-            wav = out_path + ".tmp.wav"
-            try:
-                from scipy.io import wavfile
-                wavfile.write(wav, sr, (audio.numpy() * 32767.0).astype("int16").T)
-            except ImportError:
-                raise RuntimeError("scipy is required to mux cache audio")
-            r = subprocess.run([_ffmpeg_exe(), "-y", "-loglevel", "error",
-                                "-i", raw, "-i", wav,
-                                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                                "-shortest", out_path])
-            os.remove(wav)
-            if r.returncode != 0:
-                raise RuntimeError(f"ffmpeg mux failed rc={r.returncode}")
-            os.remove(raw)
-        else:
-            os.replace(raw, out_path)
-    else:
-        os.replace(raw, out_path)
+    waves, sr = _audio_waves(audio_files) if audio_files else ([], 32000)
+    _finalize_video(raw, out_path, waves, sr)
 
     _log.info("cache stream render done: %s (%d frames)", out_path, total)
     return out_path, total

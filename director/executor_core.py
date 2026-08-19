@@ -365,8 +365,69 @@ def execute_director_plan_core(
         reports.append("Sampling: external SIGMAS node overrides scheduler (re-mapped through sigma shift).")
     if sigma_refine:
         reports.append(f"Sampling: Sigma 精修 ON (+{max(0, int(sigma_tail_steps))} low-sigma tail step(s)).")
+
+    refine_only = bool(getattr(plan, "refine_only", False))
+    if refine_only:
+        refine_pack = getattr(plan, "refine", None)
+        if not (isinstance(refine_pack, dict) and refine_pack.get("enabled")):
+            raise ValueError(
+                "MiniMax H3 Director: 只跑二采（不勾一采）需要连接 MiniMax H3 Director Refine "
+                "节点到 refine 口；未连接时请勾上一采。"
+                " / Refine-only requires a connected MiniMax H3 Director Refine node; "
+                "check 一采 otherwise."
+            )
+        reports.append(
+            "Run mode: refine-only — 勾选段跳过一采，复用磁盘缓存 latent 直接二采。"
+            "需要先前完整跑过一次（已生成分段缓存），未勾选段仍走缓存填充。"
+        )
+
+    export_only = bool(getattr(plan, "export_only", False))
+    if export_only:
+        if not stream_export and plan.export_mode != "all":
+            raise ValueError(
+                "MiniMax H3 Director: 只跑导出（export_only）+「分段导出」需要勾选「流式导出」"
+                "（从缓存逐段渲染 mp4）；未勾流式导出时请改用「全部导出」，或跑完整流程现采样。"
+                " / export_only with「分段导出」requires「流式导出」checked "
+                "(per-segment mp4 from cache); otherwise use「全部导出」or run the full flow."
+            )
+        # 等同「选择运行」全不选：不采样、不二采，仅从缓存渲染成片。
+        plan.run_indices = frozenset()
+        run_indices = frozenset()
+        reports.append(
+            "Run mode: export-only — 不采样、不二采，仅从分段缓存渲染成片。"
+            "需要先前完整跑过一次（已生成分段缓存）。"
+        )
+        # ComfyUI 只要连接就会执行加载节点（模型已在显存）——立即卸载，
+        # 让整个导出阶段显存空闲，无需手动断开 model/video_vae/audio_vae/clip。
+        cleanup_segment_vram(enabled=True, unload_models=True)
+        reports.append(
+            "Models unloaded (export-only): connected loaders already ran — VRAM freed for export."
+        )
+
+    if not export_only:
+        missing_models = []
+        if model is None:
+            missing_models.append("model")
+        if vae is None:
+            missing_models.append("video_vae")
+        if clip is None:
+            missing_models.append("clip")
+        if missing_models:
+            raise ValueError(
+                "MiniMax H3 Director: 缺少模型输入 "
+                + ", ".join(missing_models)
+                + " —— 只有「只跑导出」（一采/二采都不勾，仅选导出）可以不连模型；"
+                "请接上 UNETLoader / VAELoader / CLIPLoader，或改为只跑导出"
+                "并断开这些加载节点以跳过模型加载。"
+                " / Missing model input(s): "
+                + ", ".join(missing_models)
+                + " — only export-only runs (no first pass / no refine, export checked) "
+                "can run without models; connect the loaders, or switch to export-only "
+                "and disconnect them to skip model loading."
+            )
     # One timestamp folder per execute so all segments of this run stay together.
-    mp4_run_dir = new_segment_mp4_run_dir(plan)
+    # 分段导出 + 流式导出时由缓存逐段渲染 mp4（低内存），跳过采样期增量导出。
+    mp4_run_dir = new_segment_mp4_run_dir(plan) if not stream_export else None
     if mp4_run_dir is not None:
         reports.append(f"Segment mp4 export dir: {mp4_run_dir}")
     if vram_clean_on:
@@ -858,31 +919,66 @@ def execute_director_plan_core(
             except Exception as exc:
                 log.debug("Live TAE preview skipped: %s", exc)
 
-        samples = sample_single_stage(
-            model=model,
-            positive=positive,
-            negative=negative,
-            latent=latent,
-            seed=seed,
-            cfg=cfg,
-            steps=steps,
-            sampler_name=sampler,
-            scheduler=scheduler,
-            shift_video=shift_video,
-            shift_audio=shift_audio,
-            sampler_obj=sampler_obj,
-            sigmas=sigmas,
-            sigma_refine=sigma_refine,
-            sigma_tail_steps=sigma_tail_steps,
-            on_phase=_report_sample_phase,
-            on_step_preview=_report_step_preview if live_tae_preview else None,
-            preview_every=_live_preview_every(steps),
-        )
+        samples = None
+        reuse_cache_latent = False
+        if refine_only:
+            # 只跑二采：跳过一采采样，复用磁盘缓存的一采/上次 final AV latent。
+            # 缓存写入时用的是旧 fingerprint（含 refine 设置），二采输入不因 refine
+            # 参数变化而失效，因此 allow_stale=True 加载。
+            cached_av = load_segment_av_latent(node_id, seg, plan, allow_stale=True)
+            if cached_av is not None:
+                cached_handoff = load_segment_handoff_meta(
+                    node_id, seg, plan, allow_stale=True
+                )
+                if cached_handoff:
+                    cached_sf = int(cached_handoff.get("sample_frames") or 0)
+                    if cached_sf > 0 and cached_sf != sample_len:
+                        log.warning(
+                            "Segment %s refine-only: cached latent %df != current sample "
+                            "%df (continuity/params drifted); refining the cached latent "
+                            "as-is.",
+                            ui_idx + 1,
+                            cached_sf,
+                            sample_len,
+                        )
+                samples = cached_av
+                reuse_cache_latent = True
+                reports.append(
+                    f"Segment {ui_idx + 1}: refine-only — skip first-pass sampling, "
+                    "reuse cached AV latent."
+                )
+            else:
+                reports.append(
+                    f"Segment {ui_idx + 1}: refine-only — no cached AV latent; "
+                    "falling back to full first-pass sampling."
+                )
+
+        if samples is None:
+            samples = sample_single_stage(
+                model=model,
+                positive=positive,
+                negative=negative,
+                latent=latent,
+                seed=seed,
+                cfg=cfg,
+                steps=steps,
+                sampler_name=sampler,
+                scheduler=scheduler,
+                shift_video=shift_video,
+                shift_audio=shift_audio,
+                sampler_obj=sampler_obj,
+                sigmas=sigmas,
+                sigma_refine=sigma_refine,
+                sigma_tail_steps=sigma_tail_steps,
+                on_phase=_report_sample_phase,
+                on_step_preview=_report_step_preview if live_tae_preview else None,
+                preview_every=_live_preview_every(steps),
+            )
 
         first_pass_gpu = None
         pre_export = None
         will_refine = refine_will_sample(plan, seg)
-        if will_refine:
+        if will_refine and not reuse_cache_latent:
             try:
                 report_director_progress(
                     node_id, segment_index=progress_index, segment_total=seg_total,
@@ -1236,6 +1332,10 @@ def execute_director_plan_core(
             raise ValueError("Director plan produced no segments.")
 
     report_director_finish(node_id, seg_total)
+    # 导出阶段不再需要模型/VAE：即使加载节点保持连接，也在此刻卸载，
+    # 让全量拼接 / 流式渲染获得空闲显存（无需手动断开 model/video_vae/audio_vae/clip）。
+    cleanup_segment_vram(enabled=True, unload_models=True)
+    reports.append("Models unloaded before export (VRAM freed).")
     # 流式导出无需内存拼接；保留空列表即可，末尾 stream_render_from_cache 直接读盘。
     export_chunks = output_chunks if output_chunks else segment_outputs
     export_pre_chunks = output_pre_chunks if output_pre_chunks else segment_pre_refine
@@ -1293,17 +1393,29 @@ def execute_director_plan_core(
         cache_dir = _os.path.join(
             _fp.get_output_directory(), "minimax_seg_cache", str(node_id))
         ts = _time.strftime("%Y%m%d_%H%M%S")
-        video_path = _os.path.join(
-            _fp.get_output_directory(), "video",
-            f"MiniMaxH3_Director_stream_{ts}.mp4")
-        _os.makedirs(_os.path.dirname(video_path), exist_ok=True)
-        from .cache_stream_render import stream_render_from_cache
-        _, stream_frames = stream_render_from_cache(
-            cache_dir, video_path, fps=int(plan.frame_rate or 24))
-        export_frame_counts = [stream_frames]
-        reports.append(
-            f"Stream export（流式导出）→ {video_path} "
-            f"({stream_frames} 帧, 峰值内存低, 不触发 OOM)")
+        _os.makedirs(_os.path.join(_fp.get_output_directory(), "video"), exist_ok=True)
+        if plan.export_mode == "segments":
+            from .cache_stream_render import render_segments_from_cache
+            seg_out_dir = _os.path.join(
+                _fp.get_output_directory(), "minimax_seg_export_stream", ts)
+            seg_paths, seg_counts = render_segments_from_cache(
+                cache_dir, seg_out_dir, fps=int(plan.frame_rate or 24))
+            video_path = seg_out_dir
+            export_frame_counts = seg_counts
+            reports.append(
+                f"Segment stream export（分段流式导出）→ {len(seg_paths)} 个 mp4 于 {seg_out_dir} "
+                f"（共 {sum(seg_counts)} 帧, 峰值内存低, 不触发 OOM）")
+        else:
+            video_path = _os.path.join(
+                _fp.get_output_directory(), "video",
+                f"MiniMaxH3_Director_stream_{ts}.mp4")
+            from .cache_stream_render import stream_render_from_cache
+            _, stream_frames = stream_render_from_cache(
+                cache_dir, video_path, fps=int(plan.frame_rate or 24))
+            export_frame_counts = [stream_frames]
+            reports.append(
+                f"Stream export（流式导出）→ {video_path} "
+                f"({stream_frames} 帧, 峰值内存低, 不触发 OOM)")
         combined = None
         pre_combined = None
     else:

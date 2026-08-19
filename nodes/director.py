@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import comfy.samplers
 
 from ..director.executor_core import execute_director_plan_core
@@ -13,6 +15,8 @@ from .director_common import (
 )
 
 _CATEGORY = "MiniMaxH3"
+
+log = logging.getLogger("ComfyUI-MiniMaxH3-Director")
 
 _DEFAULT_GLOBAL_PROMPT = "A cinematic scene with natural motion and synchronized ambience"
 
@@ -51,25 +55,25 @@ class MiniMaxH3Director:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model": (
-                    "MODEL",
-                    {"tooltip": "MiniMax H3 UNET (UNETLoader)."},
-                ),
-                "video_vae": (
-                    "VAE",
-                    {"tooltip": "MiniMax H3 video VAE (minimax_h3_video_vae)."},
-                ),
-                "audio_vae": (
-                    "VAE",
-                    {"tooltip": "MiniMax H3 audio VAE (minimax_h3_audio_vae). Required for r2v / v2v / rv2v."},
-                ),
-                "clip": (
-                    "CLIP",
-                    {"tooltip": "CLIPLoader type=minimax (qwen3vl)."},
-                ),
                 **director_timeline_required_inputs(),
             },
             "optional": {
+                "model": (
+                    "MODEL",
+                    {"tooltip": "MiniMax H3 UNET (UNETLoader). export_only（只跑导出）模式下可断开不连，跳过模型加载。"},
+                ),
+                "video_vae": (
+                    "VAE",
+                    {"tooltip": "MiniMax H3 video VAE (minimax_h3_video_vae). export_only 模式下可断开不连。"},
+                ),
+                "audio_vae": (
+                    "VAE",
+                    {"tooltip": "MiniMax H3 audio VAE (minimax_h3_audio_vae). Required for r2v / v2v / rv2v. export_only 模式下可断开不连。"},
+                ),
+                "clip": (
+                    "CLIP",
+                    {"tooltip": "CLIPLoader type=minimax (qwen3vl). export_only 模式下可断开不连。"},
+                ),
                 "i2v_groups": (
                     "MMX_DIR_GROUP",
                     {
@@ -183,10 +187,6 @@ class MiniMaxH3Director:
 
     def execute(
         self,
-        model,
-        video_vae,
-        audio_vae,
-        clip,
         task_type,
         global_prompt,
         frame_rate,
@@ -209,7 +209,14 @@ class MiniMaxH3Director:
         shift_audio=3.0,
         clear_vram_between_segments="unload_models",
         export_source_images=False,
-        stream_export=False,
+        run_first_pass=True,
+        run_refine=True,
+        run_stream_export=False,
+        run_normal_export=True,
+        model=None,
+        video_vae=None,
+        audio_vae=None,
+        clip=None,
         **kwargs,
     ):
         del kwargs
@@ -229,6 +236,18 @@ class MiniMaxH3Director:
             refine=refine,
             sampling=sampling,
         )
+        plan.refine_only = (not bool(run_first_pass)) and bool(run_refine)
+        plan.export_only = (not bool(run_first_pass)) and (not bool(run_refine))
+
+        if bool(run_stream_export) and bool(run_normal_export):
+            raise ValueError(
+                "MiniMax H3 Director: 「流式导出」与「正常导出」互斥，不能同时勾选；"
+                "请只保留其一。"
+                " / Stream export and normal export are mutually exclusive; keep only one."
+            )
+        if not bool(run_stream_export) and not bool(run_normal_export):
+            log.warning("Neither export checked — defaulting to normal export.")
+            run_normal_export = True
 
         from ..director.sampling_pack import (
             sampling_cfg_for,
@@ -256,6 +275,8 @@ class MiniMaxH3Director:
         eff_sigmas = sampling_sigmas_for(s_pack)
         eff_sigma_refine = sampling_sigma_refine_for(s_pack, False)
         eff_sigma_tail = sampling_sigma_tail_for(s_pack, 1)
+
+        stream_export = bool(run_stream_export)
 
         combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, video_path = (
             execute_director_plan_core(

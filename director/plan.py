@@ -151,6 +151,12 @@ class DirectorPlan:
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
     refine: dict | None = None
     sampling: dict | None = None
+    # 只勾「二采」（不勾一采）：skip first-pass sampling for selected segments,
+    # reuse the cached AV latent on disk and run only the second-pass (refine).
+    refine_only: bool = False
+    # 只跑导出（一采/二采都不勾）：no sampling at all — render the final video
+    # purely from segment caches (like「选择运行」全不选). Requires a prior full run.
+    export_only: bool = False
 
     @property
     def segment_count(self) -> int:

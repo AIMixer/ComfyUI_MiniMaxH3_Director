@@ -326,7 +326,10 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
     seed: "widget.seed",
     clear_vram_between_segments: "widget.clearVram",
     export_source_images: "widget.exportSourceImages",
-    stream_export: "widget.streamExport",
+    run_first_pass: "widget.runFirstPass",
+    run_refine: "widget.runRefine",
+    run_stream_export: "widget.streamExport",
+    run_normal_export: "widget.normalExport",
     control_after_generate: "widget.controlAfterGenerate",
     "control after generate": "widget.controlAfterGenerate",
 };
@@ -334,7 +337,10 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
 const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
     export_source_images: "widget.tooltip.exportSourceImages",
-    stream_export: "widget.tooltip.streamExport",
+    run_first_pass: "widget.tooltip.runFirstPass",
+    run_refine: "widget.tooltip.runRefine",
+    run_stream_export: "widget.tooltip.streamExport",
+    run_normal_export: "widget.tooltip.normalExport",
 };
 
 const DIRECTOR_GROUP_LABEL_KEYS = {
@@ -343,7 +349,28 @@ const DIRECTOR_GROUP_LABEL_KEYS = {
     bd_grp_perf: "widget.grpPerf",
 };
 
+// 流式导出 / 正常导出 互斥：勾选其一自动取消另一个（后端另有兜底校验）。
+function bindRunPlanExclusiveExport(node) {
+    const stream = node.widgets?.find((w) => w.name === "run_stream_export");
+    const normal = node.widgets?.find((w) => w.name === "run_normal_export");
+    if (!stream || !normal) return;
+    for (const [w, other] of [[stream, normal], [normal, stream]]) {
+        if (w._mmxRunPlanExclusivePatched) continue;
+        w._mmxRunPlanExclusivePatched = true;
+        const prev = w.callback;
+        w.callback = function (...cbArgs) {
+            const out = prev?.apply(this, cbArgs);
+            if (cbArgs[0] && other.value) {
+                other.value = false;
+                if (other.callback) other.callback.call(other, false);
+            }
+            return out;
+        };
+    }
+}
+
 function applyDirectorWidgetLabels(node) {
+    bindRunPlanExclusiveExport(node);
     for (const w of node.widgets || []) {
         const name = String(w.name || "");
         const key = DIRECTOR_WIDGET_LABEL_KEYS[name]
@@ -1061,7 +1088,7 @@ function moveDirectorDomWidgetToEnd(node) {
     node.widgets.push(widget);
 }
 
-const PERF_WIDGET_ORDER = ["bd_grp_perf", "clear_vram_between_segments", "export_source_images", "stream_export"];
+const PERF_WIDGET_ORDER = ["bd_grp_perf", "clear_vram_between_segments", "export_source_images", "run_first_pass", "run_refine", "run_stream_export", "run_normal_export"];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {
     const dom = node?._minimaxDomWidget;
