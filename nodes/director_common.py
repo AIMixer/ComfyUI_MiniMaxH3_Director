@@ -93,6 +93,21 @@ def director_perf_inputs() -> dict:
                 "tooltip": "输出 source_images（时间轴原片帧对比）。默认关以节省内存。",
             },
         ),
+        "stream_export": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": "流式导出（防 OOM）：采样完成后从分段缓存流式渲染成片并写 mp4 文件，"
+                           "成片已含音轨（视频+音频），峰值内存恒定（≈6GB），长片「全部导出」全量拼接 "
+                           "OOM 时开启。开启后节点 images/audio 输出端口为空（无需连接 CreateVideo），"
+                           "成片路径见 video_path 输出。"
+                           " / Stream export (OOM-safe): render the final video (video+audio muxed "
+                           "into the mp4) from segment caches with bounded memory (~6GB); enable "
+                           "when the full export OOMs on long projects. The node's images/audio "
+                           "output ports are empty (no CreateVideo needed); the mp4 path is in "
+                           "video_path.",
+            },
+        ),
     }
 
 

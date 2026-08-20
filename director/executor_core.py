@@ -252,14 +252,16 @@ def execute_director_plan_core(
     shift_video: float = 12.0,
     shift_audio: float = 3.0,
     clear_vram_between_segments: bool = True,
+    stream_export: bool = False,
 ) -> tuple[
     torch.Tensor,
     list[torch.Tensor],
     list[dict[str, Any]],
     str,
     list[int],
-    torch.Tensor,
+    torch.Tensor | None,
     list[torch.Tensor],
+    str,
 ]:
     """Process every segment with MiniMax H3 conditioning + single-stage sampling."""
     audio_mode = resolve_audio_mode(plan)
@@ -1154,19 +1156,42 @@ def execute_director_plan_core(
             for pos, idx in enumerate(run_list)
         ]
         export_frame_counts = [int(t.shape[0]) for t in segment_outputs]
-    combined = concat_continuous_chunks(export_chunks, export_segments, plan)
-    pre_source = export_pre_chunks if export_pre_chunks else segment_pre_refine
-    if not pre_source:
-        pre_source = list(segment_outputs)
-    same_as_final = (
-        len(pre_source) == len(export_chunks)
-        and all(a is b for a, b in zip(pre_source, export_chunks))
-    )
-    pre_combined = (
-        combined
-        if same_as_final
-        else concat_continuous_chunks(pre_source, export_segments, plan)
-    )
+    video_path = ""
+    if stream_export:
+        # 流式导出（防 OOM）：从磁盘分段缓存流式渲染成片，跳过全量拼接。
+        # 峰值内存约 2 段（≈6GB），与总时长无关；不依赖 images 输出。
+        import os as _os
+        import folder_paths as _fp
+        import time as _time
+        cache_dir = _os.path.join(
+            _fp.get_output_directory(), "minimax_seg_cache", str(node_id))
+        ts = _time.strftime("%Y%m%d_%H%M%S")
+        video_path = _os.path.join(
+            _fp.get_output_directory(), "video",
+            f"MiniMaxH3_Director_stream_{ts}.mp4")
+        _os.makedirs(_os.path.dirname(video_path), exist_ok=True)
+        from .cache_stream_render import stream_render_from_cache
+        _, stream_frames = stream_render_from_cache(
+            cache_dir, video_path, fps=int(plan.frame_rate or 24))
+        reports.append(
+            f"Stream export（流式导出）→ {video_path} "
+            f"({stream_frames} 帧, 峰值内存低, 不触发 OOM)")
+        combined = None
+        pre_combined = None
+    else:
+        combined = concat_continuous_chunks(export_chunks, export_segments, plan)
+        pre_source = export_pre_chunks if export_pre_chunks else segment_pre_refine
+        if not pre_source:
+            pre_source = list(segment_outputs)
+        same_as_final = (
+            len(pre_source) == len(export_chunks)
+            and all(a is b for a, b in zip(pre_source, export_chunks))
+        )
+        pre_combined = (
+            combined
+            if same_as_final
+            else concat_continuous_chunks(pre_source, export_segments, plan)
+        )
     return (
         combined,
         segment_outputs,
@@ -1175,4 +1200,5 @@ def execute_director_plan_core(
         export_frame_counts,
         pre_combined,
         segment_pre_refine,
+        video_path,
     )

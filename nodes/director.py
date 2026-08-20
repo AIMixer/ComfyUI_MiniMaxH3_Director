@@ -155,9 +155,9 @@ class MiniMaxH3Director:
                     return f"{name}: expected {want}, linked node returns {got}."
         return True
 
-    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "INT", "IMAGE", "STRING", "IMAGE")
-    RETURN_NAMES = ("images", "audio", "fps", "frame_count", "source_images", "report", "images_pre_refine")
-    OUTPUT_IS_LIST = (True, True, False, False, True, False, True)
+    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "INT", "IMAGE", "STRING", "IMAGE", "STRING")
+    RETURN_NAMES = ("images", "audio", "fps", "frame_count", "source_images", "report", "images_pre_refine", "video_path")
+    OUTPUT_IS_LIST = (True, True, False, False, True, False, True, False)
     FUNCTION = "execute"
     CATEGORY = _CATEGORY
     DESCRIPTION = (
@@ -197,6 +197,7 @@ class MiniMaxH3Director:
         shift_audio=3.0,
         clear_vram_between_segments=True,
         export_source_images=False,
+        stream_export=False,
         **kwargs,
     ):
         del kwargs
@@ -216,7 +217,7 @@ class MiniMaxH3Director:
             refine=refine,
         )
 
-        combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments = (
+        combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, video_path = (
             execute_director_plan_core(
                 plan,
                 node_id=unique_id,
@@ -232,8 +233,15 @@ class MiniMaxH3Director:
                 shift_video=shift_video,
                 shift_audio=shift_audio,
                 clear_vram_between_segments=clear_vram_between_segments,
+                stream_export=stream_export,
             )
         )
+
+        if stream_export:
+            fps_out = float(plan.frame_rate or 24.0)
+            total_frames = sum(int(c.shape[0]) for c in segment_outputs)
+            note = "\n\n流式导出已开启：成片已写入 mp4（见 video_path 输出），images/audio 输出为空。"
+            return ([], [], fps_out, total_frames, [], report + note, [], video_path)
 
         return finalize_director_outputs(
             plan,
@@ -245,4 +253,4 @@ class MiniMaxH3Director:
             segment_frame_counts=export_frame_counts,
             pre_refine_combined=pre_combined,
             pre_refine_segments=pre_segments,
-        )
+        ) + (video_path,)
