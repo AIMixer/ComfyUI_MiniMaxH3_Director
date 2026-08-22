@@ -1,4 +1,4 @@
-﻿/**
+﻿﻿﻿/**
  * First/last-frame (fl2v) timeline — explicit shot groups.
  * Each shot = { startImage and/or endImage (official allows end-only), durationSec }.
  * Total duration = sum of shot durations. Timeline shows one block per shot.
@@ -931,6 +931,39 @@ function setFl2vSlotImage(shot, slot, ref) {
     else shot.startImage = ref;
 }
 
+async function pickFl2vSlotImage(editor, shotIndex, slotKind) {
+    const shots = editor.timeline?.shots || [];
+    const shot = shots[shotIndex];
+    const currentValue = slotKind === "end"
+        ? (shot?.endImage?.imageFile || "")
+        : (shot?.startImage?.imageFile || "");
+    const picked = await editor.chooseImageInput({
+        title: t("mediaPicker.pickFl2vImage"),
+        currentValue,
+    });
+    if (!picked?.imageFile) return false;
+    let liveShot = shots[shotIndex];
+    if (!liveShot) {
+        addFl2vShot(editor);
+        liveShot = editor.timeline?.shots?.[editor.timeline.shots.length - 1];
+        editor.selectedIndex = (editor.timeline?.shots?.length || 1) - 1;
+    }
+    if (!liveShot) return false;
+    setFl2vSlotImage(liveShot, slotKind, {
+        imageFile: picked.imageFile,
+        width: picked.width || 0,
+        height: picked.height || 0,
+    });
+    syncFl2vFromShots(editor);
+    editor.selectedIndex = Math.min(shotIndex, Math.max(0, (editor.timeline?.shots?.length || 1) - 1));
+    editor.commit?.(false, { syncTimeline: true });
+    updateFl2vDetailUI(editor);
+    editor.updateVideoNameLabel?.();
+    editor.scheduleRender?.();
+    editor.updateDomWidgetHeight?.();
+    return true;
+}
+
 /** Same group: swap/move; cross group: copy/replace target. */
 export function transferFl2vSlotImage(editor, fromShot, fromSlot, toShot, toSlot) {
     const shots = editor.timeline?.shots || [];
@@ -1131,19 +1164,13 @@ function renderFl2vShotCards(editor) {
         card.querySelectorAll("[data-slot]").forEach((slot) => {
             const kind = slot.dataset.slot;
             bindFl2vSlotDnD(editor, slot, i, kind);
-            slot.addEventListener("click", (e) => {
+            slot.addEventListener("click", async (e) => {
                 if (Date.now() < (editor._fl2vIgnoreSlotClickUntil || 0)) return;
                 if (editor._fl2vSlotDrag) return;
                 e.stopPropagation();
                 if (editor.selectedIndex !== i) flushFl2vPromptDraft(editor);
                 editor.selectedIndex = i;
-                editor._fl2vUploadMode = "slot";
-                editor._fl2vSlotKind = kind;
-                editor._fl2vSlotShotIndex = i;
-                const input = ui.fileInput;
-                if (!input) return;
-                input.multiple = false;
-                input.click();
+                await pickFl2vSlotImage(editor, i, kind);
             });
         });
         card.querySelectorAll("[data-clear]").forEach((btn) => {

@@ -14,6 +14,8 @@ from server import PromptServer
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director")
 
 CHUNK_ROOT = os.path.join(folder_paths.get_temp_directory(), "minimax_upload_chunks")
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpg", ".mpeg", ".mts", ".ts"}
 _WIN_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 _WIN_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])$", re.I)
 _SAFE_EXT = re.compile(r"\.[A-Za-z0-9]{1,8}$")
@@ -33,6 +35,50 @@ def _safe_basename(name: str) -> str:
     if not stem or _WIN_RESERVED.match(stem):
         stem = "upload"
     return f"{stem}{ext}"
+
+
+def _get_media_exts(kind: str) -> set[str]:
+    kind = str(kind or "").strip().lower()
+    if kind == "image":
+        return IMAGE_EXTS
+    if kind == "video":
+        return VIDEO_EXTS
+    raise ValueError("kind must be image or video")
+
+
+def _list_input_media(kind: str) -> list[dict]:
+    input_dir = folder_paths.get_input_directory()
+    exts = _get_media_exts(kind)
+    items: list[dict] = []
+    for root, dirs, files in os.walk(input_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for name in files:
+            if name.startswith("."):
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in exts:
+                continue
+            abs_path = os.path.join(root, name)
+            try:
+                stat = os.stat(abs_path)
+            except OSError:
+                continue
+            rel_path = os.path.relpath(abs_path, input_dir).replace("\\", "/")
+            subfolder = os.path.dirname(rel_path).replace("\\", "/")
+            if subfolder == ".":
+                subfolder = ""
+            items.append(
+                {
+                    "name": name,
+                    "fileName": name,
+                    "relPath": rel_path,
+                    "subfolder": subfolder,
+                    "type": "input",
+                    "modified": float(stat.st_mtime),
+                }
+            )
+    items.sort(key=lambda item: (-item["modified"], item["relPath"]))
+    return items
 
 
 async def minimax_upload_video_chunk(request):
@@ -126,6 +172,20 @@ async def minimax_probe_video(request):
         log.warning("MiniMax H3 Director video probe failed: %s", exc)
         return web.Response(status=400, text=str(exc))
     return web.json_response(info)
+
+
+async def minimax_list_input_media(request):
+    try:
+        kind = str(request.query.get("kind") or "").strip().lower()
+        if not kind:
+            return web.Response(status=400, text="Missing kind.")
+        items = _list_input_media(kind)
+    except ValueError as exc:
+        return web.Response(status=400, text=str(exc))
+    except Exception as exc:
+        log.warning("MiniMax H3 Director list input media failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+    return web.json_response({"items": items})
 
 
 async def minimax_detect_shots(request):
@@ -248,6 +308,7 @@ def register_routes() -> bool:
     _register_route(routes, "POST", "/minimax/director/upload_chunk", minimax_upload_video_chunk)
     _register_route(routes, "POST", "/minimax/director/probe_video", minimax_probe_video)
     _register_route(routes, "GET", "/minimax/director/probe_video", minimax_probe_video)
+    _register_route(routes, "GET", "/minimax/director/list_input_media", minimax_list_input_media)
     _register_route(routes, "POST", "/minimax/director/detect_shots", minimax_detect_shots)
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")

@@ -911,41 +911,31 @@ function pickFile(accept, onFile) {
 
 async function uploadSegSource(editor, index) {
     const segId = editor.timeline.segments[index]?.id;
-    pickFile("image/*,.jpg,.jpeg,.png,.webp,.bmp,.gif", async (file) => {
-        try {
-            if (!file?.type?.startsWith("image/") && !/\.(jpe?g|png|webp|bmp|gif)$/i.test(file.name || "")) {
-                throw new Error("Not an image file");
-            }
-            const uploaded = await uploadImage(file);
-            const imageFile = relPath(uploaded);
-            if (!imageFile) throw new Error("Upload returned empty filename");
-            // Resolve by id — normalize may replace segment object references.
-            const seg = (editor.timeline.segments || []).find((s) => s.id === segId)
-                || editor.timeline.segments[index];
-            if (!seg) return;
-            // Write genImage immediately so UI updates even if dimension probe fails/hangs.
-            seg.genImage = { imageFile, width: 0, height: 0 };
-            seg.imageFile = imageFile;
-            editor.renderImageBatchGroups();
-            editor.updateOutputPreview?.();
-            editor.commit(false, { syncTimeline: true });
-            editor.scheduleRender?.();
-            try {
-                const dims = await readImageDimensions(file);
-                const live = (editor.timeline.segments || []).find((s) => s.id === seg.id) || seg;
-                if (live.genImage?.imageFile === imageFile) {
-                    live.genImage = { imageFile, width: dims.width, height: dims.height };
-                    editor.updateOutputPreview?.();
-                    editor.scheduleTimelineSync?.();
-                }
-            } catch (dimErr) {
-                console.warn("[MiniMax H3Director] batch source dims skipped:", dimErr);
-            }
-        } catch (err) {
-            console.error("[MiniMax H3Director] batch source upload failed:", err);
-            alert(t("upload.alertFailed", { err: err?.message || err }));
-        }
-    });
+    try {
+        const currentValue = editor.timeline.segments[index]?.genImage?.imageFile || "";
+        const picked = await editor.chooseImageInput({
+            title: t("mediaPicker.pickSourceImage"),
+            currentValue,
+        });
+        if (!picked?.imageFile) return;
+        const seg = (editor.timeline.segments || []).find((s) => s.id === segId)
+            || editor.timeline.segments[index];
+        if (!seg) return;
+        seg.genImage = {
+            imageFile: picked.imageFile,
+            width: picked.width || 0,
+            height: picked.height || 0,
+        };
+        seg.imageFile = picked.imageFile;
+        editor.renderImageBatchGroups();
+        editor.updateOutputPreview?.();
+        editor.commit(false, { syncTimeline: true });
+        editor.scheduleRender?.();
+        editor.scheduleTimelineSync?.();
+    } catch (err) {
+        console.error("[MiniMax H3Director] batch source upload failed:", err);
+        alert(t("upload.alertFailed", { err: err?.message || err }));
+    }
 }
 
 function readImageDimensions(file) {
@@ -980,7 +970,22 @@ async function assignSegRefFromFile(editor, index, slot, file) {
 }
 
 async function uploadSegRef(editor, index, slot) {
-    pickFile("image/*", (file) => assignSegRefFromFile(editor, index, slot, file));
+    try {
+        const currentValue = editor.timeline.segments[index]?.refs?.find((r) => Number(r.index ?? r.slot) === slot)?.imageFile || "";
+        const picked = await editor.chooseImageInput({
+            title: t("mediaPicker.pickReferenceImage"),
+            currentValue,
+        });
+        if (!picked?.imageFile) return;
+        const seg = editor.timeline.segments[index];
+        if (!seg) return;
+        seg.refs = (seg.refs || []).filter((r) => Number(r.index ?? r.slot) !== slot);
+        seg.refs.push({ index: slot, imageFile: picked.imageFile, imageB64: "" });
+        editor.renderImageBatchGroups();
+        editor.commit();
+    } catch (err) {
+        console.error("[MiniMax H3Director] batch ref upload failed:", err);
+    }
 }
 
 function moveBatchRefSlot(editor, segIndex, fromSlot, toSlot) {
@@ -1087,27 +1092,29 @@ function removeSegAudio(editor, index, slot) {
 }
 
 async function uploadSegVideo(editor, index, slot) {
-    pickFile("video/*,.mp4,.mov,.webm,.mkv", async (file) => {
-        try {
-            const uploaded = await uploadMedia(file);
-            const seg = editor.timeline.segments[index];
-            if (!seg) return;
-            const videoFile = relPath(uploaded);
-            seg.refVideos = (seg.refVideos || []).filter((r) => Number(r.index ?? r.slot) !== slot);
-            seg.refVideos.push({
-                index: slot,
-                videoFile,
-                fileName: uploaded?.name || file.name,
-                type: "input",
-                subfolder: uploaded?.subfolder || "",
-            });
-            editor.renderImageBatchGroups();
-            editor.commit();
-        } catch (err) {
-            console.error("[MiniMax H3Director] batch video upload failed:", err);
-            alert(t("upload.refVideoBatchFailed", { err: err?.message || err }));
-        }
-    });
+    try {
+        const currentValue = editor.timeline.segments[index]?.refVideos?.find((r) => Number(r.index ?? r.slot) === slot)?.videoFile || "";
+        const picked = await editor.chooseVideoInput({
+            title: t("mediaPicker.pickReferenceVideo"),
+            currentValue,
+        });
+        if (!picked?.relPath) return;
+        const seg = editor.timeline.segments[index];
+        if (!seg) return;
+        seg.refVideos = (seg.refVideos || []).filter((r) => Number(r.index ?? r.slot) !== slot);
+        seg.refVideos.push({
+            index: slot,
+            videoFile: picked.relPath,
+            fileName: picked.fileName || picked.relPath,
+            type: picked.type || "input",
+            subfolder: picked.subfolder || "",
+        });
+        editor.renderImageBatchGroups();
+        editor.commit();
+    } catch (err) {
+        console.error("[MiniMax H3Director] batch video upload failed:", err);
+        alert(t("upload.refVideoBatchFailed", { err: err?.message || err }));
+    }
 }
 
 function removeSegVideo(editor, index, slot) {

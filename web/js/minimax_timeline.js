@@ -1,4 +1,4 @@
-﻿import { app } from "../../scripts/app.js";
+﻿﻿import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
     CUSTOM_ASPECT_RATIO,
@@ -598,6 +598,17 @@ const STYLES = `
 .bd-modal-item:hover{background:#252525;color:#eee}
 .bd-modal-item.selected{background:#2a2a2a;border-color:#4fff8f;color:#fff}
 .bd-modal-actions{display:flex;gap:8px;justify-content:flex-end;flex-shrink:0}
+.bd-media-toolbar{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.bd-media-status{color:#999;font-size:11px;line-height:1.4;min-height:15px}
+.bd-media-modal{max-width:820px}
+.bd-media-body{display:grid;grid-template-columns:minmax(260px,1fr) minmax(280px,.92fr);gap:10px;min-height:280px}
+.bd-media-left,.bd-media-right{display:flex;flex-direction:column;gap:8px;min-width:0}
+.bd-media-select{width:100%;min-height:220px;max-height:320px;background:#141414;border:1px solid #333;border-radius:6px;color:#eee;padding:6px;font-size:11px;box-sizing:border-box;flex:1}
+.bd-media-select option{padding:4px 6px}
+.bd-media-preview{flex:1;min-height:220px;background:#111;border:1px solid #333;border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+.bd-media-preview img,.bd-media-preview video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
+.bd-media-preview-empty{padding:18px;color:#666;font-size:11px;line-height:1.45;text-align:center}
+.bd-media-meta{display:flex;flex-direction:column;gap:4px;color:#9a9a9a;font-size:10px;line-height:1.45;word-break:break-all}
 .bd-toolbar-wrap{display:flex;flex-direction:column;gap:4px;width:100%}
 .bd-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
 .bd-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0}
@@ -842,6 +853,8 @@ ${FL2V_STYLES}
 .bd-ref{max-height:64px}
 .bd-rv2v-layout .bd-ref{max-height:none}
 .bd-v2v-layout .bd-prompt,.bd-rv2v-layout .bd-prompt{min-height:140px}
+.bd-media-body{grid-template-columns:1fr}
+.bd-media-preview{min-height:180px}
 }
 `;
 
@@ -4202,15 +4215,39 @@ class MiniMaxH3DirectorEditor {
         return resolveTaskKey(seg?.taskType || this.timeline.global?.taskType || this.getTaskKey());
     }
 
-    pickReferenceVideoFile() {
+    async pickReferenceVideoFile() {
         if (!taskUsesReferenceVideo(this._activeRefVideoTaskKey())) return;
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = "video/*";
-        input.onchange = () => {
-            if (input.files?.[0]) this.loadReferenceVideoFile(input.files[0]);
-        };
-        input.click();
+        const currentValue = this.getRefVideoTarget()?.referenceVideo?.videoFile || "";
+        const picked = await this.chooseVideoInput({
+            title: t("mediaPicker.pickReferenceVideo"),
+            currentValue,
+        });
+        if (!picked?.relPath) return;
+        const slotEl = this.isGlobalMode() ? this.globalRefVideo : this.segRefVideo;
+        const nameEl = this.isGlobalMode() ? this.globalRefVideoNameEl : this.segRefVideoNameEl;
+        const status = t("upload.inProgress", { name: picked.fileName || picked.relPath });
+        if (slotEl) {
+            slotEl.classList.remove("has-img", "has-video");
+            slotEl.textContent = status;
+        }
+        if (nameEl) nameEl.textContent = status;
+        try {
+            const prep = await this._prepareVideoFrames({
+                fileName: picked.fileName || picked.relPath,
+                relPath: picked.relPath,
+                subfolder: picked.subfolder || "",
+                type: picked.type || "input",
+                statusPrefix: t("parse.refVideo"),
+                syncNativeFps: false,
+            });
+            this.getRefVideoTarget().referenceVideo = this._buildClipRecord(prep);
+            this.renderRefVideoSlot();
+            this.commit(false, { syncTimeline: true });
+        } catch (err) {
+            console.error("[MiniMax H3Director] reference video load failed:", err);
+            if (nameEl) nameEl.textContent = t("upload.refVideoFailed", { err: formatUploadError(err) });
+            this.renderRefVideoSlot();
+        }
     }
 
     clearReferenceVideo() {
@@ -4259,33 +4296,38 @@ class MiniMaxH3DirectorEditor {
         }
     }
 
-    pickGenSrcImage(isGlobal) {
+    async pickGenSrcImage(isGlobal) {
         if (!this.isGenImage()) return;
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = "image/*";
-        input.onchange = async () => {
-            const file = input.files?.[0];
-            if (!file) return;
-            try {
-                const uploaded = await uploadToInput(file);
-                const relPath = videoRelativePath(uploaded);
-                if (isGlobal) {
-                    this.timeline.global = this.timeline.global || { refs: [] };
-                    this.timeline.global.genImage = { imageFile: relPath };
-                } else {
-                    const seg = this.timeline.segments[this.selectedIndex];
-                    if (seg) {
-                        seg.genImage = { imageFile: relPath };
-                        seg.imageFile = relPath;
-                    }
-                }
-                this.commit();
-            } catch (err) {
-                console.error("[MiniMax H3Director] gen image upload failed:", err);
+        const currentValue = isGlobal
+            ? (this.timeline.global?.genImage?.imageFile || "")
+            : (this.timeline.segments[this.selectedIndex]?.genImage?.imageFile || "");
+        try {
+            const picked = await this.chooseImageInput({
+                title: t("mediaPicker.pickSourceImage"),
+                currentValue,
+            });
+            if (!picked?.imageFile) return;
+            if (isGlobal) {
+                this.timeline.global = this.timeline.global || { refs: [] };
+                this.timeline.global.genImage = {
+                    imageFile: picked.imageFile,
+                    width: picked.width || 0,
+                    height: picked.height || 0,
+                };
+            } else {
+                const seg = this.timeline.segments[this.selectedIndex];
+                if (!seg) return;
+                seg.genImage = {
+                    imageFile: picked.imageFile,
+                    width: picked.width || 0,
+                    height: picked.height || 0,
+                };
+                seg.imageFile = picked.imageFile;
             }
-        };
-        input.click();
+            this.commit();
+        } catch (err) {
+            console.error("[MiniMax H3Director] gen image upload failed:", err);
+        }
     }
 
     onGenDefaultFcChange() {
@@ -6195,18 +6237,41 @@ class MiniMaxH3DirectorEditor {
         });
     }
 
-    pickVideoFile() {
+    async pickVideoFile() {
         if (this.isFl2vMode()) {
             openFl2vUpload(this);
             return;
         }
-        const input = document.createElement("input");
-        input.type = "file"; input.accept = "video/*";
-        input.onchange = () => { if (input.files?.[0]) this.loadVideoFile(input.files[0]); };
-        input.click();
+        const picked = await this.chooseVideoInput({
+            title: t("mediaPicker.pickVideo"),
+            currentValue: this.timeline.video?.videoFile || "",
+        });
+        if (!picked?.relPath) return;
+        const btn = this.root.querySelector('[data-a="video"]');
+        if (btn) { btn.disabled = true; btn.textContent = t("common.analyzing"); }
+        this.videoNameEl.textContent = t("upload.inProgress", { name: picked.fileName || picked.relPath });
+        try {
+            this._resetTimelineForReplaceUpload();
+            await this._applyLoadedVideo({
+                fileName: picked.fileName || picked.relPath,
+                relPath: picked.relPath,
+                subfolder: picked.subfolder || "",
+                type: picked.type || "input",
+                statusPrefix: t("parse.prefix"),
+            });
+        } catch (err) {
+            console.error("[MiniMax H3Director] video load failed:", err);
+            this.videoNameEl.textContent = t("upload.loadFailed", { err: formatUploadError(err) });
+            this._resetTimelineForReplaceUpload();
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = t("toolbar.uploadVideo");
+            }
+        }
     }
 
-    pickAppendVideoFile() {
+    async pickAppendVideoFile() {
         if (!this.hasVideo()) {
             this.showBdMessage(
                 t("dialog.appendVideoTitle"),
@@ -6214,10 +6279,31 @@ class MiniMaxH3DirectorEditor {
             );
             return;
         }
-        const input = document.createElement("input");
-        input.type = "file"; input.accept = "video/*";
-        input.onchange = () => { if (input.files?.[0]) this.appendVideoFile(input.files[0]); };
-        input.click();
+        const picked = await this.chooseVideoInput({
+            title: t("mediaPicker.pickAppendVideo"),
+        });
+        if (!picked?.relPath) return;
+        const btn = this.root.querySelector('[data-a="video-append"]');
+        if (btn) { btn.disabled = true; btn.textContent = t("common.analyzing"); }
+        this.videoNameEl.textContent = t("upload.appendProgress", { name: picked.fileName || picked.relPath });
+        try {
+            await this._applyAppendedVideo({
+                fileName: picked.fileName || picked.relPath,
+                relPath: picked.relPath,
+                subfolder: picked.subfolder || "",
+                type: picked.type || "input",
+                statusPrefix: t("parse.prefix"),
+            });
+        } catch (err) {
+            console.error("[MiniMax H3Director] append video failed:", err);
+            this.videoNameEl.textContent = t("upload.appendFailed", { err: formatUploadError(err) });
+            this.updateVideoNameLabel();
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = t("toolbar.appendVideo");
+            }
+        }
     }
 
     async appendVideoFile(file) {
@@ -6395,6 +6481,291 @@ class MiniMaxH3DirectorEditor {
             this._modalEl = overlay;
             okBtn.focus();
         });
+    }
+
+    pickLocalFile(accept = "") {
+        return new Promise((resolve) => {
+            const input = document.createElement("input");
+            input.type = "file";
+            if (accept) input.accept = accept;
+            input.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none";
+            const cleanup = () => input.remove();
+            input.onchange = () => {
+                const file = input.files?.[0] || null;
+                cleanup();
+                resolve(file);
+            };
+            input.addEventListener("cancel", () => {
+                cleanup();
+                resolve(null);
+            }, { once: true });
+            document.body.appendChild(input);
+            input.click();
+        });
+    }
+
+    async listInputMedia(kind) {
+        const resp = await api.fetchApi(`/minimax/director/list_input_media?kind=${encodeURIComponent(kind)}`);
+        if (!resp.ok) {
+            throw new Error(await resp.text());
+        }
+        const data = await resp.json();
+        return Array.isArray(data?.items) ? data.items : [];
+    }
+
+    probeInputImageDimensions(relPath, type = "input") {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve({
+                width: img.naturalWidth || img.width || 0,
+                height: img.naturalHeight || img.height || 0,
+            });
+            img.onerror = () => resolve({ width: 0, height: 0 });
+            img.src = inputViewUrl(relPath, type || "input");
+        });
+    }
+
+    showInputMediaPicker({ kind, title, accept, currentValue = "" } = {}) {
+        return new Promise((resolve) => {
+            this._closeBdModal();
+
+            const overlay = document.createElement("div");
+            overlay.className = "bd-modal-overlay";
+            const panel = document.createElement("div");
+            panel.className = "bd-modal bd-media-modal";
+            panel.innerHTML = `
+                <div class="bd-modal-title"></div>
+                <div class="bd-media-toolbar">
+                    <div class="bd-media-status"></div>
+                    <div class="bd-modal-actions"></div>
+                </div>
+                <div class="bd-media-body">
+                    <div class="bd-media-left">
+                        <select class="bd-media-select" size="12"></select>
+                    </div>
+                    <div class="bd-media-right">
+                        <div class="bd-media-preview">
+                            <div class="bd-media-preview-empty"></div>
+                        </div>
+                        <div class="bd-media-meta"></div>
+                    </div>
+                </div>`;
+
+            panel.querySelector(".bd-modal-title").textContent = title || "";
+            const statusEl = panel.querySelector(".bd-media-status");
+            const actionsTop = panel.querySelector(".bd-modal-actions");
+            const selectEl = panel.querySelector(".bd-media-select");
+            const previewEl = panel.querySelector(".bd-media-preview");
+            const previewEmptyEl = panel.querySelector(".bd-media-preview-empty");
+            const metaEl = panel.querySelector(".bd-media-meta");
+
+            let selectedValue = currentValue || "";
+            let itemsByPath = new Map();
+
+            const finish = (val) => {
+                this._closeBdModal();
+                resolve(val);
+            };
+
+            const renderPreview = (item) => {
+                previewEl.innerHTML = "";
+                metaEl.innerHTML = "";
+                if (!item?.relPath) {
+                    previewEmptyEl.textContent = t("mediaPicker.previewEmpty");
+                    previewEl.appendChild(previewEmptyEl);
+                    return;
+                }
+                const relPath = item.relPath;
+                const type = item.type || "input";
+                if (kind === "image") {
+                    const img = document.createElement("img");
+                    img.src = inputViewUrl(relPath, type);
+                    img.alt = item.fileName || item.name || relPath;
+                    previewEl.appendChild(img);
+                } else {
+                    const video = document.createElement("video");
+                    video.src = inputViewUrl(relPath, type);
+                    video.controls = true;
+                    video.preload = "metadata";
+                    video.muted = true;
+                    video.playsInline = true;
+                    previewEl.appendChild(video);
+                }
+                const fileEl = document.createElement("div");
+                fileEl.textContent = `${t("mediaPicker.file")}: ${item.fileName || item.name || relPath}`;
+                metaEl.appendChild(fileEl);
+                const pathEl = document.createElement("div");
+                pathEl.textContent = `${t("mediaPicker.path")}: ${relPath}`;
+                metaEl.appendChild(pathEl);
+            };
+
+            const loadItems = async () => {
+                statusEl.textContent = t("mediaPicker.loading");
+                selectEl.innerHTML = "";
+                renderPreview(null);
+                try {
+                    const items = await this.listInputMedia(kind);
+                    itemsByPath = new Map(items.map((item) => [item.relPath, item]));
+                    for (const item of items) {
+                        const option = document.createElement("option");
+                        option.value = item.relPath;
+                        option.textContent = item.relPath;
+                        if (item.relPath === selectedValue) option.selected = true;
+                        selectEl.appendChild(option);
+                    }
+                    if ((!selectedValue || !itemsByPath.has(selectedValue)) && items.length) {
+                        selectedValue = items[0].relPath;
+                        selectEl.value = selectedValue;
+                    }
+                    renderPreview(itemsByPath.get(selectEl.value || selectedValue || ""));
+                    statusEl.textContent = items.length
+                        ? t("mediaPicker.count", { n: items.length })
+                        : t("mediaPicker.empty");
+                } catch (err) {
+                    statusEl.textContent = err?.message || String(err);
+                }
+            };
+
+            selectEl.addEventListener("change", () => {
+                selectedValue = selectEl.value || "";
+                renderPreview(itemsByPath.get(selectedValue));
+            });
+            selectEl.addEventListener("dblclick", () => {
+                const item = itemsByPath.get(selectEl.value || "");
+                if (!item) return;
+                finish({
+                    source: "existing",
+                    relPath: item.relPath,
+                    fileName: item.fileName || item.name || item.relPath,
+                    subfolder: item.subfolder || "",
+                    type: item.type || "input",
+                });
+            });
+
+            const refreshBtn = document.createElement("button");
+            refreshBtn.type = "button";
+            refreshBtn.className = "bd-btn";
+            refreshBtn.textContent = t("mediaPicker.refresh");
+            refreshBtn.onclick = () => { void loadItems(); };
+            actionsTop.appendChild(refreshBtn);
+
+            const uploadBtn = document.createElement("button");
+            uploadBtn.type = "button";
+            uploadBtn.className = "bd-btn";
+            uploadBtn.textContent = t("mediaPicker.upload");
+            uploadBtn.onclick = async () => {
+                const file = await this.pickLocalFile(accept || "");
+                if (file) finish({ source: "file", file });
+            };
+            actionsTop.appendChild(uploadBtn);
+
+            const actionsBottom = document.createElement("div");
+            actionsBottom.className = "bd-modal-actions";
+            const cancelBtn = document.createElement("button");
+            cancelBtn.type = "button";
+            cancelBtn.className = "bd-btn";
+            cancelBtn.textContent = t("dialog.cancel");
+            cancelBtn.onclick = () => finish(null);
+            actionsBottom.appendChild(cancelBtn);
+
+            const okBtn = document.createElement("button");
+            okBtn.type = "button";
+            okBtn.className = "bd-btn bd-btn-primary";
+            okBtn.textContent = t("mediaPicker.useSelected");
+            okBtn.onclick = () => {
+                const item = itemsByPath.get(selectEl.value || selectedValue || "");
+                if (!item) return;
+                finish({
+                    source: "existing",
+                    relPath: item.relPath,
+                    fileName: item.fileName || item.name || item.relPath,
+                    subfolder: item.subfolder || "",
+                    type: item.type || "input",
+                });
+            };
+            actionsBottom.appendChild(okBtn);
+            panel.appendChild(actionsBottom);
+
+            overlay.onclick = (e) => {
+                if (e.target === overlay) finish(null);
+            };
+            panel.onclick = (e) => e.stopPropagation();
+
+            this._modalKeyHandler = (e) => {
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    finish(null);
+                } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    okBtn.click();
+                }
+            };
+            window.addEventListener("keydown", this._modalKeyHandler, true);
+
+            overlay.appendChild(panel);
+            this.root.appendChild(overlay);
+            this._modalEl = overlay;
+            void loadItems();
+            selectEl.focus();
+        });
+    }
+
+    async chooseImageInput(opts = {}) {
+        const choice = await this.showInputMediaPicker({
+            kind: "image",
+            title: opts.title || t("mediaPicker.pickImage"),
+            accept: "image/*,.jpg,.jpeg,.png,.webp,.bmp,.gif,.tif,.tiff",
+            currentValue: opts.currentValue || "",
+        });
+        if (!choice) return null;
+        if (choice.source === "file" && choice.file) {
+            const uploaded = await uploadToInput(choice.file);
+            const relPath = videoRelativePath(uploaded);
+            const dims = await this.probeInputImageDimensions(relPath, uploaded.type || "input");
+            return {
+                imageFile: relPath,
+                fileName: uploaded?.name || choice.file.name || relPath,
+                subfolder: uploaded?.subfolder || "",
+                type: uploaded?.type || "input",
+                width: dims.width || 0,
+                height: dims.height || 0,
+            };
+        }
+        const dims = await this.probeInputImageDimensions(choice.relPath, choice.type || "input");
+        return {
+            imageFile: choice.relPath,
+            fileName: choice.fileName || choice.relPath,
+            subfolder: choice.subfolder || "",
+            type: choice.type || "input",
+            width: dims.width || 0,
+            height: dims.height || 0,
+        };
+    }
+
+    async chooseVideoInput(opts = {}) {
+        const choice = await this.showInputMediaPicker({
+            kind: "video",
+            title: opts.title || t("mediaPicker.pickVideo"),
+            accept: "video/*,.mp4,.mov,.webm,.mkv,.avi,.m4v,.mpg,.mpeg,.mts,.ts",
+            currentValue: opts.currentValue || "",
+        });
+        if (!choice) return null;
+        if (choice.source === "file" && choice.file) {
+            const uploaded = await uploadToInputSmart(choice.file);
+            return {
+                relPath: videoRelativePath(uploaded),
+                fileName: uploaded?.name || choice.file.name || "",
+                subfolder: uploaded?.subfolder || "",
+                type: uploaded?.type || "input",
+            };
+        }
+        return {
+            relPath: choice.relPath,
+            fileName: choice.fileName || choice.relPath,
+            subfolder: choice.subfolder || "",
+            type: choice.type || "input",
+        };
     }
 
     async _prepareVideoFrames({ fileName, relPath, subfolder, type, statusPrefix, syncNativeFps = true }) {
@@ -9200,15 +9571,31 @@ class MiniMaxH3DirectorEditor {
         this.renderR2vCommonVideoSlots();
     }
 
-    pickR2vCommonVideo(index) {
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = "video/*,.mp4,.mov,.webm,.mkv";
-        input.onchange = () => {
-            const file = input.files?.[0];
-            if (file) this.addR2vCommonVideoFromFile(file, index);
-        };
-        input.click();
+    async pickR2vCommonVideo(index) {
+        const currentValue = this.timeline.global?.refVideos?.find((r) => Number(r.index ?? r.slot) === index)?.videoFile || "";
+        const picked = await this.chooseVideoInput({
+            title: t("mediaPicker.pickReferenceVideo"),
+            currentValue,
+        });
+        if (!picked?.relPath) return;
+        const target = (this.timeline.global = this.timeline.global || {
+            refs: [], refAudios: [], refVideos: [],
+        });
+        target.refVideos = target.refVideos || [];
+        target.refVideos = target.refVideos.filter((r) => Number(r.index ?? r.slot) !== index);
+        target.refVideos.push({
+            index,
+            videoFile: picked.relPath,
+            fileName: picked.fileName || picked.relPath,
+            type: picked.type || "input",
+            subfolder: picked.subfolder || "",
+        });
+        if (this.isR2vCommonEnabled()) {
+            rebaseR2vGroupSlotsForCommon(this);
+            this.renderImageBatchGroups?.();
+        }
+        this.commit();
+        this.renderR2vCommonVideoSlots();
     }
 
     async addR2vCommonVideoFromFile(file, slotIndex = null) {
@@ -9246,14 +9633,24 @@ class MiniMaxH3DirectorEditor {
         }
     }
 
-    pickRef(target, index, isGlobal) {
-        const input = document.createElement("input");
-        input.type = "file"; input.accept = "image/*";
-        input.onchange = () => {
-            const file = input.files?.[0];
-            if (file) this.addRefFromFile(file, target, index, isGlobal);
-        };
-        input.click();
+    async pickRef(target, index, isGlobal) {
+        const currentValue = (target.refs || []).find((r) => Number(r.index ?? r.slot) === index)?.imageFile || "";
+        const picked = await this.chooseImageInput({
+            title: t("mediaPicker.pickReferenceImage"),
+            currentValue,
+        });
+        if (!picked?.imageFile) return;
+        target.refs = target.refs || [];
+        target.refs = target.refs.filter((r) => Number(r.index ?? r.slot) !== index);
+        target.refs.push({ index, imageFile: picked.imageFile, imageB64: "" });
+        if (isGlobal) {
+            this.timeline.global = target;
+            if (this.isR2vCommonEnabled()) {
+                rebaseR2vGroupSlotsForCommon(this);
+                this.renderImageBatchGroups?.();
+            }
+        }
+        this.commit();
     }
 
     async addRefFromFile(file, target, slotIndex = null, isGlobal = null) {
