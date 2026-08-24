@@ -2392,7 +2392,18 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             media.className = "bd-batch-media";
             const src = document.createElement("div");
             src.className = "bd-batch-src";
-            renderSourceSlot(src, seg.genImage?.imageFile);
+            src.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+            src.addEventListener("drop", async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const file = e.dataTransfer.files?.[0];
+                if (file?.type?.startsWith("image/")) {
+                    try {
+                        const uploaded = await uploadMedia(file);
+                        seg.genImage = { imageFile: relPath(uploaded), fileName: file.name };
+                        editor.renderImageBatchGroups(); editor.commit();
+                    } catch (err) { console.error("Source drop failed:", err); }
+                }
+            });
             src.onclick = () => uploadSegSource(editor, index);
             media.appendChild(src);
             const pickSrc = document.createElement("button");
