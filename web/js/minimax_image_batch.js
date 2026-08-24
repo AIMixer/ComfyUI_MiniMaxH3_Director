@@ -1717,6 +1717,23 @@ function appendR2vMediaSections(card, seg, index, editor) {
     );
     const videos = document.createElement("div");
     videos.className = "bd-batch-videos";
+    videos.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+    videos.addEventListener("drop", async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const file = e.dataTransfer.files?.[0];
+        if (file?.type?.startsWith("video/")) {
+            const seg = editor.timeline.segments[index];
+            const existing = (seg.refVideos || []).filter(r => r && r.videoFile);
+            let next = 0;
+            while (existing.some(r => r && Number(r.index ?? r.slot) === next)) next++;
+            if (next >= 3) { alert("Máx 3 videos"); return; }
+            try {
+                const uploaded = await uploadMedia(file);
+                seg.refVideos = [...existing, { index: next, videoFile: relPath(uploaded), fileName: file.name, type: "input", subfolder: "" }];
+                editor.renderImageBatchGroups(); editor.commit();
+            } catch (err) { console.error("Video drop failed:", err); }
+        }
+    });
     if (vidSlots <= 0 && vidOffset > 0) {
         const empty = document.createElement("p");
         empty.className = "bd-r2v-slot-hint";
@@ -1729,6 +1746,7 @@ function appendR2vMediaSections(card, seg, index, editor) {
             const slot = document.createElement("div");
             renderVideoSlot(slot, ref, abs, index, editor, { r2v: true });
             slot.onclick = (e) => {
+                if (e.type === 'drop') { e.preventDefault(); e.stopPropagation(); return; }
                 if (e.target.closest?.(".bd-r2v-play, .bd-r2v-dur, .bd-r2v-progress, .x, video, audio")) return;
                 if (ref && e.target.closest?.(".bd-r2v-thumb")) {
                     slot.querySelector(".bd-r2v-play")?.click();
@@ -1757,6 +1775,23 @@ function appendR2vMediaSections(card, seg, index, editor) {
     );
     const audios = document.createElement("div");
     audios.className = "bd-batch-audios";
+    audios.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+    audios.addEventListener("drop", async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const file = e.dataTransfer.files?.[0];
+        if (file?.type?.startsWith("audio/")) {
+            const seg = editor.timeline.segments[index];
+            const existing = (seg.refAudios || []).filter(r => r && r.audioFile);
+            let next = 0;
+            while (existing.some(r => r && Number(r.index ?? r.slot) === next)) next++;
+            if (next >= 3) { alert("Máx 3 audios"); return; }
+            try {
+                const uploaded = await uploadMedia(file);
+                seg.refAudios = [...existing, { index: next, audioFile: relPath(uploaded), fileName: file.name, type: "input", subfolder: "" }];
+                editor.renderImageBatchGroups(); editor.commit();
+            } catch (err) { console.error("Audio drop failed:", err); }
+        }
+    });
     if (audSlots <= 0 && audOffset > 0) {
         const empty = document.createElement("p");
         empty.className = "bd-r2v-slot-hint";
@@ -1769,6 +1804,7 @@ function appendR2vMediaSections(card, seg, index, editor) {
             const slot = document.createElement("div");
             renderAudioSlot(slot, ref, abs, index, editor, { r2v: true });
             slot.onclick = (e) => {
+                if (e.type === 'drop') { e.preventDefault(); e.stopPropagation(); return; }
                 if (e.target.closest?.(".bd-r2v-play, .bd-r2v-dur, .bd-r2v-progress, .x, video, audio")) return;
                 if (ref && e.target.closest?.(".bd-r2v-thumb")) {
                     slot.querySelector(".bd-r2v-play")?.click();
