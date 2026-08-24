@@ -1724,17 +1724,36 @@ function appendR2vMediaSections(card, seg, index, editor) {
         if (file?.type?.startsWith("video/")) {
             const seg = editor.timeline.segments[index];
             const existing = (seg.refVideos || []).filter(r => r && r.videoFile);
-            let next = 0;
-            while (existing.some(r => r && Number(r.index ?? r.slot) === next)) next++;
-            if (next >= 3) { alert("Máx 3 videos"); return; }
+            
+            // Detectar en qué slot se hizo el drop
+            const dropTarget = e.target.closest?.(".bd-batch-video");
+            let targetIndex = -1;
+            if (dropTarget) {
+                targetIndex = Number(dropTarget.dataset?.refIndex);
+            }
+            
+            // Si hay un target válido, usar ese slot (reemplazar si está ocupado)
+            let targetSlot = targetIndex >= 0 ? targetIndex : -1;
+            if (targetSlot < 0 || targetSlot >= 3) {
+                // Si no hay target válido, buscar el siguiente hueco libre
+                let next = 0;
+                while (existing.some(r => r && Number(r.index ?? r.slot) === next)) next++;
+                targetSlot = next;
+            }
+            
+            if (targetSlot >= 3) { alert("Máx 3 videos"); return; }
+            
             try {
                 const uploaded = await uploadMedia(file);
-                seg.refVideos = [...existing, { index: next, videoFile: relPath(uploaded), fileName: file.name, type: "input", subfolder: "" }];
+                // Reemplazar slot existente o añadir al targetSlot
+                const newVids = (seg.refVideos || []).filter(r => Number(r.index ?? r.slot) !== targetSlot);
+                newVids.push({ index: targetSlot, videoFile: relPath(uploaded), fileName: file.name, type: "input", subfolder: "" });
+                seg.refVideos = newVids;
                 editor.renderImageBatchGroups(); editor.commit();
             } catch (err) { console.error("Video drop failed:", err); }
         }
     });
-    if (vidSlots <= 0 && vidOffset > 0) {
+   if (vidSlots <= 0 && vidOffset > 0) {
         const empty = document.createElement("p");
         empty.className = "bd-r2v-slot-hint";
         empty.textContent = t("batch.r2v.noGroupVideoSlots");
@@ -1745,8 +1764,30 @@ function appendR2vMediaSections(card, seg, index, editor) {
             const ref = (seg.refVideos || []).find((r) => Number(r.index ?? r.slot) === abs);
             const slot = document.createElement("div");
             renderVideoSlot(slot, ref, abs, index, editor, { r2v: true });
+            slot.dataset.refIndex = String(abs);
+            slot.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+            slot.addEventListener("drop", async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const file = e.dataTransfer.files?.[0];
+                if (file?.type?.startsWith("video/")) {
+                    const seg = editor.timeline.segments[index];
+                    const existing = (seg.refVideos || []).filter(r => r && r.videoFile);
+                    
+                    // Reemplazar slot específico
+                    let targetSlot = abs;
+                    if (targetSlot >= 3) { alert("Máx 3 videos"); return; }
+                    
+                    try {
+                        const uploaded = await uploadMedia(file);
+                        // Reemplazar slot existente o añadir al targetSlot
+                        const newVids = (seg.refVideos || []).filter(r => Number(r.index ?? r.slot) !== targetSlot);
+                        newVids.push({ index: targetSlot, videoFile: relPath(uploaded), fileName: file.name, type: "input", subfolder: "" });
+                        seg.refVideos = newVids;
+                        editor.renderImageBatchGroups(); editor.commit();
+                    } catch (err) { console.error("Video drop failed:", err); }
+                }
+            });
             slot.onclick = (e) => {
-                if (e.type === 'drop') { e.preventDefault(); e.stopPropagation(); return; }
                 if (e.target.closest?.(".bd-r2v-play, .bd-r2v-dur, .bd-r2v-progress, .x, video, audio")) return;
                 if (ref && e.target.closest?.(".bd-r2v-thumb")) {
                     slot.querySelector(".bd-r2v-play")?.click();
@@ -1773,26 +1814,9 @@ function appendR2vMediaSections(card, seg, index, editor) {
             }
             : {},
     );
-    const audios = document.createElement("div");
+  const audios = document.createElement("div");
     audios.className = "bd-batch-audios";
-    audios.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
-    audios.addEventListener("drop", async (e) => {
-        e.preventDefault(); e.stopPropagation();
-        const file = e.dataTransfer.files?.[0];
-        if (file?.type?.startsWith("audio/")) {
-            const seg = editor.timeline.segments[index];
-            const existing = (seg.refAudios || []).filter(r => r && r.audioFile);
-            let next = 0;
-            while (existing.some(r => r && Number(r.index ?? r.slot) === next)) next++;
-            if (next >= 3) { alert("Máx 3 audios"); return; }
-            try {
-                const uploaded = await uploadMedia(file);
-                seg.refAudios = [...existing, { index: next, audioFile: relPath(uploaded), fileName: file.name, type: "input", subfolder: "" }];
-                editor.renderImageBatchGroups(); editor.commit();
-            } catch (err) { console.error("Audio drop failed:", err); }
-        }
-    });
-    if (audSlots <= 0 && audOffset > 0) {
+  if (audSlots <= 0 && audOffset > 0) {
         const empty = document.createElement("p");
         empty.className = "bd-r2v-slot-hint";
         empty.textContent = t("batch.r2v.noGroupAudioSlots");
@@ -1803,8 +1827,30 @@ function appendR2vMediaSections(card, seg, index, editor) {
             const ref = (seg.refAudios || []).find((r) => Number(r.index ?? r.slot) === abs);
             const slot = document.createElement("div");
             renderAudioSlot(slot, ref, abs, index, editor, { r2v: true });
+            slot.dataset.refIndex = String(abs);
+            slot.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+            slot.addEventListener("drop", async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const file = e.dataTransfer.files?.[0];
+                if (file?.type?.startsWith("audio/")) {
+                    const seg = editor.timeline.segments[index];
+                    const existing = (seg.refAudios || []).filter(r => r && r.audioFile);
+                    
+                    // Reemplazar slot específico
+                    let targetSlot = abs;
+                    if (targetSlot >= 3) { alert("Máx 3 audios"); return; }
+                    
+                    try {
+                        const uploaded = await uploadMedia(file);
+                        // Reemplazar slot existente o añadir al targetSlot
+                        const newAudios = (seg.refAudios || []).filter(r => Number(r.index ?? r.slot) !== targetSlot);
+                        newAudios.push({ index: targetSlot, audioFile: relPath(uploaded), fileName: file.name, type: "input", subfolder: "" });
+                        seg.refAudios = newAudios;
+                        editor.renderImageBatchGroups(); editor.commit();
+                    } catch (err) { console.error("Audio drop failed:", err); }
+                }
+            });
             slot.onclick = (e) => {
-                if (e.type === 'drop') { e.preventDefault(); e.stopPropagation(); return; }
                 if (e.target.closest?.(".bd-r2v-play, .bd-r2v-dur, .bd-r2v-progress, .x, video, audio")) return;
                 if (ref && e.target.closest?.(".bd-r2v-thumb")) {
                     slot.querySelector(".bd-r2v-play")?.click();
@@ -2392,6 +2438,16 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             media.className = "bd-batch-media";
             const src = document.createElement("div");
             src.className = "bd-batch-src";
+            
+            // Render the source image if it exists
+            if (seg.genImage?.imageFile) {
+                src.className += " has-img";
+                const img = document.createElement("img");
+                img.src = viewUrl(seg.genImage.imageFile);
+                img.alt = "";
+                src.appendChild(img);
+            }
+            
             src.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
             src.addEventListener("drop", async (e) => {
                 e.preventDefault(); e.stopPropagation();
@@ -2400,6 +2456,15 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                     try {
                         const uploaded = await uploadMedia(file);
                         seg.genImage = { imageFile: relPath(uploaded), fileName: file.name };
+                        
+                        // Render the uploaded image in the UI
+                        src.className = "bd-batch-src has-img";
+                        src.innerHTML = "";
+                        const img = document.createElement("img");
+                        img.src = viewUrl(uploaded);
+                        img.alt = "";
+                        src.appendChild(img);
+                        
                         editor.renderImageBatchGroups(); editor.commit();
                     } catch (err) { console.error("Source drop failed:", err); }
                 }
