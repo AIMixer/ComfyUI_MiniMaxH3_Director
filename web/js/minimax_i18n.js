@@ -370,6 +370,11 @@ const ZH = {
 
     "widget.seed": "种子",
     "widget.clearVram": "段间清理显存",
+    "widget.deepUnload": "每段深度卸载模型",
+    "widget.lazySourceClips": "惰性加载源张量",
+    "widget.mergeMode": "全部导出拼接模式",
+    "widget.maxSegPerMerge": "每轮合并段数(备用)",
+    "widget.seamBlending": "接缝修缝(延迟拼接)",
     "widget.exportSourceImages": "输出原片对比",
     "widget.grpSample": "采样设置",
     "toolbar.batchDetailSolo": "单显模式",
@@ -392,6 +397,24 @@ const ZH = {
     "widget.controlAfterGenerate": "生成前后定制",
     "widget.tooltip.clearVram": "段间清理显存：每段结束后卸载模型并清空 CUDA 缓存。",
     "widget.tooltip.exportSourceImages": "输出原片对比（时间轴原片帧对比）。默认关以节省内存。",
+    "widget.tooltip.deepUnload": (
+        "每段后强制深度卸载模型（关闭=默认仅当RAM≥88%才deep；" +
+        "开启=每段都unload_all_models，最安全但每段重新加载模型会慢几秒）。" +
+        "对应Plus版「每段后卸载模型」开关。"
+    ),
+    "widget.tooltip.lazySourceClips": (
+        "惰性加载源张量（默认开）：t2v/r2v 任务跳过灰色占位张量的批量构建，" +
+        "避免 50 段×192 帧≈44.5GB 的显存峰值造成 OOM 崩溃。" +
+        "r2v 实际数据来自参考图/视频/音频，不依赖占位源张量。"
+    ),
+    "widget.tooltip.mergeMode": (
+        "全部导出时的拼接模式：\n" +
+        "・即时内存拼接(默认)：所有段生成完后在内存中 concat（段数多时可能 OOM）\n" +
+        "・延迟拼接(省内存+接缝修缝)：逐段存 MP4→释放显存→仅接缝 24 帧做重编码修缝→ffmpeg copy 拼接（段数无上限，画质无损）\n" +
+        "・仅分段导出不拼接：只输出各段 MP4，不合并"
+    ),
+    "widget.tooltip.maxSegPerMerge": "延迟拼接的备用方案(轮内全量解码)时，每轮最多合并多少段。仅在方案 A 内部异常回退时生效。",
+    "widget.tooltip.seamBlending": "延迟拼接时启用接缝修缝：仅解码接缝两侧 12 帧做曝光平滑/桥接（内存<1GB，推荐开启）。",
     "common.upload": "选择/上传",
     "common.clickUpload": "点击选择/上传",
     "batch.delete": "删除",
@@ -793,6 +816,11 @@ const EN = {
 
     "widget.seed": "Seed",
     "widget.clearVram": "Clear VRAM between segments",
+    "widget.deepUnload": "Force unload models per segment",
+    "widget.lazySourceClips": "Lazy source clips",
+    "widget.mergeMode": "Merge mode (all export)",
+    "widget.maxSegPerMerge": "Segments per merge round (fallback)",
+    "widget.seamBlending": "Seam blending (deferred merge)",
     "widget.exportSourceImages": "Export source comparison (source_images)",
     "widget.grpSample": "Sampling settings",
     "toolbar.batchDetailSolo": "Solo mode",
@@ -814,6 +842,24 @@ const EN = {
     "widget.grpPerf": "Performance",
     "widget.controlAfterGenerate": "Control after generate",
     "widget.tooltip.clearVram": "Clear VRAM between segments: unload models and empty CUDA cache after each segment.",
+    "widget.tooltip.deepUnload": (
+        "Force a FULL unload of all staged models after EVERY segment " +
+        "(off = auto: deep only when RAM ≥ 88%; on = safest but reloading each segment adds seconds)." +
+        "Matches Plus \"Unload models after each segment\" switch."
+    ),
+    "widget.tooltip.lazySourceClips": (
+        "Lazy source clips (default on). For t2v/r2v tasks skip building the full gray-canvas " +
+        "placeholder tensor (50 seg × 192f ≈ 44.5 GB) that is never actually consumed — r2v uses " +
+        "refs/ref_videos/ref_audios, not the placeholder. Turn off for the old one-shot behaviour."
+    ),
+    "widget.tooltip.mergeMode": (
+        "Merge strategy used when export mode = all:\n" +
+        "・Immediate in-memory concat (default): high memory, full seam blending.\n" +
+        "・Deferred merge (low memory + seam repair): flush per-seg MP4 → drop VRAM → local 24-frame seam re-encode → lossless ffmpeg stream copy. No segment count limit.\n" +
+        "・Segments only (no merge): keep per-segment MP4 on disk; do not combine."
+    ),
+    "widget.tooltip.maxSegPerMerge": "Fallback path: max segments per full-decode round. Only used when Scheme A raises an internal error.",
+    "widget.tooltip.seamBlending": "During deferred merge, decode only 12 frames on each side of every seam and re-run seam_blending (exposure smoothing + micro bridge). <1 GB memory. Recommended.",
     "widget.tooltip.exportSourceImages": "Export source_images (timeline source-frame comparison). Off by default to save memory.",
     "common.upload": "Choose/Upload",
     "common.clickUpload": "Click to choose/upload",

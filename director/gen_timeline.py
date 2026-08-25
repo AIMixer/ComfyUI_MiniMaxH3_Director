@@ -251,6 +251,7 @@ def build_gen_director_plan(
     width: int,
     height: int,
     ref_max_size: int,
+    lazy_source_clips: bool = True,
 ):
     """Build DirectorPlan for generation timeline modes (lazy import avoids cycles)."""
     from .plan import (
@@ -300,6 +301,21 @@ def build_gen_director_plan(
         task_key=task_key,
     )
 
+    # --- Early run selection: 先过滤"选中运行"的分段，再构建源剪辑，避免未选中段浪费显存 ---
+    run_sel = _parse_run_selection(timeline, len(segment_ranges))
+    filtered_segment_ranges = segment_ranges
+    if run_sel is not None:
+        run_set = set(int(i) for i in run_sel if 0 <= int(i) < len(segment_ranges))
+        if run_set:
+            filtered_segment_ranges = [
+                seg for i, seg in enumerate(segment_ranges) if i in run_set
+            ]
+            log.info(
+                "lazy_source early-filter: total %d segments → %d selected for run (skipping source-clip build for others)",
+                len(segment_ranges),
+                len(filtered_segment_ranges),
+            )
+
     if submode == "gen_blank":
         out_mode = "fixed"
         fw = int(output_block.get("width") or timeline.get("width") or width or 0)
@@ -339,23 +355,43 @@ def build_gen_director_plan(
     if is_prompt_batch_timeline(timeline, task_key) and not is_video_batch_task_key(task_key):
         export_mode = "all"
 
-    source_clips = _build_gen_source_clips(
-        segment_ranges,
-        task_key=task_key,
-        submode=submode,
-        edit_mode=edit_mode,
-        global_block=global_block,
-        height=out_h,
-        width=out_w,
-        output_mode=out_mode,
-        ref_max_size=ref_max,
-    )
+    # --- Lazy source clips 短路 ---
+    # t2v/r2v 任务中：生成不依赖"灰色占位源张量"（它来自refs/ref_videos/ref_audios）
+    # 但为了全量 50×192 帧源张量构建会造成 ~44.5GB 显存浪费，这里直接跳过。
+    # gen_blank 的 source clip 只是 0.5 灰色填充，永远不需要全量分配，无论 lazy_source_clips 是否开启
+    lazy_mode_active = submode == "gen_blank"
     attach_source_clips = is_prompt_batch_timeline(timeline, task_key) and task_key in ("i2i", "i2v")
-    if attach_source_clips:
-        # Placeholder timeline index only 鈥?spatial data comes from each segment's source_clip.
-        source_video = torch.full((len(source_clips), 16, 16, 3), 0.5, dtype=torch.float32)
+
+    if lazy_mode_active and not attach_source_clips:
+        total_seg = len(filtered_segment_ranges)
+        approx_gb = (total_seg * 192 * max(32, out_h) * max(32, out_w) * 3 * 4) / (1024 ** 3)
+        log.info(
+            "lazy_source_clips ENABLED: skipping %d seg × ~%df placeholder build (~%.1f GB saved). "
+            "t2v/r2v refs/ref_videos/ref_audios are still loaded per segment normally.",
+            total_seg,
+            192,
+            approx_gb,
+        )
+        source_clips = []  # 长度=0，后面 segment.source_clip 单独给空占位
+        # source_video 给一个极小占位，满足 segment_continuity 下游需要的 shape
+        source_video = torch.full((1, 16, 16, 3), 0.5, dtype=torch.float32)
     else:
-        source_video = cat_frames_variable_size(source_clips)
+        source_clips = _build_gen_source_clips(
+            filtered_segment_ranges,
+            task_key=task_key,
+            submode=submode,
+            edit_mode=edit_mode,
+            global_block=global_block,
+            height=out_h,
+            width=out_w,
+            output_mode=out_mode,
+            ref_max_size=ref_max,
+        )
+        if attach_source_clips:
+            # Placeholder timeline index only — spatial data comes from each segment's source_clip.
+            source_video = torch.full((len(source_clips), 16, 16, 3), 0.5, dtype=torch.float32)
+        else:
+            source_video = cat_frames_variable_size(source_clips)
 
     from .segment_continuity import resolve_segment_continuity_from_prev
 
@@ -457,7 +493,18 @@ def build_gen_director_plan(
                 idx + 1,
                 seg_task_key,
             )
-        seg_source = source_clips[idx].clone() if idx < len(source_clips) else None
+        if lazy_mode_active:
+            # 惰性模式：没有构建 source_clips，直接给每个段一个 1 帧的极小占位（不会被 t2v/r2v 使用）
+            seg_len = max(1, int(end) - int(start))
+            seg_source = torch.full((1, out_h, out_w, 3), 0.5, dtype=torch.float32)
+        else:
+            # 过滤后的 filtered 索引 → 原始 idx 映射
+            if run_sel is not None:
+                filtered_idx_map = {orig_i: fi for fi, orig_i in enumerate(sorted(run_sel)) if 0 <= orig_i < len(segment_ranges)}
+                fi = filtered_idx_map.get(idx)
+                seg_source = source_clips[fi].clone() if fi is not None and fi < len(source_clips) else None
+            else:
+                seg_source = source_clips[idx].clone() if idx < len(source_clips) else None
 
         segments.append(
             SegmentPlan(

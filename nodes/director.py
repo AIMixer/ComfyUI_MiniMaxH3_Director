@@ -196,6 +196,11 @@ class MiniMaxH3Director:
         shift_video=12.0,
         shift_audio=3.0,
         clear_vram_between_segments=True,
+        deep_unload_between_segments=False,
+        lazy_source_clips=True,
+        merge_mode="即时内存拼接(默认)",
+        max_segments_per_merge=15,
+        seam_blending=True,
         export_source_images=False,
         **kwargs,
     ):
@@ -214,6 +219,10 @@ class MiniMaxH3Director:
             i2v_groups=i2v_groups,
             r2v_groups=r2v_groups,
             refine=refine,
+            lazy_source_clips=lazy_source_clips,
+            merge_mode=merge_mode,
+            max_segments_per_merge=max_segments_per_merge,
+            seam_blending=seam_blending,
         )
 
         combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments = (
@@ -232,6 +241,7 @@ class MiniMaxH3Director:
                 shift_video=shift_video,
                 shift_audio=shift_audio,
                 clear_vram_between_segments=clear_vram_between_segments,
+                deep_unload_between_segments=deep_unload_between_segments,
             )
         )
 

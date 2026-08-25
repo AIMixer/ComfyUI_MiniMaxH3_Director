@@ -554,6 +554,7 @@ def build_director_plan(
     width: int,
     height: int,
     ref_max_size: int,
+    lazy_source_clips: bool = True,
 ) -> DirectorPlan:
     timeline: dict = {}
     if timeline_data and timeline_data.strip():
@@ -579,7 +580,7 @@ def build_director_plan(
     if task_key_early == "fl2v" or str(timeline.get("timelineMode") or "").lower() == "fl2v":
         from .fl2v_timeline import build_fl2v_director_plan
 
-        return build_fl2v_director_plan(
+        plan = build_fl2v_director_plan(
             timeline,
             global_task_type=task_type,
             global_prompt=prompt,
@@ -589,8 +590,10 @@ def build_director_plan(
             height=height,
             ref_max_size=ref_max_size,
         )
+        plan.lazy_source_clips = bool(lazy_source_clips)
+        return plan
     if is_gen_timeline(timeline, task_key_early):
-        return build_gen_director_plan(
+        plan = build_gen_director_plan(
             timeline,
             global_task_type=task_type,
             global_prompt=prompt,
@@ -599,7 +602,10 @@ def build_director_plan(
             width=width,
             height=height,
             ref_max_size=ref_max_size,
+            lazy_source_clips=lazy_source_clips,
         )
+        plan.lazy_source_clips = bool(lazy_source_clips)
+        return plan
 
     frame_map = logical_frame_map(timeline)
     source_total = logical_frame_count(timeline) or int(timeline.get("totalFrames") or total_frames or 0)

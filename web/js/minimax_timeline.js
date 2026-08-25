@@ -417,6 +417,11 @@ const HIDDEN_WIDGETS = [
 const DIRECTOR_WIDGET_LABEL_KEYS = {
     seed: "widget.seed",
     clear_vram_between_segments: "widget.clearVram",
+    deep_unload_between_segments: "widget.deepUnload",
+    lazy_source_clips: "widget.lazySourceClips",
+    merge_mode: "widget.mergeMode",
+    max_segments_per_merge: "widget.maxSegPerMerge",
+    seam_blending: "widget.seamBlending",
     export_source_images: "widget.exportSourceImages",
     control_after_generate: "widget.controlAfterGenerate",
     "control after generate": "widget.controlAfterGenerate",
@@ -424,6 +429,11 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
 
 const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
+    deep_unload_between_segments: "widget.tooltip.deepUnload",
+    lazy_source_clips: "widget.tooltip.lazySourceClips",
+    merge_mode: "widget.tooltip.mergeMode",
+    max_segments_per_merge: "widget.tooltip.maxSegPerMerge",
+    seam_blending: "widget.tooltip.seamBlending",
     export_source_images: "widget.tooltip.exportSourceImages",
 };
 
@@ -1192,7 +1202,16 @@ function moveDirectorDomWidgetToEnd(node) {
     node.widgets.push(widget);
 }
 
-const PERF_WIDGET_ORDER = ["bd_grp_perf", "clear_vram_between_segments", "export_source_images"];
+const PERF_WIDGET_ORDER = [
+    "bd_grp_perf",
+    "clear_vram_between_segments",
+    "deep_unload_between_segments",
+    "lazy_source_clips",
+    "merge_mode",
+    "max_segments_per_merge",
+    "seam_blending",
+    "export_source_images",
+];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {
     const dom = node?._minimaxDomWidget;

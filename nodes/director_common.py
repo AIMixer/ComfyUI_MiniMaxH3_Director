@@ -86,6 +86,58 @@ def director_perf_inputs() -> dict:
                 "tooltip": "段间清理显存：每段结束后卸载模型并清空 CUDA 缓存。",
             },
         ),
+        "deep_unload_between_segments": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "每段后深度卸载模型（关=自适应：默认仅当RAM≥88%时才deep；\n"
+                    "开=每段结束都强制unload_all_models，内存安全但每段重新加载模型会更慢）。\n"
+                    "对应Plus版「每段后卸载模型」开关。"
+                ),
+            },
+        ),
+        "lazy_source_clips": (
+            "BOOLEAN",
+            {
+                "default": True,
+                "tooltip": (
+                    "惰性加载源张量（默认开）：t2v/r2v 任务跳过灰色占位张量的批量构建，"
+                    "避免 50 段×192 帧≈44.5GB 的显存峰值导致 OOM 崩溃。"
+                    "r2v 的实际生成数据来自参考图/视频/音频，不依赖占位张量。"
+                    "关闭则恢复原始行为（一次性构建所有分段的源张量）。"
+                ),
+            },
+        ),
+        "merge_mode": (
+            ["即时内存拼接(默认)", "延迟拼接(省内存+接缝修缝)", "仅分段导出不拼接"],
+            {
+                "default": "即时内存拼接(默认)",
+                "tooltip": (
+                    "全部导出时的拼接模式：\n"
+                    "・即时内存拼接：所有段生成完后在内存中 concat（段数多时 OOM，支持 seam_blending）\n"
+                    "・延迟拼接(省内存+接缝修缝)：逐段存 MP4→释放显存→仅接缝24帧重编码修缝+ffmpeg copy拼接（段数无上限，画质无损）\n"
+                    "・仅分段导出不拼接：只输出各段 MP4，不合并"
+                ),
+            },
+        ),
+        "max_segments_per_merge": (
+            "INT",
+            {
+                "default": 15,
+                "min": 2,
+                "max": 200,
+                "step": 1,
+                "tooltip": "延迟拼接降级为方案B(轮内全量解码)时每轮最大段数（仅回退路径使用）。",
+            },
+        ),
+        "seam_blending": (
+            "BOOLEAN",
+            {
+                "default": True,
+                "tooltip": "延迟拼接时启用接缝修缝：每接缝仅解码24帧做像素级曝光/桥接（开启推荐，内存<1GB）。",
+            },
+        ),
         "export_source_images": (
             "BOOLEAN",
             {
@@ -165,6 +217,10 @@ def prepare_director_plan(
     i2v_groups=None,
     r2v_groups=None,
     refine=None,
+    lazy_source_clips: bool = True,
+    merge_mode: str = "即时内存拼接(默认)",
+    max_segments_per_merge: int = 15,
+    seam_blending: bool = True,
 ):
     from ..director.external_groups import (
         build_plan_from_external_groups,
@@ -207,6 +263,11 @@ def prepare_director_plan(
             ref_max_size=ref_max_size,
         )
         plan = _attach_refine(plan, refine)
+        # 将拼接/惰性加载参数挂到 plan 上（executor_core 会读取）
+        plan.lazy_source_clips = bool(lazy_source_clips)
+        plan.merge_mode = str(merge_mode)
+        plan.max_segments_per_merge = int(max_segments_per_merge)
+        plan.seam_blending = bool(seam_blending)
         log.info(
             "MiniMax H3 Director: external %s groups × %d (task=%s) | %s",
             family,
@@ -231,8 +292,14 @@ def prepare_director_plan(
         width=width,
         height=height,
         ref_max_size=ref_max_size,
+        lazy_source_clips=lazy_source_clips,
     )
     plan = _attach_refine(plan, refine)
+    # 将拼接/惰性加载参数挂到 plan 上（executor_core 会读取）
+    plan.lazy_source_clips = bool(lazy_source_clips)
+    plan.merge_mode = str(merge_mode)
+    plan.max_segments_per_merge = int(max_segments_per_merge)
+    plan.seam_blending = bool(seam_blending)
     log.info(plan_summary(plan).replace("\n", " | "))
     return plan
 

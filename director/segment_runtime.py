@@ -29,7 +29,10 @@ def resolve_segment_raw_clip(plan: DirectorPlan, seg) -> torch.Tensor:
         return seg.source_clip.clone()
 
     # Pure t2v (incl. external groups) has no source frames.
-    if getattr(seg, "task_key", "") == "t2v":
+    # r2v/r2i: real data comes from refs / ref_videos / ref_audios, not gray source canvas.
+    #   When lazy_source_clips is ON (or external pack path), skip slicing source_video.
+    task_key = getattr(seg, "task_key", "")
+    if task_key in ("t2v", "r2v", "r2i"):
         return torch.zeros((0, 16, 16, 3), dtype=torch.float32)
 
     # fl2v end-only: plan leaves source_clip=None on purpose. Do not slice the
@@ -70,7 +73,8 @@ def resolve_segment_raw_clip_with_lookahead(
         # Gen canvases have no timeline lookahead beyond the clip itself.
         return seg.source_clip.clone()
 
-    if getattr(seg, "task_key", "") == "fl2v" and is_gen_timeline_plan(plan):
+    task_key = getattr(seg, "task_key", "")
+    if task_key in ("t2v", "r2v", "r2i", "fl2v") and is_gen_timeline_plan(plan):
         return torch.zeros((0, 16, 16, 3), dtype=torch.float32)
 
     end = int(seg.end_frame) + extra

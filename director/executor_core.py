@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import logging
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -253,6 +256,7 @@ def execute_director_plan_core(
     shift_video: float = 12.0,
     shift_audio: float = 3.0,
     clear_vram_between_segments: bool = True,
+    deep_unload_between_segments: bool = False,
 ) -> tuple[
     torch.Tensor,
     list[torch.Tensor],
@@ -753,7 +757,12 @@ def execute_director_plan_core(
         )
 
         if clear_vram_between_segments:
-            cleanup_segment_vram(enabled=True, unload_models=seg_total > 1)
+            cleanup_segment_vram(
+                enabled=True,
+                unload_models=seg_total > 1,
+                force_deep=bool(deep_unload_between_segments),
+                segment_index=seg.index,
+            )
 
         def _report_sample_phase(phase: str, value: float) -> None:
             report_director_progress(
@@ -898,11 +907,19 @@ def execute_director_plan_core(
             trim_frames=trim_frames,
             on_pass=_export_refine_pass if mp4_run_dir is not None else None,
         )
-        del upscale_frames
+        del pack, upscale_frames
+        pack = None
+        upscale_frames = None
+        del positive, negative, latent
         if first_pass_gpu is not None:
             del first_pass_gpu
             first_pass_gpu = None
-
+        try:
+            gc.collect()
+            import comfy.model_management as _mm
+            _mm.soft_empty_cache()
+        except Exception:
+            pass
         report_director_progress(
             node_id, segment_index=progress_index, segment_total=seg_total,
             phase="decode", phase_value=0, phase_max=1, **meta,
@@ -925,6 +942,19 @@ def execute_director_plan_core(
             node_id, segment_index=progress_index, segment_total=seg_total,
             phase="decode", phase_value=1, phase_max=1, **meta,
         )
+
+        # Free *GPU-decoded* tensor before cpu() transfer; keep `samples` (AV
+        # latent dict) for continuity handoff (used by completed_av_latents
+        # and save_segment_cache below).  We drop the decoded-tensor ref but
+        # keep samples (small AV latent dict) — saves ~GB-scale decoded
+        # frames without breaking context pinning on next segment.
+        try:
+            gc.collect()
+            import comfy.model_management as _mm
+            _mm.soft_empty_cache()
+            _mm.cleanup_models()
+        except Exception:
+            pass
 
         chunk = decoded.cpu().float()
         if pre_export is not None:
@@ -958,6 +988,16 @@ def execute_director_plan_core(
             handoff=handoff,
             audio=audio_dict if isinstance(audio_dict, dict) else None,
         )
+        # Now safe to drop samples — continuity consumers already copied ref.
+        if samples is not None:
+            del samples
+            samples = None
+        try:
+            gc.collect()
+            import comfy.model_management as _mm
+            _mm.soft_empty_cache()
+        except Exception:
+            pass
         completed_outputs[seg.index] = chunk
         completed_pre_refine[seg.index] = pre_chunk
         completed_refine_passes[seg.index] = pass_clips
@@ -1007,7 +1047,11 @@ def execute_director_plan_core(
                 log.debug("Segment video preview skipped: %s", exc)
 
         if clear_vram_between_segments:
-            cleanup_segment_vram(enabled=True)
+            cleanup_segment_vram(
+                enabled=True,
+                force_deep=bool(deep_unload_between_segments),
+                segment_index=seg.index,
+            )
 
         reports.append(
             f"Segment {ui_idx + 1}/{timeline_seg_total}: {task_hint} "
@@ -1023,7 +1067,11 @@ def execute_director_plan_core(
     for seg in all_segments:
         if seg.index in run_indices:
             if clear_vram_between_segments and segment_outputs:
-                cleanup_segment_vram(enabled=True)
+                cleanup_segment_vram(
+                    enabled=True,
+                    force_deep=bool(deep_unload_between_segments),
+                    segment_index=seg.index,
+                )
             chunk, audio_dict, pre_chunk = _run_one_segment(
                 seg, progress_index=progress_pos[seg.index]
             )
@@ -1039,8 +1087,7 @@ def execute_director_plan_core(
         if plan.export_mode != "all":
             continue
 
-        # Prefer exact cache; pipeline-stale disk render is ok. A different
-        # source video is rejected so v2v/rv2v can passthrough the new clip.
+        # Prefer exact cache; fall back to stale disk render (never gray gen canvas).
         cached = load_segment_cache(node_id, seg, plan)
         used_stale = False
         if cached is None:
@@ -1157,6 +1204,154 @@ def execute_director_plan_core(
             for pos, idx in enumerate(run_list)
         ]
         export_frame_counts = [int(t.shape[0]) for t in segment_outputs]
+
+    # ================================================================
+    # MERGE MODE dispatcher (新增)
+    #   ・即时内存拼接(默认) → 原 concat_continuous_chunks (高内存，seam_blending完整)
+    #   ・延迟拼接(省内存+接缝修缝) → Scheme A: 仅接缝24帧重编码 + ffmpeg copy
+    #   ・仅分段导出不拼接 → 不合并，export_chunks 直接为各段 frames
+    # ================================================================
+    merge_mode = str(getattr(plan, "merge_mode", "即时内存拼接(默认)") or "即时内存拼接(默认)")
+    seam_blending_user = bool(getattr(plan, "seam_blending", True))
+    continuity_enabled_for_seam = bool(getattr(plan, "continuity_enabled", False))
+    merge_deferred_result = None
+    merge_note_added = False
+
+    if plan.export_mode == "all" and output_chunks and merge_mode.startswith("延迟拼接"):
+        reports.append(
+            f"Merge mode: 延迟拼接(省内存+接缝修缝) — scheme A. "
+            f"seam_blending={'ON' if seam_blending_user and continuity_enabled_for_seam else 'OFF'}. "
+            "All segments → per-seg MP4 on disk; only seam 24f × (N-1) decoded/re-encoded locally, "
+            "remainder stitched with lossless ffmpeg stream copy."
+        )
+        merge_note_added = True
+        # Assemble per-segment MP4 paths (already flushed inside _run_one_segment for
+        # sampled segments; for cache/passthrough segments we encode them now).
+        seg_mp4_paths: list[Path] = []
+        from .segment_mp4_export import segment_mp4_path as _seg_mp4_path_fn
+        for i, (seg, chunk_frames, chunk_audio) in enumerate(
+            zip(export_segments, export_chunks, export_audios)
+        ):
+            path = None
+            if mp4_run_dir is not None:
+                candidate = _seg_mp4_path_fn(mp4_run_dir, seg)
+                if candidate.exists():
+                    path = candidate
+                else:
+                    # Cache / passthrough segment had no chance to be flushed yet — do it now.
+                    try:
+                        from .segment_mp4_export import maybe_export_segment_mp4 as _exp_seg_mp4
+                        result = _exp_seg_mp4(
+                            mp4_run_dir, plan, seg, chunk_frames,
+                            chunk_audio if isinstance(chunk_audio, dict) and chunk_audio.get("waveform") is not None else None,
+                        )
+                        if result:
+                            path = Path(result)
+                    except Exception as exc:
+                        log.warning("deferred_merge: flushing mp4 for seg %d failed (%s); skipping.", seg.index, exc)
+            if path is None or not path.exists():
+                # Absolute last-resort: encode the already-in-memory chunk via write_frames_to_mp4.
+                try:
+                    tmp_dir = Path(tempfile.mkdtemp(prefix="mmx_seg_deferred_")) if mp4_run_dir is None else mp4_run_dir
+                    tmp_dir.mkdir(parents=True, exist_ok=True)
+                    enc_path = tmp_dir / f"seg_{int(seg.index):04d}_fallback.mp4"
+                    from ..lib.video_export import write_frames_to_mp4
+                    write_frames_to_mp4(
+                        enc_path,
+                        chunk_frames.cpu().float(),
+                        fps=float(plan.frame_rate or 24.0),
+                        audio=chunk_audio if isinstance(chunk_audio, dict) and chunk_audio.get("waveform") is not None else None,
+                    )
+                    path = enc_path
+                except Exception as exc2:
+                    log.warning(
+                        "deferred_merge: fallback write_frames_to_mp4 seg %d failed (%s); "
+                        "this segment will be DROPPED from the merged mp4 (only its frames are in tensor output).",
+                        seg.index, exc2,
+                    )
+                    continue
+            seg_mp4_paths.append(Path(path))
+
+        if seg_mp4_paths:
+            try:
+                from .deferred_merge import deferred_merge_with_seam_reencode
+                merge_deferred_result = deferred_merge_with_seam_reencode(
+                    segment_mp4_paths=seg_mp4_paths,
+                    fps=float(plan.frame_rate or 24.0),
+                    seam_blending_enabled=seam_blending_user,
+                    continuity_enabled=continuity_enabled_for_seam,
+                    release_vram_fn=lambda: cleanup_segment_vram(enabled=True, unload_models=True, force_deep=True),
+                )
+            except Exception as exc:
+                log.warning("deferred_merge: Scheme A merge failed (%s); falling back to in-memory concat.", exc)
+                reports.append(
+                    f"⚠️ 延迟拼接失败（{exc}）；回退到「即时内存拼接」。"
+                )
+                merge_deferred_result = None
+                merge_mode = "即时内存拼接(默认)"  # fall through
+
+    if plan.export_mode == "all" and output_chunks and merge_mode == "仅分段导出不拼接":
+        reports.append(
+            "Merge mode: 仅分段导出不拼接 — kept per-segment MP4 on disk; "
+            "images output uses per-segment chunks layout (export_mode=segments compatible)."
+        )
+        # Do NOT run concat_continuous_chunks; treat layout like "segments" export.
+        # The executor return contract still requires a "combined" tensor for the
+        # images_pre_refine / finalize_director_outputs pathway; use first chunk.
+        combined = export_chunks[0]
+        pre_source = export_pre_chunks if export_pre_chunks else segment_pre_refine
+        if not pre_source:
+            pre_source = list(segment_outputs)
+        pre_combined = pre_source[0]
+        return (
+            combined,
+            segment_outputs,
+            segment_audios,
+            "\n".join(reports),
+            export_frame_counts,
+            pre_combined,
+            segment_pre_refine,
+        )
+
+    if merge_deferred_result is not None:
+        # ---- Scheme A merged: preview-only on tensor; full movie on disk ----
+        reports.append(
+            f"✅ 延迟拼接完成：最终视频保存在 {merge_deferred_result.merged_video_path} "
+            f"（{merge_deferred_result.total_frames} 帧 @ {merge_deferred_result.fps:.2f}fps）。"
+            f" ComfyUI images 输出仅返回前 {int(merge_deferred_result.preview_frames.shape[0])} 帧预览以节省内存。"
+        )
+        if merge_deferred_result.merge_script_path is not None:
+            reports.append(
+                f"合并脚本（双击可在 Windows 下重试）：{merge_deferred_result.merge_script_path}"
+            )
+        # combined = preview frames only (matches deferred_merge semantics from Plus)
+        combined = merge_deferred_result.preview_frames.cpu().float()
+        # segment_outputs stays as-is (run list chunks for "segments" export)
+        # Replace completed_audios with merged audio for the final AUDIO output.
+        if merge_deferred_result.merged_audio is not None:
+            try:
+                wav = merge_deferred_result.merged_audio.view(1, -1).cpu().float()
+                sr = int(merge_deferred_result.sample_rate or 24000)
+                segment_audios = [{"waveform": wav, "sample_rate": sr}] * max(1, len(segment_outputs))
+                export_frame_counts = [int(merge_deferred_result.total_frames)]
+            except Exception as exc:
+                log.warning("deferred_merge: merged audio formatting failed (%s).", exc)
+        pre_source = export_pre_chunks if export_pre_chunks else segment_pre_refine
+        if not pre_source:
+            pre_source = list(segment_outputs)
+        # images_pre_refine also uses preview (never return full movie tensor on Scheme A)
+        pre_combined = combined.clone()
+        return (
+            combined,
+            segment_outputs,
+            segment_audios,
+            "\n".join(reports),
+            export_frame_counts,
+            pre_combined,
+            segment_pre_refine,
+        )
+
+    # ---- 即时内存拼接(默认) ---- Original behavior preserved exactly.
     combined = concat_continuous_chunks(export_chunks, export_segments, plan)
     pre_source = export_pre_chunks if export_pre_chunks else segment_pre_refine
     if not pre_source:
