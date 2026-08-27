@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -214,6 +215,29 @@ def _audio_payload_to_cpu(audio: dict[str, Any] | None) -> dict[str, Any] | None
     }
 
 
+def _frames_to_disk(tensor: torch.Tensor) -> torch.Tensor:
+    """像素帧 [N,H,W,3]（取值 [0,1]）转 uint8 存盘，体积降到 float32 的 1/4。
+
+    终采/首采帧最终都按 8-bit 编码为 mp4/jpeg（导出时 clamp(0,1)*255→uint8），
+    缓存里保留 float32 纯属浪费；uint8 量化误差 ±1/255，对合并/连贯性/导出无可感影响。
+    """
+    x = tensor.detach().cpu()
+    if x.dtype == torch.uint8:
+        return x.contiguous()
+    return (
+        x.float().clamp(0, 1).mul(255).round().clamp(0, 255).to(torch.uint8).contiguous()
+    )
+
+
+def _frames_from_disk(loaded: Any) -> torch.Tensor | None:
+    """uint8 磁盘帧还原为 float32 [0,1]；旧版 float32 缓存直接透传（向后兼容）。"""
+    if not isinstance(loaded, torch.Tensor):
+        return None
+    if loaded.dtype == torch.uint8:
+        return loaded.float().div(255.0)
+    return loaded.float()
+
+
 def save_segment_cache(
     node_id: str | None,
     seg: SegmentPlan,
@@ -246,7 +270,7 @@ def save_segment_cache(
     handoff_path = root / f"seg_{idx:04d}.handoff.json"
     audio_path = root / f"seg_{idx:04d}.audio.pt"
     try:
-        payload = tensor.cpu().float().contiguous()
+        payload = _frames_to_disk(tensor)
         _write_via_temp(pt_path, lambda p: torch.save(payload, p))
         text = json.dumps(fp, ensure_ascii=False, sort_keys=True)
         _write_via_temp(
@@ -472,7 +496,9 @@ def load_segment_cache(
                 "Segment %d: using cache without meta for export fill.",
                 idx + 1,
             )
-        return torch.load(tensor_path, map_location="cpu", weights_only=True)
+        return _frames_from_disk(
+            torch.load(tensor_path, map_location="cpu", weights_only=True)
+        )
     except Exception as exc:
         log.warning("Failed to load segment %d cache: %s", idx + 1, exc)
         return None
@@ -547,7 +573,7 @@ def save_first_pass_cache(
                 ),
             )
         if isinstance(frames, torch.Tensor) and frames.numel() > 0:
-            payload = frames.detach().cpu().float().contiguous()
+            payload = _frames_to_disk(frames)
             _write_via_temp(frames_path, lambda p: torch.save(payload, p))
         log.debug(
             "Cached first-pass segment %d for node %s (seed=%s)",
@@ -606,7 +632,7 @@ def load_first_pass_cache(
             try:
                 loaded = torch.load(frames_path, map_location="cpu", weights_only=True)
                 if isinstance(loaded, torch.Tensor) and loaded.numel() > 0:
-                    frames = loaded.float()
+                    frames = _frames_from_disk(loaded)
             except Exception as exc:
                 log.debug("Segment %d first-pass frames skipped: %s", idx + 1, exc)
         handoff: dict[str, Any] = {}
@@ -621,3 +647,37 @@ def load_first_pass_cache(
     except Exception as exc:
         log.warning("Failed to load segment %d first-pass cache: %s", idx + 1, exc)
         return None
+
+
+_SEG_CACHE_FILE_RE = re.compile(r"^seg_(\d+)\.")
+
+
+def prune_segment_cache(node_id: str | None, valid_indices) -> None:
+    """删除本节点下不属于当前时间轴段索引的缓存文件，回收被删/缩短段占用的磁盘。
+
+    时间轴从 N 段减到 M 段后，旧的 seg_XXXX.*（含 .pt/.av.pt/.pre.* 等）不会被覆盖，
+    会一直残留导致 minimax_seg_cache 只增不减。每次运行开始时按当前全部段索引裁剪。
+    只匹配 seg_XXXX.* 段文件；目录不存在时不创建；任何异常都不影响生成。
+    """
+    if not node_id:
+        return
+    try:
+        root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+        if not root.is_dir():
+            return
+        valid = {int(i) for i in valid_indices}
+        removed = 0
+        for path in root.iterdir():
+            if not path.is_file():
+                continue
+            m = _SEG_CACHE_FILE_RE.match(path.name)
+            if not m or int(m.group(1)) in valid:
+                continue
+            if _safe_unlink(path):
+                removed += 1
+        if removed:
+            log.info(
+                "Segment cache pruned %d stale file(s) for node %s.", removed, node_id
+            )
+    except Exception as exc:
+        log.debug("Segment cache prune skipped (%s).", exc)

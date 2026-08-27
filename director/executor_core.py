@@ -61,6 +61,7 @@ from .segment_cache import (
     load_segment_av_latent,
     load_segment_cache,
     load_segment_handoff_meta,
+    prune_segment_cache,
     save_first_pass_cache,
     save_segment_cache,
 )
@@ -284,6 +285,9 @@ def execute_director_plan_core(
     live_tae_preview = False if raw_live in (False, 0, "0", "false", "False", "off") else True
 
     all_segments = plan.segments
+    # 回收已删除/缩短段的磁盘缓存，避免 minimax_seg_cache 只增不减。
+    # 用全部段索引（非 run_indices）：「选择运行」时未选段仍要命中缓存用于合并/导出。
+    prune_segment_cache(node_id, [seg.index for seg in all_segments])
     # Strictly honor「选择运行」— never force-sample unselected segments.
     run_indices = plan.run_indices if plan.run_indices is not None else frozenset(range(len(all_segments)))
 
