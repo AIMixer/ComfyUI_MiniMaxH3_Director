@@ -74,6 +74,11 @@ import {
     wireMediaDuration,
 } from "./minimax_image_batch.js";
 import {
+    extractReferenceAudioFromExistingVideo,
+    hasDuplicateReferenceAudio,
+    prepareLocalReferenceAudio,
+} from "./minimax_ref_audio.js";
+import {
     FL2V_STYLES,
     bindFl2vEvents,
     buildFl2vPayloadFields,
@@ -7108,7 +7113,7 @@ class MiniMaxH3DirectorEditor {
             const previewEl = panel.querySelector(".bd-media-preview");
             const previewEmptyEl = panel.querySelector(".bd-media-preview-empty");
             const metaEl = panel.querySelector(".bd-media-meta");
-            const showDims = kind !== "audio";
+            const showDims = kind !== "audio" && kind !== "reference_audio";
             if (!showDims) {
                 tableEl.classList.add("bd-media-nodims");
                 tableEl.querySelector('.bd-media-th[data-sort="dims"]')?.remove();
@@ -7142,6 +7147,7 @@ class MiniMaxH3DirectorEditor {
                     fileName: item.fileName || item.name || item.relPath,
                     subfolder: item.subfolder || "",
                     type: item.type || "input",
+                    mediaKind: item.mediaKind || kind,
                 };
             };
 
@@ -7209,12 +7215,13 @@ class MiniMaxH3DirectorEditor {
                 }
                 const relPath = item.relPath;
                 const type = item.type || "input";
-                if (kind === "image") {
+                const previewKind = kind === "reference_audio" ? item.mediaKind : kind;
+                if (previewKind === "image") {
                     const img = document.createElement("img");
                     img.src = inputViewUrl(relPath, type);
                     img.alt = item.fileName || item.name || relPath;
                     previewEl.appendChild(img);
-                } else if (kind === "audio") {
+                } else if (previewKind === "audio") {
                     const audio = document.createElement("audio");
                     audio.src = inputViewUrl(relPath, type);
                     audio.controls = true;
@@ -7270,7 +7277,10 @@ class MiniMaxH3DirectorEditor {
                     if (item.relPath === selectedValue) row.classList.add("selected");
                     const nameTd = document.createElement("div");
                     nameTd.className = "bd-media-td bd-media-td-name";
-                    nameTd.textContent = item.relPath || item.fileName || item.name || "";
+                    const mediaPrefix = kind === "reference_audio"
+                        ? (item.mediaKind === "video" ? "🎞 " : "♪ ")
+                        : "";
+                    nameTd.textContent = `${mediaPrefix}${item.relPath || item.fileName || item.name || ""}`;
                     nameTd.title = nameTd.textContent;
                     const timeTd = document.createElement("div");
                     timeTd.className = "bd-media-td bd-media-td-time";
@@ -7465,20 +7475,17 @@ class MiniMaxH3DirectorEditor {
 
     async chooseAudioInput(opts = {}) {
         const choice = await this.showInputMediaPicker({
-            kind: "audio",
+            kind: "reference_audio",
             title: opts.title || t("mediaPicker.pickAudio"),
-            accept: "audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac",
+            accept: "audio/*,video/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma,.mp4,.mov,.webm,.mkv,.avi,.m4v,.mpg,.mpeg,.mts,.ts",
             currentValue: opts.currentValue || "",
         });
         if (!choice) return null;
         if (choice.source === "file" && choice.file) {
-            const uploaded = await uploadToInput(choice.file);
-            return {
-                relPath: videoRelativePath(uploaded),
-                fileName: uploaded?.name || choice.file.name || "",
-                subfolder: uploaded?.subfolder || "",
-                type: uploaded?.type || "input",
-            };
+            return prepareLocalReferenceAudio(choice.file);
+        }
+        if (choice.mediaKind === "video") {
+            return extractReferenceAudioFromExistingVideo(choice);
         }
         return {
             relPath: choice.relPath,
@@ -10234,7 +10241,7 @@ class MiniMaxH3DirectorEditor {
     pickRefAudio(target, index) {
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = "audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac";
+        input.accept = "audio/*,video/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma,.mp4,.mov,.webm,.mkv,.avi,.m4v,.mpg,.mpeg,.mts,.ts";
         input.onchange = () => {
             const file = input.files?.[0];
             if (file) this.addRefAudioFromFile(file, target, index);
@@ -10252,15 +10259,19 @@ class MiniMaxH3DirectorEditor {
             if (index == null) return;
         }
         try {
-            const uploaded = await uploadToInput(file);
-            const relPath = videoRelativePath(uploaded);
+            const prepared = await prepareLocalReferenceAudio(file);
+            const relPath = prepared.relPath;
+            if (hasDuplicateReferenceAudio(target.refAudios, relPath, index)) {
+                alert(t("ref.audioDuplicate"));
+                return;
+            }
             target.refAudios = target.refAudios.filter((r) => Number(r.index ?? r.slot) !== index);
             target.refAudios.push({
                 index,
                 audioFile: relPath,
-                fileName: uploaded?.name || file.name,
-                type: "input",
-                subfolder: uploaded?.subfolder || "",
+                fileName: prepared.fileName || file.name,
+                type: prepared.type || "input",
+                subfolder: prepared.subfolder || "",
             });
             if (this.isR2vCommonEnabled() && target === this.timeline.global) {
                 rebaseR2vGroupSlotsForCommon(this);
@@ -10570,6 +10581,10 @@ class MiniMaxH3DirectorEditor {
                 title: t("mediaPicker.pickReferenceAudio"),
             });
             if (!picked?.relPath) return;
+            if (hasDuplicateReferenceAudio(target.refAudios, picked.relPath, index)) {
+                alert(t("ref.audioDuplicate"));
+                return;
+            }
             target.refAudios = target.refAudios.filter((r) => Number(r.index ?? r.slot) !== index);
             target.refAudios.push({
                 index,

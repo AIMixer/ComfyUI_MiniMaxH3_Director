@@ -35,6 +35,11 @@ import {
 } from "./minimax_gen_timeline.js";
 import { refreshPromptTokenEditors, teardownPromptImageMentions, wirePromptImageMentions } from "./minimax_prompt_mentions.js";
 import { t } from "./minimax_i18n.js";
+import {
+    hasDuplicateReferenceAudio,
+    isReferenceAudioSourceFile,
+    prepareLocalReferenceAudio,
+} from "./minimax_ref_audio.js";
 
 const _players = new WeakMap();
 /** r2v picture grid: 9 slots in 3×3; reveal 3 → 6 → 9. */
@@ -934,13 +939,6 @@ function isBatchVideoFile(file) {
     );
 }
 
-function isBatchAudioFile(file) {
-    return !!file && (
-        String(file.type || "").startsWith("audio/")
-        || /\.(wav|mp3|flac|ogg|m4a|aac)$/i.test(file.name || "")
-    );
-}
-
 function bindOsFileDrop(el, onFiles) {
     el.addEventListener("dragover", (e) => {
         const types = [...(e.dataTransfer?.types || [])];
@@ -1164,18 +1162,22 @@ function removeSegRef(editor, index, slot) {
 }
 
 async function assignSegAudioFromFile(editor, index, slot, file) {
-    if (!isBatchAudioFile(file)) return false;
+    if (!isReferenceAudioSourceFile(file)) return false;
     try {
-        const uploaded = await uploadMedia(file);
+        const prepared = await prepareLocalReferenceAudio(file);
         const seg = editor.timeline.segments[index];
         if (!seg) return false;
+        if (hasDuplicateReferenceAudio(seg.refAudios, prepared.relPath, slot)) {
+            alert(t("ref.audioDuplicate"));
+            return false;
+        }
         seg.refAudios = (seg.refAudios || []).filter((r) => Number(r.index ?? r.slot) !== slot);
         seg.refAudios.push({
             index: slot,
-            audioFile: relPath(uploaded),
-            fileName: uploaded?.name || file.name,
-            type: "input",
-            subfolder: uploaded?.subfolder || "",
+            audioFile: prepared.relPath,
+            fileName: prepared.fileName || file.name,
+            type: prepared.type || "input",
+            subfolder: prepared.subfolder || "",
         });
         editor.renderImageBatchGroups();
         editor.commit();
@@ -1188,7 +1190,7 @@ async function assignSegAudioFromFile(editor, index, slot, file) {
 }
 
 async function uploadSegAudio(editor, index, slot) {
-    pickFile("audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac", (file) => {
+    pickFile("audio/*,video/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma,.mp4,.mov,.webm,.mkv,.avi,.m4v,.mpg,.mpeg,.mts,.ts", (file) => {
         void assignSegAudioFromFile(editor, index, slot, file);
     });
 }
@@ -1278,6 +1280,10 @@ async function pickExistingSegAudio(editor, index, offset, slots) {
         if (!picked?.relPath) return;
         const live = editor.timeline.segments[index];
         if (!live) return;
+        if (hasDuplicateReferenceAudio(live.refAudios, picked.relPath, slot)) {
+            alert(t("ref.audioDuplicate"));
+            return;
+        }
         live.refAudios = (live.refAudios || []).filter((r) => Number(r.index ?? r.slot) !== slot);
         live.refAudios.push({
             index: slot,
@@ -1869,7 +1875,7 @@ function appendR2vMediaSections(card, seg, index, editor) {
     audios.className = "bd-batch-audios";
     if (audSlots > 0) {
         bindOsFileDrop(audios, (files, e) => dropFilesIntoGroupSlots(editor, index, files, e, {
-            isFile: isBatchAudioFile,
+            isFile: isReferenceAudioSourceFile,
             slotSelector: ".bd-batch-audio",
             offset: audOffset,
             slots: audSlots,

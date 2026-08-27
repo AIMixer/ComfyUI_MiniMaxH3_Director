@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
 import os
 import re
 import shutil
-import json
+import subprocess
+import uuid
+from pathlib import Path
 
 import folder_paths
 from aiohttp import web
@@ -15,6 +20,8 @@ from server import PromptServer
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director")
 
 CHUNK_ROOT = os.path.join(folder_paths.get_temp_directory(), "minimax_upload_chunks")
+REF_AUDIO_CHUNK_ROOT = os.path.join(folder_paths.get_temp_directory(), "minimax_ref_audio_chunks")
+REF_AUDIO_SUBFOLDER = "minimax_ref_audio"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpg", ".mpeg", ".mts", ".ts"}
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
@@ -47,7 +54,9 @@ def _get_media_exts(kind: str) -> set[str]:
         return VIDEO_EXTS
     if kind == "audio":
         return AUDIO_EXTS
-    raise ValueError("kind must be image, video or audio")
+    if kind == "reference_audio":
+        return AUDIO_EXTS | VIDEO_EXTS
+    raise ValueError("kind must be image, video, audio or reference_audio")
 
 
 def _peek_image_size(path: str) -> tuple[int, int]:
@@ -109,6 +118,9 @@ def _list_input_media(kind: str) -> list[dict]:
                     "modified": float(stat.st_mtime),
                     "width": width,
                     "height": height,
+                    "mediaKind": "video" if ext in VIDEO_EXTS else (
+                        "audio" if ext in AUDIO_EXTS else "image"
+                    ),
                 }
             )
     items.sort(key=lambda item: (-item["modified"], item["relPath"]))
@@ -177,6 +189,199 @@ async def minimax_upload_video_chunk(request):
     shutil.rmtree(session_dir, ignore_errors=True)
     log.info("MiniMax H3 Director uploaded video to input/: %s", filename)
     return web.json_response({"name": filename, "subfolder": "", "type": "input"})
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as src:
+        while True:
+            block = src.read(4 * 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _reference_audio_result(path: str, *, reused: bool, source_kind: str) -> dict:
+    name = os.path.basename(path)
+    rel_path = f"{REF_AUDIO_SUBFOLDER}/{name}"
+    return {
+        "name": name,
+        "fileName": name,
+        "relPath": rel_path,
+        "subfolder": REF_AUDIO_SUBFOLDER,
+        "type": "input",
+        "reused": bool(reused),
+        "sourceKind": source_kind,
+    }
+
+
+def _find_prepared_audio(output_dir: str, digest: str, extension: str) -> str | None:
+    pattern = f"*__{digest}{extension}"
+    for candidate in Path(output_dir).glob(pattern):
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _prepare_reference_audio(source_path: str, display_name: str) -> dict:
+    """Deduplicate audio inputs or extract a video's first audio stream to FLAC."""
+    if not os.path.isfile(source_path) or os.path.getsize(source_path) <= 0:
+        raise ValueError("Reference audio source is empty or missing.")
+    ext = os.path.splitext(display_name or source_path)[1].lower()
+    if ext not in AUDIO_EXTS | VIDEO_EXTS:
+        raise ValueError("Unsupported reference audio source format.")
+
+    digest = _sha256_file(source_path)[:12]
+    safe_name = _safe_basename(display_name or os.path.basename(source_path))
+    safe_stem = os.path.splitext(safe_name)[0] or "reference_audio"
+    output_dir = os.path.join(folder_paths.get_input_directory(), REF_AUDIO_SUBFOLDER)
+    os.makedirs(output_dir, exist_ok=True)
+
+    if ext in AUDIO_EXTS:
+        existing = _find_prepared_audio(output_dir, digest, ext)
+        if existing:
+            return _reference_audio_result(existing, reused=True, source_kind="audio")
+        output_name = f"{safe_stem}__{digest}{ext}"
+        output_path = os.path.join(output_dir, output_name)
+        tmp_path = os.path.join(output_dir, f".{uuid.uuid4().hex}{ext}")
+        try:
+            shutil.copyfile(source_path, tmp_path)
+            os.replace(tmp_path, output_path)
+        finally:
+            try:
+                if os.path.isfile(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+        return _reference_audio_result(output_path, reused=False, source_kind="audio")
+
+    existing = _find_prepared_audio(output_dir, digest, ".flac")
+    if existing:
+        return _reference_audio_result(existing, reused=True, source_kind="video")
+    output_name = f"{safe_stem}__{digest}.flac"
+    output_path = os.path.join(output_dir, output_name)
+
+    from ..lib.audio_io import _ffmpeg_bin
+
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is unavailable; cannot extract audio from video.")
+    tmp_path = os.path.join(output_dir, f".{uuid.uuid4().hex}.flac")
+    args = [
+        ffmpeg,
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        source_path,
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-c:a",
+        "flac",
+        "-compression_level",
+        "5",
+        "-y",
+        tmp_path,
+    ]
+    try:
+        result = subprocess.run(args, capture_output=True, check=False)
+        if result.returncode != 0 or not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) <= 0:
+            error = (result.stderr or b"").decode("utf-8", errors="replace").strip()
+            raise RuntimeError(error or "The selected video has no decodable audio stream.")
+        os.replace(tmp_path, output_path)
+    finally:
+        try:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+    return _reference_audio_result(output_path, reused=False, source_kind="video")
+
+
+async def minimax_extract_reference_audio(request):
+    """Extract an existing input video's audio immediately, with content dedupe."""
+    try:
+        body = await request.json()
+        video_file = str(body.get("videoFile") or body.get("relPath") or "").strip()
+        if not video_file:
+            return web.Response(status=400, text="Missing videoFile.")
+        from ..lib.video_io import resolve_video_path
+
+        clip = {
+            "videoFile": video_file,
+            "fileName": str(body.get("fileName") or os.path.basename(video_file)),
+            "subfolder": str(body.get("subfolder") or ""),
+            "type": str(body.get("type") or "input"),
+        }
+        source_path = resolve_video_path(clip)
+        if os.path.splitext(source_path)[1].lower() not in VIDEO_EXTS:
+            return web.Response(status=400, text="Selected source is not a supported video.")
+        result = await asyncio.to_thread(
+            _prepare_reference_audio,
+            source_path,
+            clip["fileName"] or os.path.basename(source_path),
+        )
+        return web.json_response(result)
+    except Exception as exc:
+        log.warning("MiniMax H3 Director reference audio extraction failed: %s", exc)
+        return web.Response(status=400, text=str(exc))
+
+
+async def minimax_prepare_reference_audio_chunk(request):
+    """Receive a local audio/video in chunks; keep only the deduplicated audio result."""
+    session_dir = ""
+    try:
+        post = await request.post()
+        upload_id = str(post.get("upload_id") or "").strip()
+        filename = _safe_basename(post.get("filename"))
+        chunk_field = post.get("chunk")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", upload_id) or chunk_field is None:
+            return web.Response(status=400, text="Invalid reference audio upload.")
+        try:
+            chunk_index = int(post.get("chunk_index", 0))
+            total_chunks = int(post.get("total_chunks", 1))
+        except (TypeError, ValueError):
+            return web.Response(status=400, text="Invalid chunk index.")
+        if total_chunks < 1 or chunk_index < 0 or chunk_index >= total_chunks:
+            return web.Response(status=400, text="Chunk index out of range.")
+        if os.path.splitext(filename)[1].lower() not in AUDIO_EXTS | VIDEO_EXTS:
+            return web.Response(status=400, text="Unsupported reference audio source format.")
+
+        session_dir = os.path.join(REF_AUDIO_CHUNK_ROOT, upload_id)
+        os.makedirs(session_dir, exist_ok=True)
+        part_path = os.path.join(session_dir, f"{chunk_index:06d}.part")
+        with open(part_path, "wb") as out:
+            while True:
+                block = chunk_field.file.read(1024 * 1024)
+                if not block:
+                    break
+                out.write(block)
+        if chunk_index + 1 < total_chunks:
+            response = web.json_response({"status": "ok", "chunk_index": chunk_index})
+            session_dir = ""
+            return response
+
+        source_path = os.path.join(session_dir, filename)
+        with open(source_path, "wb") as out:
+            for index in range(total_chunks):
+                part = os.path.join(session_dir, f"{index:06d}.part")
+                if not os.path.isfile(part):
+                    raise ValueError(f"Missing chunk {index}.")
+                with open(part, "rb") as src:
+                    shutil.copyfileobj(src, out)
+        result = await asyncio.to_thread(_prepare_reference_audio, source_path, filename)
+        return web.json_response(result)
+    except Exception as exc:
+        log.warning("MiniMax H3 Director local reference audio preparation failed: %s", exc)
+        return web.Response(status=400, text=str(exc))
+    finally:
+        if session_dir:
+            shutil.rmtree(session_dir, ignore_errors=True)
 
 
 async def minimax_probe_video(request):
@@ -384,6 +589,18 @@ def register_routes() -> bool:
 
     routes = server.routes
     _register_route(routes, "POST", "/minimax/director/upload_chunk", minimax_upload_video_chunk)
+    _register_route(
+        routes,
+        "POST",
+        "/minimax/director/extract_reference_audio",
+        minimax_extract_reference_audio,
+    )
+    _register_route(
+        routes,
+        "POST",
+        "/minimax/director/prepare_reference_audio_chunk",
+        minimax_prepare_reference_audio_chunk,
+    )
     _register_route(routes, "POST", "/minimax/director/probe_video", minimax_probe_video)
     _register_route(routes, "GET", "/minimax/director/probe_video", minimax_probe_video)
     _register_route(routes, "GET", "/minimax/director/list_input_media", minimax_list_input_media)

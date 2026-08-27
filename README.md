@@ -26,6 +26,8 @@
 | **二采 / 放大 (Refine)** | 外接 **MiniMax H3 Director Refine** 到导演台 `refine` 口。未接线 = 原来的单次采样。`refine` = 同分辨率精修；`upscale` = 先放大到目标画布再按 SIGMAS 二采（像素插值 / RTX VSR / H3 latent）；`latent_upscale` = 只放大 H3 latent、不二采。`passes` 可多次精修（upscale 只放大一次）。可选接 `refine_model` 换二采 UNET。`images` 为二采后成片，`images_pre_refine` 为一采（放大前）画面 |
 | **运行报告** | `report` 口输出分段计划、每段任务摘要 |
 
+参考音频槽可直接选择已有视频，或从本地选择音频/视频；视频会立即提取首条音轨为 FLAC，结果保存到 `input/minimax_ref_audio/`。本地视频只在临时目录中用于提取，不会作为视频素材保存。输出文件按内容指纹去重，同一素材重复选择会复用已有音频，当前素材组也不会重复添加同一路径。
+
 ### 输入 / 输出
 
 **输入：** `model` → `video_vae` → `audio_vae` → `clip`  
