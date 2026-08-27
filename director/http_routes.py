@@ -49,9 +49,24 @@ def _get_media_exts(kind: str) -> set[str]:
     raise ValueError("kind must be image, video or audio")
 
 
+def _peek_image_size(path: str) -> tuple[int, int]:
+    """Read width/height from the image header without decoding pixels."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            w, h = im.size
+            return int(w or 0), int(h or 0)
+    except Exception:
+        return 0, 0
+
+
 def _list_input_media(kind: str) -> list[dict]:
     input_dir = folder_paths.get_input_directory()
     exts = _get_media_exts(kind)
+    peek_video = None
+    if kind == "video":
+        from ..lib.video_io import peek_video_size as peek_video
     items: list[dict] = []
     for root, dirs, files in os.walk(input_dir):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
@@ -75,6 +90,14 @@ def _list_input_media(kind: str) -> list[dict]:
             subfolder = os.path.dirname(rel_path).replace("\\", "/")
             if subfolder == ".":
                 subfolder = ""
+            width, height = (0, 0)
+            if ext in IMAGE_EXTS:
+                width, height = _peek_image_size(abs_path)
+            elif peek_video is not None and ext in VIDEO_EXTS:
+                try:
+                    width, height = peek_video(abs_path)
+                except Exception:
+                    width, height = 0, 0
             items.append(
                 {
                     "name": name,
@@ -83,6 +106,8 @@ def _list_input_media(kind: str) -> list[dict]:
                     "subfolder": subfolder,
                     "type": "input",
                     "modified": float(stat.st_mtime),
+                    "width": width,
+                    "height": height,
                 }
             )
     items.sort(key=lambda item: (-item["modified"], item["relPath"]))

@@ -441,6 +441,14 @@ def apply_motion_context(
             # Avoid duplicating director context markers.
             if CTX_FRAME_KEY in kf:
                 continue
+            # fl2v keeps the stock last_frame keyframe. Mark it with its own
+            # resolved_frame_index (same pixel-index space as CTX_FRAME_KEY) so
+            # _rewrite_keyframe_times can re-time it when references shift the
+            # target origin, instead of skipping it and tripping the guard.
+            rfi = int(kf.get("resolved_frame_index", -1))
+            if rfi >= 0:
+                kf = dict(kf)
+                kf[CTX_FRAME_KEY] = rfi
             merged.append(kf)
 
     values: dict[str, Any] = {

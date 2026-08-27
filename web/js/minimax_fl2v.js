@@ -37,14 +37,14 @@ export const FL2V_STYLES = `
 .bd-fl2v-shot.selected{border-color:#4fff8f;box-shadow:0 0 0 1px rgba(79,255,143,.35)}
 .bd-fl2v-shot.shot-dragging{opacity:.4}
 .bd-fl2v-shot.shot-drag-over{border-color:#5ec8ff;box-shadow:0 0 0 1px rgba(94,200,255,.45)}
-.bd-fl2v-shot-head{display:flex;align-items:center;justify-content:space-between;gap:6px;cursor:default;user-select:none}
-.bd-fl2v-shot-drag{display:flex;align-items:center;flex:1;min-width:0;cursor:grab}
+.bd-fl2v-shot-head{display:flex;align-items:center;justify-content:flex-start;gap:6px;cursor:default;user-select:none;min-height:18px}
+.bd-fl2v-shot-drag{display:flex;align-items:center;flex:0 1 auto;min-width:0;cursor:grab}
 .bd-fl2v-shot-drag:active{cursor:grabbing}
 .bd-fl2v-shot-head b{color:#ccc;font-size:12px}
-.bd-fl2v-shot-cont{display:flex;align-items:center;position:relative;z-index:2}
-.bd-fl2v-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;-webkit-user-drag:none}
-.bd-fl2v-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff;pointer-events:auto;-webkit-user-drag:none}
-.bd-fl2v-shot-meta{color:#888;font-size:10px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bd-fl2v-shot-cont{display:flex;align-items:center;position:relative;z-index:2;flex:0 0 auto;margin-left:2px}
+.bd-fl2v-continuity{display:inline-flex;align-items:center;gap:3px;font-size:10px;color:#9ab;cursor:pointer;user-select:none;-webkit-user-drag:none;white-space:nowrap}
+.bd-fl2v-continuity input{width:13px;height:13px;margin:0;cursor:pointer;accent-color:#6ab0ff;pointer-events:auto;-webkit-user-drag:none}
+.bd-fl2v-shot-meta{color:#888;font-size:10px;flex-shrink:1;min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bd-fl2v-slots{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .bd-fl2v-slot-wrap{position:relative;min-width:0}
 .bd-fl2v-slot{position:relative;aspect-ratio:var(--fl2v-slot-ar,16/9);border:1px dashed #555;border-radius:4px;background:#111;overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:pointer}
@@ -840,7 +840,7 @@ export function swapFl2vShots(editor, fromIndex, toIndex) {
 }
 
 function bindFl2vShotCardDnD(editor, cardEl, shotIndex) {
-    // Drag only the title — never the checkbox row. Nearby draggable=true
+    // Drag only the title — never the header checkbox. Nearby draggable=true
     // swallows 引用上段 clicks on Windows.
     cardEl.draggable = false;
     const handles = cardEl.querySelectorAll(".bd-fl2v-shot-drag");
@@ -1129,9 +1129,9 @@ function renderFl2vShotCards(editor) {
         card.innerHTML = `
             <div class="bd-fl2v-shot-head">
                 <span class="bd-fl2v-shot-drag"><b>${t("panel.fl2v.shotN", { n: i + 1 })}</b></span>
+                ${showCont ? `<div class="bd-fl2v-shot-cont"><label class="bd-fl2v-continuity" draggable="false" title="${t("tooltip.segmentContinuityFromPrev")}"><input type="checkbox" data-r="shot-continuity" ${contChecked ? "checked" : ""}><span>${t("batch.continuityFromPrev")}</span></label></div>` : ""}
                 <span class="bd-fl2v-shot-meta">${badge} · ${fc}f</span>
             </div>
-            ${showCont ? `<div class="bd-fl2v-shot-cont"><label class="bd-fl2v-continuity" draggable="false" title="${t("tooltip.segmentContinuityFromPrev")}"><input type="checkbox" data-r="shot-continuity" ${contChecked ? "checked" : ""}><span>${t("batch.continuityFromPrev")}</span></label></div>` : ""}
             <div class="bd-fl2v-slots">
                 <div class="bd-fl2v-slot-wrap${startUrl ? " has-img" : ""}">
                     <div class="bd-fl2v-slot${startUrl ? " has-img" : ""}" data-slot="start" title="${t("tooltip.fl2vStartSlot")}">
@@ -1581,6 +1581,8 @@ export function isFl2vTaskValue(taskTypeValue) {
 
 export function setFl2vToolbar(editor, enabled) {
     const disable = [
+        editor.btnVideo,
+        editor.btnVideoExisting,
         editor.btnVideoAppend,
         editor.root?.querySelector('[data-a="split"]'),
         editor.root?.querySelector('[data-a="smart-split"]'),
@@ -1597,11 +1599,6 @@ export function setFl2vToolbar(editor, enabled) {
     if (editor.equalCountInput) {
         editor.equalCountInput.disabled = enabled;
         editor.equalCountInput.classList.toggle("hidden", enabled);
-    }
-    // Hide legacy "upload video" — use 添加一组 instead.
-    if (editor.btnVideo) {
-        editor.btnVideo.classList.toggle("hidden", enabled);
-        editor.btnVideo.disabled = enabled;
     }
     const externalLocked = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
     const del = editor.root?.querySelector('[data-a="del"]');

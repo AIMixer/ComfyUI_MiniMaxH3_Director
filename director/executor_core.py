@@ -616,7 +616,7 @@ def execute_director_plan_core(
                 audio_vae=audio_vae,
                 continue_audio=pin_audio,
                 # t2v/i2v/r2v/v2v/rv2v: context owns the head.
-                # fl2v may keep unmarked last_frame keyframe.
+                # fl2v keeps last_frame, marked so origin-shift retiming can move it.
                 keep_existing_keyframes=(seg.task_key == "fl2v"),
                 context_end_frame=prev_end_frame,
                 audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,

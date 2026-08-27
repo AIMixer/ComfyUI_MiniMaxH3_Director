@@ -127,6 +127,26 @@ def _ffprobe_stream_info(path: str) -> dict | None:
     return streams[0] if streams else None
 
 
+def peek_video_size(path: str) -> tuple[int, int]:
+    """Width/height from container metadata. Does not decode frames or count them."""
+    if not path or not os.path.isfile(path):
+        return 0, 0
+    try:
+        stream = _ffprobe_stream_info(path)
+        if stream:
+            w = int(stream.get("width") or 0)
+            h = int(stream.get("height") or 0)
+            if w > 0 and h > 0:
+                return w, h
+    except Exception:
+        pass
+    try:
+        meta = _opencv_probe(path)
+        return int(meta.get("width") or 0), int(meta.get("height") or 0)
+    except Exception:
+        return 0, 0
+
+
 def _ffprobe_count_frames(path: str) -> int | None:
     import subprocess
 

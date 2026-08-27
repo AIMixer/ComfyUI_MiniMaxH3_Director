@@ -111,6 +111,10 @@ const RULER_H = 24;
 const SEG_LABEL_H = 20;
 const TRACK_H = 160;
 const TRACK_Y = RULER_H + SEG_LABEL_H;
+/** Nice major steps (seconds) for CapCut-style ruler labels. */
+const RULER_MAJOR_SEC = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+const RULER_MIN_MAJOR_PX = 64;
+const RULER_MIN_MINOR_PX = 7;
 const STAGE_PREVIEW_H = 220;
 const LIVE_SAMPLE_PREVIEW_H = 320;
 const MIN_SEG = 4;
@@ -601,13 +605,33 @@ const STYLES = `
 .bd-modal-item:hover{background:#252525;color:#eee}
 .bd-modal-item.selected{background:#2a2a2a;border-color:#4fff8f;color:#fff}
 .bd-modal-actions{display:flex;gap:8px;justify-content:flex-end;flex-shrink:0}
-.bd-media-toolbar{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.bd-media-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.bd-media-head .bd-modal-title{flex:1;min-width:0;padding-top:4px}
+.bd-media-head-actions{display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end}
 .bd-media-status{color:#999;font-size:11px;line-height:1.4;min-height:15px}
-.bd-media-modal{max-width:820px}
-.bd-media-body{display:grid;grid-template-columns:minmax(260px,1fr) minmax(280px,.92fr);gap:10px;min-height:280px}
+.bd-media-modal{max-width:860px}
+.bd-media-modal .bd-btn-primary{background:#2f9e44;border-color:#3cb054;color:#fff}
+.bd-media-modal .bd-btn-primary:hover{background:#38b04a;border-color:#4bc45c;color:#fff}
+.bd-media-body{display:grid;grid-template-columns:minmax(320px,1.2fr) minmax(240px,.8fr);gap:10px;min-height:280px}
 .bd-media-left,.bd-media-right{display:flex;flex-direction:column;gap:8px;min-width:0}
-.bd-media-select{width:100%;min-height:220px;max-height:320px;background:#141414;border:1px solid #333;border-radius:6px;color:#eee;padding:6px;font-size:11px;box-sizing:border-box;flex:1}
-.bd-media-select option{padding:4px 6px}
+.bd-media-table{width:100%;min-height:220px;max-height:320px;background:#141414;border:1px solid #333;border-radius:6px;color:#eee;box-sizing:border-box;flex:1;display:flex;flex-direction:column;overflow:hidden;outline:none}
+.bd-media-thead{display:grid;grid-template-columns:minmax(0,1fr) 86px 128px;flex-shrink:0;border-bottom:1px solid #333;background:#1a1a1a}
+.bd-media-th{appearance:none;background:transparent;border:none;color:#8e8e8e;font-size:11px;text-align:left;padding:8px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;min-width:0;font-family:inherit;line-height:1.35}
+.bd-media-th:hover{color:#ddd}
+.bd-media-th.is-active{color:#d8d8d8}
+.bd-media-sort{display:inline-block;width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;opacity:0;flex-shrink:0}
+.bd-media-th.is-active .bd-media-sort{opacity:1;border-top:5px solid #6ea8ff;border-bottom:0}
+.bd-media-th.is-active.is-asc .bd-media-sort{border-top:0;border-bottom:5px solid #6ea8ff}
+.bd-media-tbody{flex:1;overflow:auto;min-height:0}
+.bd-media-tr{display:grid;grid-template-columns:minmax(0,1fr) 86px 128px;align-items:center;cursor:pointer;border-bottom:1px solid #262626;color:#ddd;font-size:11px;line-height:1.35}
+.bd-media-table.bd-media-nodims .bd-media-thead,
+.bd-media-table.bd-media-nodims .bd-media-tr{grid-template-columns:minmax(0,1fr) 128px}
+.bd-media-tr:hover{background:#222}
+.bd-media-tr.selected{background:#2c2c2c}
+.bd-media-td{padding:8px 10px;min-width:0}
+.bd-media-td-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#eee}
+.bd-media-td-dims,.bd-media-td-time{color:#9a9a9a;white-space:nowrap;font-variant-numeric:tabular-nums}
+.bd-media-empty-row{padding:18px 10px;color:#666;font-size:11px;text-align:center}
 .bd-media-preview{flex:1;min-height:220px;background:#111;border:1px solid #333;border-radius:6px;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
 .bd-media-preview img,.bd-media-preview video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
 .bd-media-preview-empty{padding:18px;color:#666;font-size:11px;line-height:1.45;text-align:center}
@@ -640,7 +664,12 @@ const STYLES = `
 .bd-frame-jump .bd-frame-total{color:#888;min-width:2.5em}
 .bd-controls{width:100%;box-sizing:border-box;background:#151515;border:1px solid #222;border-radius:0 0 6px 6px;padding:8px 10px;margin-top:0;flex-shrink:0}
 .bd-stage.hidden+.bd-controls{border-radius:6px;border-color:#333;background:#1e1e1e}
-.bd-viewport{width:100%;min-width:100%;overflow-x:auto;border-radius:6px;border:1px solid #111;background:#2a2a2a;box-sizing:border-box;flex-shrink:0}
+.bd-viewport{width:100%;max-width:100%;min-width:0;overflow-x:hidden;overflow-y:hidden;border-radius:6px;border:1px solid #111;background:#2a2a2a;box-sizing:border-box;flex-shrink:0}
+.bd-viewport.bd-zoomed{overflow-x:auto;scrollbar-width:thin;scrollbar-color:#555 #1a1a1a}
+.bd-viewport.bd-zoomed::-webkit-scrollbar{height:10px}
+.bd-viewport.bd-zoomed::-webkit-scrollbar-track{background:#1a1a1a;border-radius:5px}
+.bd-viewport.bd-zoomed::-webkit-scrollbar-thumb{background:#555;border-radius:5px}
+.bd-viewport.bd-zoomed::-webkit-scrollbar-thumb:hover{background:#777}
 /* object-fit:fill + mismatched CSS/bitmap aspect stretches thumbs (esp. under graph zoom). */
 .bd-canvas{display:block;width:100%;min-width:100%;height:auto;cursor:pointer;box-sizing:border-box;flex-shrink:0;object-fit:fill}
 .bd-canvas.bd-grab{cursor:grab}
@@ -709,7 +738,11 @@ const STYLES = `
 .bd-mode{display:flex;border:1px solid #333;border-radius:4px;overflow:hidden}
 .bd-mode button{border:none;background:#222;color:#aaa;padding:6px 12px;font-size:11px;cursor:pointer}
 .bd-mode button.active{background:#333;color:#fff}
-.bd-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.bd-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-shrink:0}
+.bd-tl-zoom{display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
+.bd-tl-zoom.hidden{display:none!important}
+.bd-btn.bd-btn-zoom.active{background:#1a3a2a;color:#4fff8f;border-color:#4fff8f;box-shadow:0 0 0 1px rgba(79,255,143,.35)}
+.bd-tl-zoom-slider{width:128px;height:18px;margin:0;accent-color:#4fff8f;cursor:pointer;flex-shrink:0;touch-action:none}
 .bd-bounds,.bd-timecode{color:#aaa;font-size:11px}
 .bd-timecode{color:#fff;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .bd-player .bd-timecode{min-width:88px;font-size:11px;color:#ddd}
@@ -866,6 +899,10 @@ ${FL2V_STYLES}
 .bd-v2v-layout .bd-prompt,.bd-rv2v-layout .bd-prompt{min-height:140px}
 .bd-media-body{grid-template-columns:1fr}
 .bd-media-preview{min-height:180px}
+.bd-media-thead,.bd-media-tr{grid-template-columns:minmax(0,1fr) 72px 108px}
+.bd-media-table.bd-media-nodims .bd-media-thead,
+.bd-media-table.bd-media-nodims .bd-media-tr{grid-template-columns:minmax(0,1fr) 108px}
+.bd-media-td,.bd-media-th{padding:7px 8px}
 }
 `;
 
@@ -923,6 +960,34 @@ function formatUploadError(err) {
     const msg = String(err?.message || err);
     if (isUploadSizeError(err)) return t("upload.sizeLimitDetail");
     return msg;
+}
+
+function pickRulerMajorStepSec(pxPerSec) {
+    const pps = Math.max(0.001, Number(pxPerSec) || 0.001);
+    for (const step of RULER_MAJOR_SEC) {
+        if (step * pps >= RULER_MIN_MAJOR_PX) return step;
+    }
+    return RULER_MAJOR_SEC[RULER_MAJOR_SEC.length - 1];
+}
+
+function pickRulerMinorStepSec(majorSec, pxPerSec) {
+    const pps = Math.max(0.001, Number(pxPerSec) || 0.001);
+    for (const div of [10, 5, 4, 2]) {
+        const minor = majorSec / div;
+        if (minor >= 1 && Number.isInteger(minor) && minor * pps >= RULER_MIN_MINOR_PX) {
+            return minor;
+        }
+    }
+    return majorSec;
+}
+
+/** 0, 5, 10 … below one minute; 1:00, 1:30 … at/after 60s. */
+function formatRulerTime(sec) {
+    const s = Math.max(0, Math.round(Number(sec) || 0));
+    if (s < 60) return String(s);
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return `${m}:${String(r).padStart(2, "0")}`;
 }
 
 function formatProbeFps(value) {
@@ -1218,6 +1283,45 @@ function finalizeDirectorWidgetOrder(node) {
     moveDirectorDomWidgetToEnd(node);
 }
 
+const DIRECTOR_DOM_WIDGET_NAME = "minimax_director_ui";
+
+function listDirectorDomWidgets(node) {
+    return (node?.widgets || []).filter((w) => w?.name === DIRECTOR_DOM_WIDGET_NAME);
+}
+
+/** Keep one Director DOM widget; drop extras left by double-wrapped onNodeCreated. */
+function pruneDirectorDomWidgets(node) {
+    if (!node) return null;
+    const dups = listDirectorDomWidgets(node);
+    const keep = dups.find((w) => w.element?.querySelector?.(":scope > .bd-wrap"))
+        || dups.find((w) => w === node._minimaxDomWidget && w?.element)
+        || dups.find((w) => w?.element)
+        || node._minimaxDomWidget
+        || null;
+    if (dups.length > 1) {
+        for (const w of dups) {
+            if (w === keep) continue;
+            const idx = node.widgets.indexOf(w);
+            if (idx !== -1) node.widgets.splice(idx, 1);
+            try { w.onRemove?.(); } catch { /* ignore */ }
+            w.element?.remove?.();
+        }
+    }
+    if (keep) node._minimaxDomWidget = keep;
+    return keep || null;
+}
+
+function destroyDirectorEditor(node) {
+    const ed = node?._minimaxEditor;
+    if (!ed) {
+        if (node) node._minimaxEditor = null;
+        return;
+    }
+    try { ed.destroy(); } catch { /* ignore */ }
+    if (node._minimaxEditor === ed) node._minimaxEditor = null;
+    if (ed.domWidget?._minimaxEditor === ed) ed.domWidget._minimaxEditor = null;
+}
+
 function bindDirectorDomWidgetSizing(node, widget, getEditor) {
     const editor = getEditor?.();
     const minHeight = () => getDirectorUiHeight(getEditor?.());
@@ -1247,22 +1351,44 @@ function bindDirectorDomWidgetSizing(node, widget, getEditor) {
 function initDirectorEditor(node) {
     // Must not share Bernini's `_directorDomWidget` — their loadedGraphNode mounts on that key.
     if (!isMiniMaxH3DirectorNode(node)) return null;
-    if (node._minimaxEditor) return node._minimaxEditor;
-    const container = node._minimaxDomWidget?.element;
+    const widget = pruneDirectorDomWidgets(node);
+    const container = widget?.element;
     if (!container) return null;
+
+    const existing = node._minimaxEditor || widget._minimaxEditor;
+    if (existing?.root && existing.container === container) {
+        node._minimaxEditor = existing;
+        widget._minimaxEditor = existing;
+        for (const wrap of [...container.querySelectorAll(":scope > .bd-wrap")]) {
+            if (wrap !== existing.root) wrap.remove();
+        }
+        return existing;
+    }
+    // Constructor runs before `_minimaxEditor` is assigned; block re-entrant mounts
+    // from onConfigure / loadedGraphNode / layout callbacks during buildDOM.
+    if (node._minimaxEditorMounting) return existing || null;
+
+    if (existing) destroyDirectorEditor(node);
+
+    node._minimaxEditorMounting = true;
     try {
+        for (const wrap of [...container.querySelectorAll(":scope > .bd-wrap")]) wrap.remove();
         hookTaskTypeWidget(node);
-        node._minimaxEditor = new MiniMaxH3DirectorEditor(node, container, node._minimaxDomWidget);
+        const editor = new MiniMaxH3DirectorEditor(node, container, widget);
+        node._minimaxEditor = editor;
+        widget._minimaxEditor = editor;
         ensureDirectorDomWidgetWidth(node);
-        bindDirectorDomWidgetSizing(node, node._minimaxDomWidget, () => node._minimaxEditor);
+        bindDirectorDomWidgetSizing(node, widget, () => node._minimaxEditor);
         // Only clamp true runaway; never steal normal user/workflow height (#7).
-        healOversizedDirectorNode(node, node._minimaxEditor);
-        syncDirectorNodeSize(node, node._minimaxEditor);
-        scheduleDirectorLayoutSettle(node._minimaxEditor);
-        return node._minimaxEditor;
+        healOversizedDirectorNode(node, editor);
+        syncDirectorNodeSize(node, editor);
+        scheduleDirectorLayoutSettle(editor);
+        return editor;
     } catch (err) {
         console.error("[MiniMax H3Director] UI init failed:", err);
-        return null;
+        return node._minimaxEditor || null;
+    } finally {
+        node._minimaxEditorMounting = false;
     }
 }
 
@@ -1562,6 +1688,7 @@ class MiniMaxH3DirectorEditor {
         this.container = container;
         this.domWidget = domWidget;
         this.zoom = 1;
+        this.zoomEnabled = false;
         this.selectedIndex = 0;
         /** @type {number|null} Selected editable split-point frame (logical). */
         this.selectedSplitFrame = null;
@@ -1624,6 +1751,7 @@ class MiniMaxH3DirectorEditor {
         this._unsubLocale = onLocaleChange(() => this.applyLocale());
         this.applyLocale();
         this._directorMode = getDirectorMode(this.taskTypeWidget?.value);
+        this._taskKey = resolveTaskKey(this.taskTypeWidget?.value);
         if (this._directorMode === "video") {
             this.restoreVideoFromTimeline();
         } else if (this._directorMode === "prompt_batch" || this._directorMode === "image_batch") {
@@ -1899,7 +2027,7 @@ class MiniMaxH3DirectorEditor {
      */
     _measureDrawWidth() {
         if (this.isPlaying && this._playCanvasWidth > 0) return this._playCanvasWidth;
-        if (this.zoom > 1) {
+        if (this.getTimelineZoom() > 1) {
             const zoomed = this.canvas?.clientWidth || this.canvas?.offsetWidth || 0;
             if (zoomed > 0) return zoomed;
         }
@@ -2253,6 +2381,10 @@ class MiniMaxH3DirectorEditor {
                     <span class="bd-video-tag" data-r="video-name" data-i18n="toolbar.noVideo">未上传视频</span>
                 </div>
                 <div class="bd-right">
+                    <div class="bd-tl-zoom" data-r="tl-zoom">
+                        <button type="button" class="bd-btn bd-btn-zoom" data-a="zoom-toggle" data-i18n="toolbar.timelineZoom" data-i18n-title="toolbar.timelineZoomTitle">放大</button>
+                        <input type="range" class="bd-tl-zoom-slider hidden" data-r="zoom" min="1" max="10" step="any" value="1" data-i18n-title="tooltip.timelineZoom">
+                    </div>
                     <button type="button" class="bd-btn" data-a="lang-toggle" data-i18n="toolbar.langToggle" data-i18n-title="toolbar.langToggleTitle">EN</button>
                     <div class="bd-bounds" data-r="bounds">起点: 0.00 | 终点: -</div>
                     <div class="bd-timecode" data-r="timecode">0.00s</div>
@@ -2296,11 +2428,6 @@ class MiniMaxH3DirectorEditor {
                 </span>
                 <div class="bd-timecode" data-r="player-timecode">0.00 / 0.00</div>
                 <input type="range" class="bd-seek" data-r="seek" min="0" value="0" step="1">
-                <div class="bd-zoom bd-row">
-                    <button type="button" class="bd-icon-btn" data-a="zoom-out">−</button>
-                    <input type="range" data-r="zoom" min="1" max="10" step="0.25" value="1" style="width:80px">
-                    <button type="button" class="bd-icon-btn" data-a="zoom-in">+</button>
-                </div>
             </div>`;
         this.mainBody.appendChild(controls);
 
@@ -2570,14 +2697,19 @@ class MiniMaxH3DirectorEditor {
             </div>`;
         this.root.appendChild(runStatus);
 
-        this.container.appendChild(this.root);
+        if (this.container) {
+            for (const wrap of [...this.container.querySelectorAll(":scope > .bd-wrap")]) {
+                wrap.remove();
+            }
+            this.container.appendChild(this.root);
+        }
 
         this._previewVideo = document.createElement("video");
         this._previewVideo.crossOrigin = "anonymous";
         this._previewVideo.muted = true;
         this._previewVideo.playsInline = true;
         this._previewVideo.preload = "auto";
-        this._previewVideo.style.cssText = "position:fixed;width:0;height:0;opacity:0;pointer-events:none";
+        this._previewVideo.style.cssText = "position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none";
         document.body.appendChild(this._previewVideo);
 
         this._thumbCanvas = document.createElement("canvas");
@@ -2591,6 +2723,8 @@ class MiniMaxH3DirectorEditor {
         this.frameInputEl = this.root.querySelector('[data-r="frame-input"]');
         this.frameTotalEl = this.root.querySelector('[data-r="frame-total"]');
         this.seekBar = this.root.querySelector('[data-r="seek"]');
+        this.tlZoomWrap = this.root.querySelector('[data-r="tl-zoom"]');
+        this.zoomToggleBtn = this.root.querySelector('[data-a="zoom-toggle"]');
         this.zoomSlider = this.root.querySelector('[data-r="zoom"]');
         this.stageEl = this.root.querySelector('[data-r="video-stage"]');
         this.stageVideo = this.root.querySelector('[data-r="stage-video"]');
@@ -2731,13 +2865,12 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="mode-global"]', () => this.setEditMode("global"));
         bind('[data-a="mode-segment"]', () => this.setEditMode("segment"));
         bind('[data-a="lang-toggle"]', () => toggleLocale());
+        bind('[data-a="zoom-toggle"]', () => this.toggleTimelineZoom());
         bind('[data-a="play"]', () => this.togglePlay());
         bind('[data-a="loop"]', () => this.toggleLoop());
         bind('[data-a="live-tae-preview"]', () => this.toggleLiveTaePreview());
         bind('[data-a="frame-prev"]', () => this.stepFrame(-1));
         bind('[data-a="frame-next"]', () => this.stepFrame(1));
-        bind('[data-a="zoom-in"]', () => this.adjustZoom(0.5));
-        bind('[data-a="zoom-out"]', () => this.adjustZoom(-0.5));
         this.refreshLiveTaePreviewButton();
         this.updateLiveSamplePanel();
 
@@ -2783,7 +2916,68 @@ class MiniMaxH3DirectorEditor {
                 this.frameInputEl?.select();
             });
         }
-        this.zoomSlider.oninput = () => { this.zoom = +this.zoomSlider.value; this.applyZoomWidth(); this.scheduleRender(); };
+        if (this.zoomSlider) {
+            const zoomMin = () => Number(this.zoomSlider.min) || 1;
+            const zoomMax = () => Number(this.zoomSlider.max) || 10;
+            const applySliderZoom = () => {
+                if (!this.zoomEnabled) return;
+                this.zoom = clamp(+this.zoomSlider.value, zoomMin(), zoomMax());
+                this.applyZoomWidth();
+                this.scheduleRender();
+            };
+            const zoomFromClientX = (clientX) => {
+                const rect = this.zoomSlider.getBoundingClientRect();
+                const min = zoomMin();
+                const max = zoomMax();
+                const t = rect.width > 1 ? clamp((clientX - rect.left) / rect.width, 0, 1) : 0;
+                return min + t * (max - min);
+            };
+            const scrubZoom = (e) => {
+                this.zoomSlider.value = String(zoomFromClientX(e.clientX));
+                applySliderZoom();
+            };
+            this.zoomSlider.oninput = applySliderZoom;
+            const onZoomPointerDown = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation?.();
+                if (!this.zoomEnabled) return;
+                if (e.button != null && e.button !== 0) return;
+                this._zoomPointerId = e.pointerId;
+                try { this.zoomSlider.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+                this.zoomSlider.focus({ preventScroll: true });
+                scrubZoom(e);
+            };
+            const onZoomPointerMove = (e) => {
+                if (this._zoomPointerId == null || e.pointerId !== this._zoomPointerId) return;
+                e.preventDefault();
+                e.stopPropagation();
+                scrubZoom(e);
+            };
+            const onZoomPointerUp = (e) => {
+                if (this._zoomPointerId == null || e.pointerId !== this._zoomPointerId) return;
+                e.stopPropagation();
+                this._zoomPointerId = null;
+                try { this.zoomSlider.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+            };
+            this.zoomSlider.addEventListener("pointerdown", onZoomPointerDown, true);
+            this.zoomSlider.addEventListener("pointermove", onZoomPointerMove);
+            this.zoomSlider.addEventListener("pointerup", onZoomPointerUp, true);
+            this.zoomSlider.addEventListener("pointercancel", onZoomPointerUp, true);
+            this.zoomSlider.addEventListener("mousedown", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            }, true);
+            this.zoomSlider.addEventListener("wheel", (e) => e.stopPropagation(), true);
+        }
+        this.viewport?.addEventListener("wheel", (e) => {
+            if (this.getTimelineZoom() <= 1) return;
+            e.stopPropagation();
+            if (e.deltaX === 0 && e.deltaY !== 0) {
+                e.preventDefault();
+                this.viewport.scrollLeft += e.deltaY;
+            }
+        }, { passive: false });
         if (this.runSelectAllCb) {
             this.runSelectAllCb.onchange = (e) => {
                 stopDomEvent(e);
@@ -3108,9 +3302,92 @@ class MiniMaxH3DirectorEditor {
         this.canvas?.removeEventListener("mousemove", this._onCanvasHover);
         this.canvas?.classList.remove("bd-grab", "bd-grabbing");
         window.removeEventListener("keydown", this._onKeyDown, true);
+        this.root?.remove();
+        this.root = null;
+        if (this.node?._minimaxEditor === this) this.node._minimaxEditor = null;
+        if (this.domWidget?._minimaxEditor === this) this.domWidget._minimaxEditor = null;
     }
 
     widget(name) { return this.node.widgets?.find((w) => w.name === name); }
+
+    _videoIdentityFromParts(video, clips) {
+        const list = Array.isArray(clips) && clips.length ? clips : [];
+        if (list.length) {
+            return list
+                .map((c) => `${c?.type || "input"}:${c?.videoFile || c?.fileName || ""}`)
+                .filter((id) => id && id !== "input:");
+        }
+        const v = video || {};
+        const id = `${v.type || "input"}:${v.videoFile || v.fileName || ""}`;
+        return id && id !== "input:" ? [id] : [];
+    }
+
+    _clipThumbIdentity(clipIndex = 0) {
+        const clips = this.getVideoClips();
+        const c = clips[clipIndex] || clips[0] || this.timeline?.video || {};
+        const id = `${c.type || "input"}:${c.videoFile || c.fileName || ""}`;
+        return id === "input:" ? "" : id;
+    }
+
+    _videoThumbIdentity() {
+        return this._videoIdentityFromParts(this.timeline?.video, this.timeline?.videoClips).join("|");
+    }
+
+    _liveVideoFileIdentities() {
+        return this._videoIdentityFromParts(this.timeline?.video, this.timeline?.videoClips);
+    }
+
+    _knownVideoFileIdentities() {
+        const ids = new Set(this._liveVideoFileIdentities());
+        for (const ws of Object.values(this._videoWsMem || {})) {
+            for (const id of this._videoIdentityFromParts(ws?.video, ws?.videoClips)) ids.add(id);
+        }
+        for (const ws of Object.values(this.timeline?.videoWorkspaces || {})) {
+            for (const id of this._videoIdentityFromParts(ws?.video, ws?.videoClips)) ids.add(id);
+        }
+        return ids;
+    }
+
+    _frameThumbKey(logicalFrame) {
+        const entry = this.getFrameMapEntry(logicalFrame);
+        const id = this._clipThumbIdentity(entry.clip) || this._videoThumbIdentity() || "none";
+        if (this._legacyFrames.length) return `${id}#legacy:${logicalFrame}`;
+        return `${id}#${entry.clip}:${entry.frame}`;
+    }
+
+    _dropThumbsForIdentity(identity) {
+        if (!identity) return;
+        const prefix = `${identity}#`;
+        for (const key of [...this._thumbCache.keys()]) {
+            if (key === identity || String(key).startsWith(prefix)) this._thumbCache.delete(key);
+        }
+        for (const key of [...this._thumbPending]) {
+            if (key === identity || String(key).startsWith(prefix)) this._thumbPending.delete(key);
+        }
+    }
+
+    _dropThumbsIfUnused(identities) {
+        const list = Array.isArray(identities) ? identities : [identities];
+        const used = this._knownVideoFileIdentities();
+        for (const id of list) {
+            if (!id || used.has(id)) continue;
+            this._dropThumbsForIdentity(id);
+        }
+    }
+
+    _flushPendingThumbDrops() {
+        this._dropThumbsIfUnused(this._thumbIdsPendingDrop);
+        this._thumbIdsPendingDrop = [];
+    }
+
+    _invalidateVideoThumbs() {
+        this._thumbCache.clear();
+        this._thumbPending.clear();
+    }
+
+    _usesSourceVideoThumbs() {
+        return this.getDirectorMode() === "video";
+    }
 
     hasVideo() {
         const v = this.timeline?.video || {};
@@ -3611,10 +3888,15 @@ class MiniMaxH3DirectorEditor {
     }
 
     _switchToVideoTaskWorkspace(prevTaskKey, currentKey) {
+        const prevIds = new Set(this._liveVideoFileIdentities());
         if (prevTaskKey && getDirectorMode(prevTaskKey) === "video" && prevTaskKey !== currentKey) {
             this._stashVideoWorkspace(prevTaskKey);
             this._clearLiveRunSelection();
         }
+        const nextWs = this._videoWsMem?.[currentKey] || this.timeline.videoWorkspaces?.[currentKey];
+        const nextIds = new Set(this._videoIdentityFromParts(nextWs?.video, nextWs?.videoClips));
+        const sameFiles = prevIds.size === nextIds.size && [...prevIds].every((id) => nextIds.has(id));
+        if (!sameFiles) this._clearPreviewVideos?.(true);
         if (this._restoreVideoWorkspace(currentKey)) return;
         this._resetVideoWorkspaceLive();
     }
@@ -4044,8 +4326,9 @@ class MiniMaxH3DirectorEditor {
         }
         this.timeline.timelineMode = mode;
         this._directorMode = mode;
+        const taskKey = currentKey;
+        this._taskKey = taskKey;
 
-        const taskKey = this.getTaskKey();
         const isR2v = isBatch && taskKey === "r2v";
         const showBatchTrack = isBatch && isVideoBatchTask(taskKey);
         // fl2v / t2v / i2v / r2v use the main timeline track; image batch + gen hide it.
@@ -4061,6 +4344,7 @@ class MiniMaxH3DirectorEditor {
         this.boundsEl?.classList.toggle("hidden", hideTimeline || isBatch || isFl2v);
         this.timecodeEl?.classList.toggle("hidden", hideTimeline || isBatch || isFl2v);
         this.viewport?.classList.toggle("hidden", isBatch && !showBatchTrack);
+        this.tlZoomWrap?.classList.toggle("hidden", isBatch && !showBatchTrack);
         this.updateStageVisibility();
         this.updateLiveSamplePanel();
         this.syncExternalGroupsTimeline();
@@ -4824,8 +5108,6 @@ class MiniMaxH3DirectorEditor {
         this.setFrameMap(newMap);
         this.timeline.segments = newSegs;
         this._syncPrimaryVideoFromClips(newMap);
-        this._thumbCache.clear();
-        this._thumbPending.clear();
         this.selectedIndex = insertRank;
         this._prefetchSegmentThumbs(0, Math.min(newMap.length, THUMB_PREFETCH_BATCH * 4));
     }
@@ -5027,8 +5309,7 @@ class MiniMaxH3DirectorEditor {
             this.seekBar.max = Math.max(0, newTotal - 1);
             this.seekBar.value = this.currentFrame;
         }
-        this._thumbCache.clear();
-        this._thumbPending.clear();
+        this._prefetchSegmentThumbs(0, Math.min(newTotal, THUMB_PREFETCH_BATCH * 4));
     }
 
     onFrameRateChanged(value) {
@@ -5050,6 +5331,29 @@ class MiniMaxH3DirectorEditor {
         const total = this.getTotalFrames();
         const fps = this.getFrameRate();
         return total / Math.max(fps, 0.001);
+    }
+
+    /** User-facing seconds for ruler ticks (batch 秒数, not MiniMax-aligned play length). */
+    getRulerDurationSec() {
+        if (this.isFl2vMode()) return Math.max(0.001, getFl2vTotalDurationSec(this));
+        if (this.usesBatchTimeline()) {
+            const segs = this._previewSegments || this.timeline.segments || [];
+            let sec = 0;
+            const dragging = !!this._previewSegments;
+            for (const seg of segs) {
+                const fc = Math.max(0, parseInt(seg.frameCount ?? seg.length, 10) || 0);
+                const raw = Number(seg.durationSec);
+                if (dragging) {
+                    sec += preferredDurationSecFromFrames(fc, 24);
+                } else if (Number.isFinite(raw) && raw > 0) {
+                    sec += raw;
+                } else if (fc > 0) {
+                    sec += preferredDurationSecFromFrames(fc, 24);
+                }
+            }
+            return Math.max(0.001, roundDurationSec(sec));
+        }
+        return Math.max(0.001, this.getTimelineDurationSec());
     }
 
     isGlobalMode() { return (this.timeline.editMode || "global") === "global"; }
@@ -5200,6 +5504,7 @@ class MiniMaxH3DirectorEditor {
         this.refreshLoopButtonTitle?.();
         this.refreshLiveTaePreviewButton?.();
         this.updateLiveSamplePanel?.();
+        this.syncTimelineZoomUI?.();
         this.syncExternalGroupsTimeline?.();
         updateFl2vDetailUI?.(this);
         updateFl2vToolbarBtns?.(this);
@@ -5849,11 +6154,29 @@ class MiniMaxH3DirectorEditor {
         return this.getFrameMapEntry(logicalFrame).frame;
     }
 
+    _previewUrlEquals(videoEl, url) {
+        if (!videoEl || !url) return false;
+        const src = videoEl.currentSrc || videoEl.getAttribute("src") || videoEl.src || "";
+        if (!src) return false;
+        try {
+            return new URL(src, location.href).href === new URL(url, location.href).href;
+        } catch {
+            return src === url;
+        }
+    }
+
+    _assignPreviewSrc(videoEl, url) {
+        if (!videoEl || !url) return;
+        if (this._previewUrlEquals(videoEl, url)) return;
+        videoEl.pause();
+        videoEl.src = url;
+        videoEl.load();
+    }
+
     _getPreviewVideoForClip(clipIndex) {
         const url = this.getClipViewUrl(clipIndex);
         if (!this._previewVideos) this._previewVideos = new Map();
         if (clipIndex === 0 && this._previewVideo && !this._previewVideos.has(0)) {
-            if (url) this._previewVideo.src = url;
             this._previewVideos.set(0, this._previewVideo);
         }
         if (!url) return this._previewVideos.get(clipIndex) || (clipIndex === 0 ? this._previewVideo : null);
@@ -5866,12 +6189,31 @@ class MiniMaxH3DirectorEditor {
             v.preload = "auto";
             v.style.cssText = "position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none";
             document.body.appendChild(v);
-            v.src = url;
             this._previewVideos.set(clipIndex, v);
-        } else if (url && v.src !== url && !String(v.src).includes(encodeURIComponent(url.split("/").pop()?.split("?")[0] || ""))) {
-            v.src = url;
         }
+        this._assignPreviewSrc(v, url);
         return v;
+    }
+
+    async _ensurePreviewReady(clipIndex, timeoutMs = 8000) {
+        const v = this._getPreviewVideoForClip(clipIndex);
+        if (!v) return null;
+        if (v.videoWidth && v.readyState >= 2) return v;
+        await new Promise((resolve) => {
+            let done = false;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                v.removeEventListener("loadeddata", finish);
+                v.removeEventListener("canplay", finish);
+                resolve();
+            };
+            v.addEventListener("loadeddata", finish);
+            v.addEventListener("canplay", finish);
+            if (v.videoWidth && v.readyState >= 2) finish();
+            else setTimeout(finish, timeoutMs);
+        });
+        return v.videoWidth ? v : null;
     }
 
     _restorePreviewVideos() {
@@ -5904,21 +6246,26 @@ class MiniMaxH3DirectorEditor {
     async _seekPreviewVideo(timeSec, clipIndex = 0) {
         this._seekChain = this._seekChain.then(() => new Promise((resolve) => {
             const v = this._getPreviewVideoForClip(clipIndex);
-            if (!v?.src) { resolve(); return; }
+            if (!v || !(v.currentSrc || v.getAttribute("src"))) { resolve(); return; }
             const target = Math.max(0, timeSec);
-            const onSeeked = () => {
-                v.removeEventListener("seeked", onSeeked);
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                v.removeEventListener("seeked", finish);
                 resolve();
             };
-            v.addEventListener("seeked", onSeeked);
+            v.addEventListener("seeked", finish);
             try {
                 v.currentTime = target;
             } catch {
-                onSeeked();
+                finish();
                 return;
             }
             if (Math.abs(v.currentTime - target) < 0.02 && v.readyState >= 2) {
-                onSeeked();
+                finish();
+            } else {
+                setTimeout(finish, 1500);
             }
         }));
         return this._seekChain;
@@ -6116,13 +6463,19 @@ class MiniMaxH3DirectorEditor {
 
     _queueThumbPrefetch(logicalFrame) {
         if (this.isPlaying) return;
-        if (this._thumbCache.has(logicalFrame) || this._thumbPending.has(logicalFrame)) return;
+        if (!this._usesSourceVideoThumbs()) return;
+        const cacheKey = this._frameThumbKey(logicalFrame);
+        if (this._thumbCache.has(cacheKey) || this._thumbPending.has(cacheKey)) return;
         if (!this.hasVideo() && !this._legacyFrames.length) return;
-        this._thumbPending.add(logicalFrame);
+        this._thumbPending.add(cacheKey);
         this._fetchThumb(logicalFrame).then((img) => {
-            this._thumbPending.delete(logicalFrame);
-            if (img) this._thumbCache.set(logicalFrame, img);
+            this._thumbPending.delete(cacheKey);
+            if (!img) return;
+            if (this._frameThumbKey(logicalFrame) !== cacheKey) return;
+            this._thumbCache.set(cacheKey, img);
             this.scheduleRender();
+        }).catch(() => {
+            this._thumbPending.delete(cacheKey);
         });
     }
 
@@ -6200,27 +6553,36 @@ class MiniMaxH3DirectorEditor {
             return this._decodeThumb(dataUrl);
         }
         const entry = this.getFrameMapEntry(logicalFrame);
-        const v = this._getPreviewVideoForClip(entry.clip);
-        if (!v?.src || !v.videoWidth) return null;
+        const v = await this._ensurePreviewReady(entry.clip);
+        if (!v?.videoWidth) return null;
         const t = Math.max(0, entry.frame / this.getFrameRate());
         await this._seekPreviewVideo(t, entry.clip);
-        const ratio = v.videoWidth > THUMB_MAX_W ? THUMB_MAX_W / v.videoWidth : 1;
-        const tw = Math.max(1, Math.round(v.videoWidth * ratio));
-        const th = Math.max(1, Math.round(v.videoHeight * ratio));
-        this._thumbCanvas.width = tw;
-        this._thumbCanvas.height = th;
-        this._thumbCtx.drawImage(v, 0, 0, tw, th);
-        return new Promise((resolve) => {
-            const img = new Image();
-            img.onload = () => resolve(img);
-            img.onerror = () => resolve(null);
-            img.src = this._thumbCanvas.toDataURL("image/jpeg", THUMB_JPEG_Q);
-        });
+        if (!v.videoWidth) return null;
+        try {
+            const ratio = v.videoWidth > THUMB_MAX_W ? THUMB_MAX_W / v.videoWidth : 1;
+            const tw = Math.max(1, Math.round(v.videoWidth * ratio));
+            const th = Math.max(1, Math.round(v.videoHeight * ratio));
+            if (!this._thumbCanvas) {
+                this._thumbCanvas = document.createElement("canvas");
+                this._thumbCtx = this._thumbCanvas.getContext("2d", { alpha: false });
+            }
+            this._thumbCanvas.width = tw;
+            this._thumbCanvas.height = th;
+            this._thumbCtx.drawImage(v, 0, 0, tw, th);
+            const dataUrl = this._thumbCanvas.toDataURL("image/jpeg", THUMB_JPEG_Q);
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => resolve(null);
+                img.src = dataUrl;
+            });
+        } catch {
+            return null;
+        }
     }
 
-    _clearVideoState() {
-        this._thumbCache.clear();
-        this._thumbPending.clear();
+    _clearVideoState({ dropUnusedThumbs = false } = {}) {
+        const oldIds = dropUnusedThumbs ? this._liveVideoFileIdentities() : [];
         this._legacyFrames = [];
         this.timeline.videoClips = [];
         this.timeline.videoWorkspace = null;
@@ -6258,10 +6620,13 @@ class MiniMaxH3DirectorEditor {
         this.stageEmpty?.classList.remove("hidden");
         this.stageBadge?.classList.add("hidden");
         this._stageClipIndex = -1;
+        if (dropUnusedThumbs) this._dropThumbsIfUnused(oldIds);
         this.updateStageVisibility();
     }
 
     _resetTimelineForReplaceUpload() {
+        const ids = this._liveVideoFileIdentities();
+        if (ids.length) this._thumbIdsPendingDrop = ids;
         this._clearVideoState();
         this.timeline.segments = [];
         this.selectedIndex = 0;
@@ -6319,6 +6684,7 @@ class MiniMaxH3DirectorEditor {
     }
 
     _prefetchSegmentThumbs(from, to) {
+        if (!this._usesSourceVideoThumbs()) return;
         for (let f = from; f < to; f++) this._queueThumbPrefetch(f);
     }
 
@@ -6382,6 +6748,7 @@ class MiniMaxH3DirectorEditor {
                 console.error("[MiniMax H3Director] video load failed:", err);
                 this.videoNameEl.textContent = t("upload.loadFailed", { err: formatUploadError(err) });
                 this._resetTimelineForReplaceUpload();
+                this._flushPendingThumbDrops();
             } finally {
                 if (btn) {
                     btn.disabled = false;
@@ -6464,6 +6831,7 @@ class MiniMaxH3DirectorEditor {
             console.error("[MiniMax H3Director] video load failed:", err);
             this.videoNameEl.textContent = t("upload.loadFailed", { err: formatUploadError(err) });
             this._resetTimelineForReplaceUpload();
+            this._flushPendingThumbDrops();
         } finally {
             if (btn) {
                 btn.disabled = false;
@@ -6637,14 +7005,27 @@ class MiniMaxH3DirectorEditor {
             const panel = document.createElement("div");
             panel.className = "bd-modal bd-media-modal";
             panel.innerHTML = `
-                <div class="bd-modal-title"></div>
-                <div class="bd-media-toolbar">
-                    <div class="bd-media-status"></div>
-                    <div class="bd-modal-actions"></div>
+                <div class="bd-media-head">
+                    <div class="bd-modal-title"></div>
+                    <div class="bd-modal-actions bd-media-head-actions"></div>
                 </div>
+                <div class="bd-media-status"></div>
                 <div class="bd-media-body">
                     <div class="bd-media-left">
-                        <select class="bd-media-select" size="12"></select>
+                        <div class="bd-media-table" tabindex="0">
+                            <div class="bd-media-thead">
+                                <button type="button" class="bd-media-th" data-sort="name">
+                                    <span></span><i class="bd-media-sort"></i>
+                                </button>
+                                <button type="button" class="bd-media-th" data-sort="dims">
+                                    <span></span><i class="bd-media-sort"></i>
+                                </button>
+                                <button type="button" class="bd-media-th" data-sort="time">
+                                    <span></span><i class="bd-media-sort"></i>
+                                </button>
+                            </div>
+                            <div class="bd-media-tbody"></div>
+                        </div>
                     </div>
                     <div class="bd-media-right">
                         <div class="bd-media-preview">
@@ -6656,18 +7037,101 @@ class MiniMaxH3DirectorEditor {
 
             panel.querySelector(".bd-modal-title").textContent = title || "";
             const statusEl = panel.querySelector(".bd-media-status");
-            const actionsTop = panel.querySelector(".bd-modal-actions");
-            const selectEl = panel.querySelector(".bd-media-select");
+            const actionsTop = panel.querySelector(".bd-media-head-actions");
+            const tableEl = panel.querySelector(".bd-media-table");
+            const tbodyEl = panel.querySelector(".bd-media-tbody");
             const previewEl = panel.querySelector(".bd-media-preview");
             const previewEmptyEl = panel.querySelector(".bd-media-preview-empty");
             const metaEl = panel.querySelector(".bd-media-meta");
+            const showDims = kind !== "audio";
+            if (!showDims) {
+                tableEl.classList.add("bd-media-nodims");
+                tableEl.querySelector('.bd-media-th[data-sort="dims"]')?.remove();
+            }
+            const thEls = [...panel.querySelectorAll(".bd-media-th")];
+            thEls.forEach((th) => {
+                const key = th.dataset.sort;
+                const label = key === "dims" ? t("mediaPicker.dims")
+                    : key === "time" ? t("mediaPicker.time")
+                    : t("mediaPicker.file");
+                th.querySelector("span").textContent = label;
+            });
 
             let selectedValue = currentValue || "";
             let itemsByPath = new Map();
+            let listedItems = [];
+            let sortKey = "time";
+            let sortDir = "desc";
 
             const finish = (val) => {
                 this._closeBdModal();
                 resolve(val);
+            };
+
+            const selectedChoice = () => {
+                const item = itemsByPath.get(selectedValue || "");
+                if (!item) return null;
+                return {
+                    source: "existing",
+                    relPath: item.relPath,
+                    fileName: item.fileName || item.name || item.relPath,
+                    subfolder: item.subfolder || "",
+                    type: item.type || "input",
+                };
+            };
+
+            const formatMediaTime = (unixSec) => {
+                const n = Number(unixSec);
+                if (!Number.isFinite(n) || n <= 0) return "—";
+                const d = new Date(n * 1000);
+                if (Number.isNaN(d.getTime())) return "—";
+                const pad = (v) => String(v).padStart(2, "0");
+                return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+            };
+
+            const dimsText = (item) => {
+                const w = Number(item?.width) || 0;
+                const h = Number(item?.height) || 0;
+                return w > 0 && h > 0 ? `${w}x${h}` : "—";
+            };
+
+            const dimScore = (item) => {
+                const w = Number(item?.width) || 0;
+                const h = Number(item?.height) || 0;
+                return w > 0 && h > 0 ? w * 100000 + h : -1;
+            };
+
+            const sortedItems = () => {
+                const copy = listedItems.slice();
+                copy.sort((a, b) => {
+                    if (sortKey === "name") {
+                        const av = (a.fileName || a.name || a.relPath || "").toLowerCase();
+                        const bv = (b.fileName || b.name || b.relPath || "").toLowerCase();
+                        const c = av.localeCompare(bv, undefined, { numeric: true, sensitivity: "base" });
+                        if (c) return sortDir === "asc" ? c : -c;
+                    } else if (sortKey === "dims") {
+                        const as = dimScore(a);
+                        const bs = dimScore(b);
+                        const aMiss = as < 0;
+                        const bMiss = bs < 0;
+                        if (aMiss !== bMiss) return aMiss ? 1 : -1;
+                        if (as !== bs) return sortDir === "asc" ? as - bs : bs - as;
+                    } else {
+                        const av = Number(a.modified) || 0;
+                        const bv = Number(b.modified) || 0;
+                        if (av !== bv) return sortDir === "asc" ? av - bv : bv - av;
+                    }
+                    return (a.relPath || "").localeCompare(b.relPath || "");
+                });
+                return copy;
+            };
+
+            const syncHeaderState = () => {
+                thEls.forEach((th) => {
+                    const active = th.dataset.sort === sortKey;
+                    th.classList.toggle("is-active", active);
+                    th.classList.toggle("is-asc", active && sortDir === "asc");
+                });
             };
 
             const renderPreview = (item) => {
@@ -6680,26 +7144,26 @@ class MiniMaxH3DirectorEditor {
                 }
                 const relPath = item.relPath;
                 const type = item.type || "input";
-            if (kind === "image") {
-                const img = document.createElement("img");
-                img.src = inputViewUrl(relPath, type);
-                img.alt = item.fileName || item.name || relPath;
-                previewEl.appendChild(img);
-            } else if (kind === "audio") {
-                const audio = document.createElement("audio");
-                audio.src = inputViewUrl(relPath, type);
-                audio.controls = true;
-                audio.preload = "metadata";
-                previewEl.appendChild(audio);
-            } else {
-                const video = document.createElement("video");
-                video.src = inputViewUrl(relPath, type);
-                video.controls = true;
-                video.preload = "metadata";
-                video.muted = true;
-                video.playsInline = true;
-                previewEl.appendChild(video);
-            }
+                if (kind === "image") {
+                    const img = document.createElement("img");
+                    img.src = inputViewUrl(relPath, type);
+                    img.alt = item.fileName || item.name || relPath;
+                    previewEl.appendChild(img);
+                } else if (kind === "audio") {
+                    const audio = document.createElement("audio");
+                    audio.src = inputViewUrl(relPath, type);
+                    audio.controls = true;
+                    audio.preload = "metadata";
+                    previewEl.appendChild(audio);
+                } else {
+                    const video = document.createElement("video");
+                    video.src = inputViewUrl(relPath, type);
+                    video.controls = true;
+                    video.preload = "metadata";
+                    video.muted = true;
+                    video.playsInline = true;
+                    previewEl.appendChild(video);
+                }
                 const fileEl = document.createElement("div");
                 fileEl.textContent = `${t("mediaPicker.file")}: ${item.fileName || item.name || relPath}`;
                 metaEl.appendChild(fileEl);
@@ -6708,47 +7172,102 @@ class MiniMaxH3DirectorEditor {
                 metaEl.appendChild(pathEl);
             };
 
+            const selectRow = (relPath, { scroll = false } = {}) => {
+                selectedValue = relPath || "";
+                tbodyEl.querySelectorAll(".bd-media-tr").forEach((row) => {
+                    const on = row.dataset.path === selectedValue;
+                    row.classList.toggle("selected", on);
+                    if (on && scroll) row.scrollIntoView({ block: "nearest" });
+                });
+                renderPreview(itemsByPath.get(selectedValue));
+            };
+
+            const renderRows = () => {
+                tbodyEl.innerHTML = "";
+                const rows = sortedItems();
+                if (!rows.length) {
+                    const empty = document.createElement("div");
+                    empty.className = "bd-media-empty-row";
+                    empty.textContent = t("mediaPicker.empty");
+                    tbodyEl.appendChild(empty);
+                    selectedValue = "";
+                    renderPreview(null);
+                    syncHeaderState();
+                    return;
+                }
+                if (!selectedValue || !itemsByPath.has(selectedValue)) {
+                    selectedValue = rows[0].relPath || "";
+                }
+                for (const item of rows) {
+                    const row = document.createElement("div");
+                    row.className = "bd-media-tr";
+                    row.dataset.path = item.relPath;
+                    if (item.relPath === selectedValue) row.classList.add("selected");
+                    const nameTd = document.createElement("div");
+                    nameTd.className = "bd-media-td bd-media-td-name";
+                    nameTd.textContent = item.relPath || item.fileName || item.name || "";
+                    nameTd.title = nameTd.textContent;
+                    const timeTd = document.createElement("div");
+                    timeTd.className = "bd-media-td bd-media-td-time";
+                    timeTd.textContent = formatMediaTime(item.modified);
+                    if (showDims) {
+                        const dimsTd = document.createElement("div");
+                        dimsTd.className = "bd-media-td bd-media-td-dims";
+                        dimsTd.textContent = dimsText(item);
+                        row.append(nameTd, dimsTd, timeTd);
+                    } else {
+                        row.append(nameTd, timeTd);
+                    }
+                    row.addEventListener("click", () => selectRow(item.relPath));
+                    row.addEventListener("dblclick", () => {
+                        const choice = selectedChoice();
+                        if (choice) finish(choice);
+                    });
+                    tbodyEl.appendChild(row);
+                }
+                syncHeaderState();
+                renderPreview(itemsByPath.get(selectedValue));
+                const selectedRow = tbodyEl.querySelector(".bd-media-tr.selected");
+                selectedRow?.scrollIntoView({ block: "nearest" });
+            };
+
+            const moveSelection = (delta) => {
+                const rows = sortedItems();
+                if (!rows.length) return;
+                const idx = rows.findIndex((item) => item.relPath === selectedValue);
+                const next = rows[Math.max(0, Math.min(rows.length - 1, (idx < 0 ? 0 : idx) + delta))];
+                if (next) selectRow(next.relPath, { scroll: true });
+            };
+
             const loadItems = async () => {
                 statusEl.textContent = t("mediaPicker.loading");
-                selectEl.innerHTML = "";
+                tbodyEl.innerHTML = "";
                 renderPreview(null);
                 try {
-                    const items = await this.listInputMedia(kind);
-                    itemsByPath = new Map(items.map((item) => [item.relPath, item]));
-                    for (const item of items) {
-                        const option = document.createElement("option");
-                        option.value = item.relPath;
-                        option.textContent = item.relPath;
-                    if (item.relPath === selectedValue) option.selected = true;
-                    selectEl.appendChild(option);
-                }
-                if (selectedValue && itemsByPath.has(selectedValue)) {
-                    selectEl.value = selectedValue;
-                } else {
-                    selectedValue = selectEl.value || "";
-                }
-                renderPreview(itemsByPath.get(selectEl.value || selectedValue || ""));
-                    statusEl.textContent = items.length
-                        ? t("mediaPicker.count", { n: items.length })
+                    listedItems = await this.listInputMedia(kind);
+                    itemsByPath = new Map(listedItems.map((item) => [item.relPath, item]));
+                    renderRows();
+                    statusEl.textContent = listedItems.length
+                        ? t("mediaPicker.count", { n: listedItems.length })
                         : t("mediaPicker.empty");
                 } catch (err) {
+                    listedItems = [];
+                    itemsByPath = new Map();
+                    tbodyEl.innerHTML = "";
                     statusEl.textContent = err?.message || String(err);
                 }
             };
 
-            selectEl.addEventListener("change", () => {
-                selectedValue = selectEl.value || "";
-                renderPreview(itemsByPath.get(selectedValue));
-            });
-            selectEl.addEventListener("dblclick", () => {
-                const item = itemsByPath.get(selectEl.value || "");
-                if (!item) return;
-                finish({
-                    source: "existing",
-                    relPath: item.relPath,
-                    fileName: item.fileName || item.name || item.relPath,
-                    subfolder: item.subfolder || "",
-                    type: item.type || "input",
+            thEls.forEach((th) => {
+                th.addEventListener("click", () => {
+                    const key = th.dataset.sort || "time";
+                    if (sortKey === key) {
+                        sortDir = sortDir === "asc" ? "desc" : "asc";
+                    } else {
+                        sortKey = key;
+                        sortDir = key === "name" ? "asc" : "desc";
+                    }
+                    renderRows();
                 });
             });
 
@@ -6783,15 +7302,8 @@ class MiniMaxH3DirectorEditor {
             okBtn.className = "bd-btn bd-btn-primary";
             okBtn.textContent = t("mediaPicker.useSelected");
             okBtn.onclick = () => {
-                const item = itemsByPath.get(selectEl.value || selectedValue || "");
-                if (!item) return;
-                finish({
-                    source: "existing",
-                    relPath: item.relPath,
-                    fileName: item.fileName || item.name || item.relPath,
-                    subfolder: item.subfolder || "",
-                    type: item.type || "input",
-                });
+                const choice = selectedChoice();
+                if (choice) finish(choice);
             };
             actionsBottom.appendChild(okBtn);
             panel.appendChild(actionsBottom);
@@ -6806,10 +7318,18 @@ class MiniMaxH3DirectorEditor {
                     e.preventDefault();
                     e.stopPropagation();
                     finish(null);
-                } else if (e.key === "Enter") {
-                    e.preventDefault();
-                    okBtn.click();
+                    return;
                 }
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                    if (!panel.contains(e.target) && e.target !== document.body) return;
+                    e.preventDefault();
+                    moveSelection(e.key === "ArrowDown" ? 1 : -1);
+                    return;
+                }
+                if (e.key !== "Enter") return;
+                if (e.target?.closest?.(".bd-media-th, .bd-media-head-actions, button.bd-btn:not(.bd-btn-primary)")) return;
+                e.preventDefault();
+                okBtn.click();
             };
             window.addEventListener("keydown", this._modalKeyHandler, true);
 
@@ -6817,7 +7337,7 @@ class MiniMaxH3DirectorEditor {
             this.root.appendChild(overlay);
             this._modalEl = overlay;
             void loadItems();
-            selectEl.focus();
+            tableEl.focus();
         });
     }
 
@@ -7023,6 +7543,7 @@ class MiniMaxH3DirectorEditor {
         if (this.totalFramesWidget) this.totalFramesWidget.value = totalFrames;
         this.syncOutputUIFromTimeline();
         this.updateVideoNameLabel();
+        this._flushPendingThumbDrops();
         this._prefetchSegmentThumbs(0, Math.min(totalFrames, THUMB_PREFETCH_BATCH * 4));
         this.updateStageVisibility();
         this._syncStagePreview(0, { force: true });
@@ -7109,19 +7630,50 @@ class MiniMaxH3DirectorEditor {
         this.scheduleSettleRender();
     }
 
+    getTimelineZoom() {
+        return this.zoomEnabled ? Math.max(1, Number(this.zoom) || 1) : 1;
+    }
+
+    syncTimelineZoomUI() {
+        this.zoomToggleBtn?.classList.toggle("active", !!this.zoomEnabled);
+        this.zoomSlider?.classList.toggle("hidden", !this.zoomEnabled);
+        if (this.zoomSlider && this.zoomEnabled) this.zoomSlider.value = String(this.zoom);
+    }
+
+    toggleTimelineZoom() {
+        this.zoomEnabled = !this.zoomEnabled;
+        this.syncTimelineZoomUI();
+        this.applyZoomWidth();
+        this.scheduleRender();
+    }
+
     applyZoomWidth() {
         if (!this.canvas) return;
-        if (this.zoom <= 1) {
+        const z = this.getTimelineZoom();
+        const vp = this.viewport;
+        if (z <= 1) {
             this.canvas.style.width = "100%";
+            vp?.classList.remove("bd-zoomed");
+            if (vp) vp.scrollLeft = 0;
             return;
         }
-        const base = this.viewport?.clientWidth || 960;
-        this.canvas.style.width = `${Math.max(base, base * this.zoom)}px`;
+        const base = vp?.clientWidth || 960;
+        const nextW = Math.max(base, base * z);
+        const prevW = this.canvas.clientWidth || base;
+        const midRatio = prevW > 0 ? ((vp?.scrollLeft || 0) + (vp?.clientWidth || base) / 2) / prevW : 0.5;
+        this.canvas.style.width = `${nextW}px`;
+        vp?.classList.add("bd-zoomed");
+        if (vp) {
+            requestAnimationFrame(() => {
+                vp.scrollLeft = Math.max(0, midRatio * nextW - vp.clientWidth / 2);
+            });
+        }
     }
 
     adjustZoom(delta) {
+        if (!this.zoomEnabled) return;
         this.zoom = clamp(this.zoom + delta, 1, 10);
-        this.zoomSlider.value = this.zoom;
+        this.syncTimelineZoomUI();
         this.applyZoomWidth();
         this.scheduleRender();
     }
@@ -8213,9 +8765,7 @@ class MiniMaxH3DirectorEditor {
             }
         }
 
-        this._thumbCache.clear();
-        this._thumbPending.clear();
-        // Invalidate stashed workspace — it still contains the deleted range.
+        // Keep thumbs for remaining source frames; drop only if the clip is gone unused.
         this.timeline.videoWorkspace = null;
 
         if (this.totalFramesWidget) this.totalFramesWidget.value = total;
@@ -8231,18 +8781,7 @@ class MiniMaxH3DirectorEditor {
 
         if (!total) {
             this.videoNameEl.textContent = t("toolbar.noVideo");
-            this.timeline.videoClips = [];
-            this.timeline.video = {
-                fileName: "",
-                videoFile: "",
-                subfolder: "",
-                type: "input",
-                frames: [],
-                frameMap: [],
-                width: 0,
-                height: 0,
-            };
-            this._clearVideoState();
+            this._clearVideoState({ dropUnusedThumbs: true });
         } else {
             this.updateVideoNameLabel();
             this._prefetchSegmentThumbs(0, Math.min(total, THUMB_PREFETCH_BATCH * 4));
@@ -8286,7 +8825,7 @@ class MiniMaxH3DirectorEditor {
     }
 
     getFrameImage(frameIndex) {
-        return this._thumbCache.get(frameIndex) || null;
+        return this._thumbCache.get(this._frameThumbKey(frameIndex)) || null;
     }
 
     drawSegmentThumbnails(ctx, seg, startX, pxWidth, y0, h, index = -1) {
@@ -8710,7 +9249,7 @@ class MiniMaxH3DirectorEditor {
             this.canvas.width = bw;
             this.canvas.height = bh;
         }
-        if (this.zoom > 1) {
+        if (this.getTimelineZoom() > 1) {
             this.canvas.style.width = `${Math.round(width)}px`;
         } else if (this.canvas.style.width !== "100%") {
             this.canvas.style.width = "100%";
@@ -8722,41 +9261,44 @@ class MiniMaxH3DirectorEditor {
         this.ctx.clearRect(0, 0, width, height);
 
         const total = this.getTotalFrames();
-        const fps = this.getFrameRate();
         const segs = this._previewSegments || this.timeline.segments;
 
         this.ctx.fillStyle = "#252525";
         this.ctx.fillRect(0, 0, width, RULER_H);
-        this.ctx.fillStyle = "#888";
         this.ctx.font = "10px sans-serif";
+        this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "alphabetic";
         const fl2vSampleN = this.isFl2vMode() ? getFl2vSampleFrames(this) : total;
-        // fl2v: ruler labels follow 总时长 (sampling window); overflow past it is dashed.
-        const durationSec = this.isFl2vMode()
-            ? getFl2vTotalDurationSec(this)
-            : total / Math.max(fps, 0.001);
-        const formatRulerSec = (sec) => {
-            const n = Math.max(0, Number(sec) || 0);
-            return (Math.round(n * 10) / 10).toFixed(1);
-        };
-        const stepSec = Math.max(1, durationSec / 10);
-        // Leave a gap near the end so the duration label does not collide with the last tick.
-        const endGuard = Math.min(0.6, stepSec * 0.45);
-        for (let s = 0; s < durationSec - 1e-6; s += stepSec) {
-            if (durationSec - s < endGuard) continue;
-            const f = this.isFl2vMode()
-                ? Math.min(fl2vSampleN, Math.round((s / Math.max(durationSec, 0.001)) * fl2vSampleN))
-                : Math.min(total - 1, Math.round(s * fps));
-            const x = this.frameToX(f, width);
-            this.ctx.fillRect(x, RULER_H - 6, 1, 6);
-            this.ctx.fillText(formatRulerSec(s), x + 2, 11);
+        // Batch/fl2v: ticks follow user 秒数 so 5.0s clips land on "5".
+        // v2v: ticks follow play length (frames / fps).
+        const durationSec = this.getRulerDurationSec();
+        const spanX = this.isFl2vMode() ? this.frameToX(fl2vSampleN, width) : width;
+        const pxPerSec = spanX / Math.max(durationSec, 0.001);
+        const majorSec = pickRulerMajorStepSec(pxPerSec);
+        const minorSec = pickRulerMinorStepSec(majorSec, pxPerSec);
+        const secToX = (s) => (s / Math.max(durationSec, 0.001)) * spanX;
+        if (minorSec < majorSec) {
+            this.ctx.fillStyle = "#5a5a5a";
+            const nMinor = Math.floor(durationSec / minorSec + 1e-9);
+            for (let i = 0; i <= nMinor; i++) {
+                const s = i * minorSec;
+                if (s % majorSec === 0) continue;
+                this.ctx.fillRect(secToX(s), RULER_H - 4, 1, 4);
+            }
         }
-        if (fl2vSampleN > 0) {
-            const sampleX = this.frameToX(fl2vSampleN, width);
-            this.ctx.fillStyle = "#aaa";
-            this.ctx.fillRect(sampleX, RULER_H - 8, 1, 8);
-            const endLabel = formatRulerSec(durationSec);
-            const textW = this.ctx.measureText(endLabel).width;
-            this.ctx.fillText(endLabel, Math.max(2, sampleX - textW - 4), 11);
+        this.ctx.fillStyle = "#aaa";
+        const nMajor = Math.floor(durationSec / majorSec + 1e-9);
+        for (let i = 0; i <= nMajor; i++) {
+            const s = i * majorSec;
+            const x = secToX(s);
+            this.ctx.fillRect(x, RULER_H - 7, 1, 7);
+            const label = formatRulerTime(s);
+            const tw = this.ctx.measureText(label).width;
+            if (x + 3 + tw > width - 2 && s > 0) {
+                if (x - tw - 2 >= 2) this.ctx.fillText(label, x - tw - 2, 11);
+            } else {
+                this.ctx.fillText(label, x + 3, 11);
+            }
         }
         // Sample-window end marker on ruler (overflow hatch drawn after segments).
         if (this.isFl2vMode() && total > fl2vSampleN) {
@@ -9938,9 +10480,7 @@ class MiniMaxH3DirectorEditor {
     onGlobalField(field, value) {
         this.timeline.global = this.timeline.global || { refs: [] };
         if (field === "taskType") {
-            const prevTaskKey = resolveTaskKey(
-                this.timeline.global?.taskType || this.globalTask?.value || this.taskTypeWidget?.value || "",
-            );
+            const prevTaskKey = this._taskKey || resolveTaskKey(this.timeline.global?.taskType || "");
             this.timeline.global[field] = value;
             const prevMode = this._directorMode || "video";
             if (this.globalTask && this.globalTask.value !== value) this.globalTask.value = value;
@@ -10324,7 +10864,7 @@ class MiniMaxH3DirectorEditor {
                     this.seekBar.value = this.currentFrame;
                 }
                 this._observeViewportResize();
-                const drawW = this.viewport?.clientWidth || w;
+                const drawW = this._measureDrawWidth() || this.viewport?.clientWidth || w;
                 if (drawW) this._drawTimelineCanvas(drawW);
                 this._syncStagePreview(this.currentFrame, { force: true });
                 this._pauseSettling = false;
@@ -11170,6 +11710,7 @@ app.registerExtension({
     async loadedGraphNode(node) {
         if (!isMiniMaxH3DirectorNode(node)) return;
         normalizeDirectorOutputs(node);
+        pruneDirectorDomWidgets(node);
         if (!node._minimaxDomWidget) return;
         finalizeDirectorWidgetOrder(node);
         ensureDirectorDomWidgetWidth(node);
@@ -11223,6 +11764,8 @@ app.registerExtension({
         }
 
         if (!isDirectorNodeDef(nodeType, nodeData)) return;
+        if (nodeType.prototype._minimaxDirectorPatched) return;
+        nodeType.prototype._minimaxDirectorPatched = true;
 
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -11234,8 +11777,9 @@ app.registerExtension({
             setTimeout(() => applyDirectorWidgetLabels(this), 0);
             this.size = [1000, 680];
 
-            // Idempotent: avoid a second DOM stack if onNodeCreated is wrapped twice.
-            if (this._minimaxDomWidget?.element) {
+            const existingDom = pruneDirectorDomWidgets(this);
+            // Idempotent: reuse the host if onNodeCreated / graph restore already mounted one.
+            if (existingDom?.element) {
                 setTimeout(() => {
                     finalizeDirectorWidgetOrder(this);
                     initDirectorEditor(this);
@@ -11248,7 +11792,7 @@ app.registerExtension({
             container.style.minHeight = `${getDirectorUiHeight(null)}px`;
             container.style.setProperty("--comfy-widget-min-height", `${getDirectorUiHeight(null)}px`);
             const self = this;
-            const widget = this.addDOMWidget("minimax_director_ui", "director", container, {
+            const widget = this.addDOMWidget(DIRECTOR_DOM_WIDGET_NAME, "director", container, {
                 getValue: () => "",
                 setValue: () => {},
                 getMinHeight: () => getDirectorUiHeight(self._minimaxEditor),
@@ -11313,7 +11857,7 @@ app.registerExtension({
 
         const onRemoved = nodeType.prototype.onRemoved;
         nodeType.prototype.onRemoved = function () {
-            this._minimaxEditor?.destroy();
+            destroyDirectorEditor(this);
             return onRemoved?.apply(this, arguments);
         };
 
