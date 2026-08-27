@@ -1,6 +1,8 @@
 import { api } from "../../scripts/api.js";
+import { fileForComfyUpload } from "./minimax_gen_timeline.js";
 
 const CHUNK_SIZE = 8 * 1024 * 1024;
+const COMFY_UPLOAD_SOFT_LIMIT = 95 * 1024 * 1024;
 
 export function isReferenceAudioFile(file) {
     return !!file && (
@@ -21,12 +23,14 @@ export function isReferenceAudioSourceFile(file) {
 }
 
 function normalizePreparedAudio(data, fallbackName = "") {
-    const relPath = String(data?.relPath || "").replace(/\\/g, "/");
+    const subfolder = String(data?.subfolder || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const name = data?.fileName || data?.name || fallbackName || "";
+    const relPath = String(data?.relPath || (subfolder ? `${subfolder}/${name}` : name)).replace(/\\/g, "/");
     if (!relPath) throw new Error("Audio preparation returned an empty path.");
     return {
         relPath,
         fileName: data?.fileName || data?.name || fallbackName || relPath,
-        subfolder: data?.subfolder || "",
+        subfolder,
         type: data?.type || "input",
         reused: !!data?.reused,
         sourceKind: data?.sourceKind || "",
@@ -37,6 +41,23 @@ export async function prepareLocalReferenceAudio(file, onProgress) {
     if (!isReferenceAudioSourceFile(file)) {
         throw new Error("Please select an audio or video file.");
     }
+    if (isReferenceAudioFile(file) && file.size <= COMFY_UPLOAD_SOFT_LIMIT) {
+        const uploadFile = fileForComfyUpload(file);
+        const body = new FormData();
+        body.append("image", uploadFile, uploadFile.name);
+        body.append("type", "input");
+        body.append("overwrite", "false");
+        const response = await api.fetchApi("/upload/image", { method: "POST", body });
+        if (!response.ok) {
+            const message = (await response.text()).trim();
+            throw new Error(message || `Audio upload failed (${response.status}).`);
+        }
+        const prepared = normalizePreparedAudio(await response.json(), uploadFile.name);
+        prepared.sourceKind = "audio";
+        onProgress?.(1, 1, 1);
+        return prepared;
+    }
+
     const uploadId = crypto.randomUUID();
     const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
     for (let index = 0; index < totalChunks; index++) {

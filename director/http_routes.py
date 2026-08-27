@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -11,7 +10,6 @@ import re
 import shutil
 import subprocess
 import uuid
-from pathlib import Path
 
 import folder_paths
 from aiohttp import web
@@ -21,7 +19,6 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director")
 
 CHUNK_ROOT = os.path.join(folder_paths.get_temp_directory(), "minimax_upload_chunks")
 REF_AUDIO_CHUNK_ROOT = os.path.join(folder_paths.get_temp_directory(), "minimax_ref_audio_chunks")
-REF_AUDIO_SUBFOLDER = "minimax_ref_audio"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpg", ".mpeg", ".mts", ".ts"}
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
@@ -191,86 +188,74 @@ async def minimax_upload_video_chunk(request):
     return web.json_response({"name": filename, "subfolder": "", "type": "input"})
 
 
-def _sha256_file(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as src:
-        while True:
-            block = src.read(4 * 1024 * 1024)
-            if not block:
-                break
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _reference_audio_result(path: str, *, reused: bool, source_kind: str) -> dict:
     name = os.path.basename(path)
-    rel_path = f"{REF_AUDIO_SUBFOLDER}/{name}"
     return {
         "name": name,
         "fileName": name,
-        "relPath": rel_path,
-        "subfolder": REF_AUDIO_SUBFOLDER,
+        "relPath": name,
+        "subfolder": "",
         "type": "input",
         "reused": bool(reused),
         "sourceKind": source_kind,
     }
 
 
-def _find_prepared_audio(output_dir: str, digest: str, extension: str) -> str | None:
-    pattern = f"*__{digest}{extension}"
-    for candidate in Path(output_dir).glob(pattern):
-        try:
-            if candidate.is_file() and candidate.stat().st_size > 0:
-                return str(candidate)
-        except OSError:
-            continue
-    return None
+def _files_identical(first: str, second: str) -> bool:
+    """Match ComfyUI upload dedupe without assigning content-derived filenames."""
+    try:
+        if os.path.getsize(first) != os.path.getsize(second):
+            return False
+        with open(first, "rb") as left, open(second, "rb") as right:
+            while True:
+                left_block = left.read(4 * 1024 * 1024)
+                right_block = right.read(4 * 1024 * 1024)
+                if left_block != right_block:
+                    return False
+                if not left_block:
+                    return True
+    except OSError:
+        return False
+
+
+def _place_in_input_like_comfy_upload(temp_path: str, filename: str) -> tuple[str, bool]:
+    """Use ComfyUI's non-overwrite rule: reuse identical, otherwise append ` (n)`."""
+    input_dir = folder_paths.get_input_directory()
+    filename = _safe_basename(filename)
+    stem, ext = os.path.splitext(filename)
+    candidate_name = filename
+    index = 1
+    while True:
+        candidate_path = os.path.join(input_dir, candidate_name)
+        if not os.path.exists(candidate_path):
+            os.replace(temp_path, candidate_path)
+            return candidate_path, False
+        if _files_identical(candidate_path, temp_path):
+            os.remove(temp_path)
+            return candidate_path, True
+        candidate_name = f"{stem} ({index}){ext}"
+        index += 1
 
 
 def _prepare_reference_audio(source_path: str, display_name: str) -> dict:
-    """Deduplicate audio inputs or extract a video's first audio stream to FLAC."""
+    """Extract a video's first audio stream and place it directly in input/."""
     if not os.path.isfile(source_path) or os.path.getsize(source_path) <= 0:
         raise ValueError("Reference audio source is empty or missing.")
     ext = os.path.splitext(display_name or source_path)[1].lower()
-    if ext not in AUDIO_EXTS | VIDEO_EXTS:
-        raise ValueError("Unsupported reference audio source format.")
+    if ext not in VIDEO_EXTS:
+        raise ValueError("Selected source is not a supported video.")
 
-    digest = _sha256_file(source_path)[:12]
     safe_name = _safe_basename(display_name or os.path.basename(source_path))
     safe_stem = os.path.splitext(safe_name)[0] or "reference_audio"
-    output_dir = os.path.join(folder_paths.get_input_directory(), REF_AUDIO_SUBFOLDER)
-    os.makedirs(output_dir, exist_ok=True)
-
-    if ext in AUDIO_EXTS:
-        existing = _find_prepared_audio(output_dir, digest, ext)
-        if existing:
-            return _reference_audio_result(existing, reused=True, source_kind="audio")
-        output_name = f"{safe_stem}__{digest}{ext}"
-        output_path = os.path.join(output_dir, output_name)
-        tmp_path = os.path.join(output_dir, f".{uuid.uuid4().hex}{ext}")
-        try:
-            shutil.copyfile(source_path, tmp_path)
-            os.replace(tmp_path, output_path)
-        finally:
-            try:
-                if os.path.isfile(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
-        return _reference_audio_result(output_path, reused=False, source_kind="audio")
-
-    existing = _find_prepared_audio(output_dir, digest, ".flac")
-    if existing:
-        return _reference_audio_result(existing, reused=True, source_kind="video")
-    output_name = f"{safe_stem}__{digest}.flac"
-    output_path = os.path.join(output_dir, output_name)
+    output_name = f"{safe_stem}.flac"
+    output_dir = folder_paths.get_input_directory()
 
     from ..lib.audio_io import _ffmpeg_bin
 
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
         raise RuntimeError("ffmpeg is unavailable; cannot extract audio from video.")
-    tmp_path = os.path.join(output_dir, f".{uuid.uuid4().hex}.flac")
+    tmp_path = os.path.join(output_dir, f".minimax_ref_audio_{uuid.uuid4().hex}.flac")
     args = [
         ffmpeg,
         "-v",
@@ -293,18 +278,18 @@ def _prepare_reference_audio(source_path: str, display_name: str) -> dict:
         if result.returncode != 0 or not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) <= 0:
             error = (result.stderr or b"").decode("utf-8", errors="replace").strip()
             raise RuntimeError(error or "The selected video has no decodable audio stream.")
-        os.replace(tmp_path, output_path)
+        output_path, reused = _place_in_input_like_comfy_upload(tmp_path, output_name)
     finally:
         try:
             if os.path.isfile(tmp_path):
                 os.remove(tmp_path)
         except OSError:
             pass
-    return _reference_audio_result(output_path, reused=False, source_kind="video")
+    return _reference_audio_result(output_path, reused=reused, source_kind="video")
 
 
 async def minimax_extract_reference_audio(request):
-    """Extract an existing input video's audio immediately, with content dedupe."""
+    """Extract an existing input video's audio immediately into input/."""
     try:
         body = await request.json()
         video_file = str(body.get("videoFile") or body.get("relPath") or "").strip()
@@ -333,7 +318,7 @@ async def minimax_extract_reference_audio(request):
 
 
 async def minimax_prepare_reference_audio_chunk(request):
-    """Receive a local audio/video in chunks; keep only the deduplicated audio result."""
+    """Receive large local audio/video; store audio or extract video audio into input/."""
     session_dir = ""
     try:
         post = await request.post()
@@ -349,7 +334,8 @@ async def minimax_prepare_reference_audio_chunk(request):
             return web.Response(status=400, text="Invalid chunk index.")
         if total_chunks < 1 or chunk_index < 0 or chunk_index >= total_chunks:
             return web.Response(status=400, text="Chunk index out of range.")
-        if os.path.splitext(filename)[1].lower() not in AUDIO_EXTS | VIDEO_EXTS:
+        source_ext = os.path.splitext(filename)[1].lower()
+        if source_ext not in AUDIO_EXTS | VIDEO_EXTS:
             return web.Response(status=400, text="Unsupported reference audio source format.")
 
         session_dir = os.path.join(REF_AUDIO_CHUNK_ROOT, upload_id)
@@ -374,7 +360,15 @@ async def minimax_prepare_reference_audio_chunk(request):
                     raise ValueError(f"Missing chunk {index}.")
                 with open(part, "rb") as src:
                     shutil.copyfileobj(src, out)
-        result = await asyncio.to_thread(_prepare_reference_audio, source_path, filename)
+        if source_ext in AUDIO_EXTS:
+            output_path, reused = await asyncio.to_thread(
+                _place_in_input_like_comfy_upload,
+                source_path,
+                filename,
+            )
+            result = _reference_audio_result(output_path, reused=reused, source_kind="audio")
+        else:
+            result = await asyncio.to_thread(_prepare_reference_audio, source_path, filename)
         return web.json_response(result)
     except Exception as exc:
         log.warning("MiniMax H3 Director local reference audio preparation failed: %s", exc)
