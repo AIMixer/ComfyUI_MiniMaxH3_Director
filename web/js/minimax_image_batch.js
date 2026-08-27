@@ -33,7 +33,7 @@ import {
     fileForComfyUpload,
     safeUploadFilename,
 } from "./minimax_gen_timeline.js";
-import { refreshPromptTokenEditors, wirePromptImageMentions } from "./minimax_prompt_mentions.js";
+import { refreshPromptTokenEditors, teardownPromptImageMentions, wirePromptImageMentions } from "./minimax_prompt_mentions.js";
 import { t } from "./minimax_i18n.js";
 
 const _players = new WeakMap();
@@ -2316,6 +2316,9 @@ export function renderImageBatchGroups(editor) {
         addBtn.disabled = externalLocked;
     }
 
+    // 先拆除旧卡片的 @-mention 接线：其 document/window 监听与挂在 body 的浮层菜单
+    // 不会随 innerHTML 清空而释放，必须显式 teardown，否则每次重渲染都累积泄漏。
+    teardownPromptImageMentions(list);
     list.innerHTML = "";
     const ctx = { key, variant, isVideo, runningIdx, fps, externalLocked };
     const segs = editor.timeline.segments || [];

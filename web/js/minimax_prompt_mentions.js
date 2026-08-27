@@ -1038,29 +1038,63 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
         refreshTokenStates(rich, getMedia);
     });
 
-    document.addEventListener("mousedown", (e) => {
+    // 以下监听挂在 document/window 长生命周期对象上，必须用具名 handler 以便 teardown 移除。
+    // 批处理每次重渲染都会新建 textarea，若不移除，这些监听会随每次 wiring 永久累积，
+    // 闭包还持有 rich/menu/textarea/editor，把已分离的卡片 DOM 与整个 editor 钉在内存里（浏览器 OOM 根因）。
+    const onDocMouseDown = (e) => {
         if (!menu || menu.classList.contains("hidden")) return;
         if (e.target === rich || rich.contains?.(e.target) || menu.contains(e.target)) return;
         closeMenu();
-    });
+    };
 
     // Capture scroll closes the menu when the page/list moves — but must ignore
     // scrolls inside the menu itself (overflow:auto), otherwise hovering/dragging
     // the scrollbar instantly dismisses it.
-    window.addEventListener("scroll", (e) => {
+    const onWinScroll = (e) => {
         if (!menu || menu.classList.contains("hidden")) return;
         const t = e.target;
         if (t === menu || menu.contains(t)) return;
         closeMenu();
-    }, true);
+    };
+
+    document.addEventListener("mousedown", onDocMouseDown);
+    window.addEventListener("scroll", onWinScroll, true);
     window.addEventListener("resize", closeMenu);
+
+    let tornDown = false;
+    const teardown = () => {
+        if (tornDown) return;
+        tornDown = true;
+        clearTimeout(rehydrateTimer);
+        document.removeEventListener("mousedown", onDocMouseDown);
+        window.removeEventListener("scroll", onWinScroll, true);
+        window.removeEventListener("resize", closeMenu);
+        // 浮层菜单挂在 document.body 上，不会随容器 innerHTML 清空而销毁，需显式摘除。
+        menu?.remove();
+        menu = null;
+        // placeholder MutationObserver 持有 textarea/editor 闭包，断开以释放。
+        textarea.__bdTokenPlaceholderObserver?.disconnect();
+    };
 
     textarea.__bdTokenApi = {
         hydrateFromValue,
         refreshMedia: () => refreshTokenStates(rich, getMedia),
         editor: rich,
         sync: () => syncToTextarea({ emitInput: false }),
+        teardown,
     };
+}
+
+/**
+ * 拆除容器内所有已接线的 @-mention 编辑器（移除 document/window 监听、body 上的浮层菜单、observer）。
+ * 在批处理 list 被 innerHTML 清空重建、或 Director 节点 destroy 时调用，防止全局监听与
+ * 浮层菜单随每次重渲染累积导致内存泄漏。
+ */
+export function teardownPromptImageMentions(root = document) {
+    const areas = root.querySelectorAll?.("textarea.bd-token-source") || [];
+    for (const ta of areas) {
+        ta.__bdTokenApi?.teardown?.();
+    }
 }
 
 /** Refresh chip missing/thumb state after refs change (optional call sites). */

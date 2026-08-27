@@ -96,7 +96,7 @@ import {
     updateFl2vDetailUI,
     updateFl2vToolbarBtns,
 } from "./minimax_fl2v.js";
-import { mountPromptImageMentions, refreshPromptTokenEditors } from "./minimax_prompt_mentions.js";
+import { mountPromptImageMentions, refreshPromptTokenEditors, teardownPromptImageMentions } from "./minimax_prompt_mentions.js";
 import {
     applyI18nDom,
     aspectDisplayLabel,
@@ -3089,6 +3089,18 @@ class MiniMaxH3DirectorEditor {
         this._unsubLocale?.();
         this._unsubLocale = null;
         this._closeBdModal();
+        // 拆除 global/seg 两个 prompt 框的 @-mention 接线（document/window 监听 + body 浮层菜单 + observer）。
+        teardownPromptImageMentions(this.root);
+        // 清理所有 clip 的隐藏预览 <video>：clip 1..N 挂在 document.body 上，不随节点 DOM 销毁，
+        // 需显式移除以释放视频解码缓冲（clip 0 === _previewVideo，交给下面统一 remove）。
+        if (this._previewVideos) {
+            for (const [, v] of this._previewVideos) {
+                if (!v || v === this._previewVideo) continue;
+                try { v.pause(); v.removeAttribute("src"); v.load(); } catch { /* noop */ }
+                v.remove();
+            }
+            this._previewVideos.clear();
+        }
         this._previewVideo?.remove();
         this._previewVideo = null;
         window.removeEventListener("mousemove", this._onMouseMove);
