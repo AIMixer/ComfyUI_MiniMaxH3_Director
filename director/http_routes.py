@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import json
 
 import folder_paths
 from aiohttp import web
@@ -315,6 +316,50 @@ async def minimax_detect_shots(request):
     return web.json_response(result)
 
 
+async def minimax_first_pass_cache_status(request):
+    """Compare stored first-pass metadata with the Director's current inputs."""
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return web.Response(status=400, text=f"Invalid JSON: {exc}")
+
+    node_id = str(body.get("node_id") or "").strip()
+    if not re.fullmatch(r"\d+", node_id):
+        return web.Response(status=400, text="Invalid Director node id.")
+
+    timeline_data = body.get("timeline_data") or ""
+    if isinstance(timeline_data, dict):
+        timeline_data = json.dumps(timeline_data, ensure_ascii=False)
+    try:
+        from .plan import build_director_plan
+        from .segment_cache import inspect_first_pass_cache
+
+        plan = build_director_plan(
+            str(timeline_data),
+            global_task_type=str(body.get("task_type") or ""),
+            global_prompt=str(body.get("global_prompt") or ""),
+            total_frames=int(body.get("total_frames") or 124),
+            frame_rate=float(body.get("frame_rate") or 24.0),
+            width=int(body.get("width") or 864),
+            height=int(body.get("height") or 480),
+            ref_max_size=int(body.get("ref_max_size") or 864),
+        )
+        plan.sample_seed = int(body.get("seed") or 0)
+        plan.sample_cfg = float(body.get("cfg") or 1.0)
+        plan.sample_steps = int(body.get("steps") or 25)
+        plan.sample_sampler = str(body.get("sampler") or "")
+        plan.sample_scheduler = str(body.get("scheduler") or "")
+        plan.sample_shift_video = float(body.get("shift_video") or 12.0)
+        plan.sample_shift_audio = float(body.get("shift_audio") or 3.0)
+        return web.json_response(inspect_first_pass_cache(node_id, plan))
+    except Exception as exc:
+        log.warning("MiniMax H3 Director first-pass cache inspection failed: %s", exc)
+        return web.json_response(
+            {"exists": False, "matches": False, "error": str(exc)},
+            status=400,
+        )
+
+
 def _register_route(routes, method: str, path: str, handler) -> None:
     if hasattr(routes, "add_route"):
         routes.add_route(method, path, handler)
@@ -343,6 +388,12 @@ def register_routes() -> bool:
     _register_route(routes, "GET", "/minimax/director/probe_video", minimax_probe_video)
     _register_route(routes, "GET", "/minimax/director/list_input_media", minimax_list_input_media)
     _register_route(routes, "POST", "/minimax/director/detect_shots", minimax_detect_shots)
+    _register_route(
+        routes,
+        "POST",
+        "/minimax/director/first_pass_cache_status",
+        minimax_first_pass_cache_status,
+    )
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")
     return True

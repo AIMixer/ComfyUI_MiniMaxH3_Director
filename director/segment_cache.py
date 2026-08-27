@@ -674,3 +674,97 @@ def prune_segment_cache(node_id: str | None, valid_indices) -> None:
             )
     except Exception as exc:
         log.debug("Segment cache prune skipped (%s).", exc)
+
+
+def inspect_first_pass_cache(
+    node_id: str | None,
+    plan: DirectorPlan,
+) -> dict[str, Any]:
+    """Inspect first-pass cache files without loading their tensor payloads."""
+    current_seed = int(getattr(plan, "sample_seed", 0) or 0)
+    result: dict[str, Any] = {
+        "exists": False,
+        "matches": False,
+        "current_seed": current_seed,
+        "cached_seeds": [],
+        "segment_total": 0,
+        "cached_count": 0,
+        "matched_count": 0,
+        "diff_keys": [],
+        "segments": [],
+    }
+    if not node_id:
+        return result
+
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    all_segments = list(getattr(plan, "segments", None) or [])
+    run_indices = getattr(plan, "run_indices", None)
+    if run_indices is None:
+        selected = all_segments
+    else:
+        selected = [
+            all_segments[i]
+            for i in sorted(run_indices)
+            if 0 <= i < len(all_segments)
+        ]
+    result["segment_total"] = len(selected)
+
+    cached_seeds: set[int] = set()
+    all_diffs: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for seg in selected:
+        idx = int(seg.index)
+        meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+        latent_path = root / f"seg_{idx:04d}.pre.av.pt"
+        meta_exists = meta_path.is_file()
+        latent_exists = latent_path.is_file()
+        cache_exists = meta_exists and latent_exists
+        stored: Any = None
+        read_error = ""
+        if meta_exists:
+            try:
+                stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                read_error = str(exc)
+
+        expected = first_pass_cache_fingerprint(seg, plan)
+        matches = bool(cache_exists and isinstance(stored, dict) and stored == expected)
+        diff = (
+            _fingerprint_diff_keys(stored, expected)
+            if isinstance(stored, dict)
+            else (["<invalid-meta>"] if meta_exists else ["<missing-cache>"])
+        )
+        cached_seed = stored.get("seed") if isinstance(stored, dict) else None
+        try:
+            if cached_seed is not None:
+                cached_seed = int(cached_seed)
+                cached_seeds.add(cached_seed)
+        except (TypeError, ValueError):
+            cached_seed = None
+        all_diffs.update(diff)
+        rows.append(
+            {
+                "segment": idx + 1,
+                "exists": cache_exists,
+                "matches": matches,
+                "cached_seed": cached_seed,
+                "diff_keys": diff,
+                "error": read_error,
+            }
+        )
+
+    cached_count = sum(1 for row in rows if row["exists"])
+    matched_count = sum(1 for row in rows if row["matches"])
+    total = len(rows)
+    result.update(
+        {
+            "exists": cached_count > 0,
+            "matches": total > 0 and matched_count == total,
+            "cached_seeds": sorted(cached_seeds),
+            "cached_count": cached_count,
+            "matched_count": matched_count,
+            "diff_keys": sorted(all_diffs),
+            "segments": rows,
+        }
+    )
+    return result

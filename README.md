@@ -36,6 +36,8 @@
 > CLIP Loader 的 **type 必须选 `minimax`**（Qwen3-VL）。  
 > `t2v` / `i2v` / `fl2v` 用 **fl2va** UNET；`r2v` / `v2v` / `rv2v` 用 **ref2va** UNET。
 
+`输出原片到 source_images` 只填充独立的 `source_images` 输出，不会改变主 `images`。请将 `source_images` 另接预览或视频合成节点查看；解码失败时运行报告会明确说明，并输出灰色占位而不会冒充生成画面。
+
 ## 依赖
 
 请将 **ComfyUI** 升级到 **v0.30.0** 及以上（含官方 MiniMax H3 节点：[PR #15224](https://github.com/comfyanonymous/ComfyUI/pull/15224)、[PR #15228](https://github.com/comfyanonymous/ComfyUI/pull/15228)）。
@@ -140,7 +142,7 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 2. `mode=refine`：同分辨率再采一遍（精修）。`mode=upscale`：先放大到目标画布再二采。`mode=latent_upscale`：只放大 H3 视频 latent，不再二采。分辨率控件在 `upscale` / `latent_upscale` 时显示（可跟随导演台、按比例+百万像素，或自定义宽高）。导演台是一采分辨率，Refine 目标才是放大后的宽高
 3. `passes`：精修次数，默认 1、最多 9999。`upscale` 只在第 1 次放大，后面都是同分辨率精修；`latent_upscale` 不二采
 4. 可选接 `refine_model`（二采 UNET）；不接则用导演台主模型。适合一采挂 Turbo LoRA、二采卸掉或换另一套
-5. 导演台 `images` 是二采后成片；`images_pre_refine` 是一采、放大前的画面，便于对比。`source_images` 仍是时间轴原片，不是一采结果
+5. 导演台 `images` 是二采后成片；`images_pre_refine` 是一采、放大前的画面，便于对比。`source_images` 仍是时间轴原片，不是一采结果。开启 `confirm_first_pass` 后，首次 Queue 只输出 `images_pre_refine` 并阻断主 `images` 下游保存；再次 Queue 命中缓存并完成二采后，`images` 才输出
 6. 二采用 SIGMAS：把 `BasicScheduler` 或 `ManualSigmas` 接到 Refine 的 `sigmas` 口
 7. fl2v 默认跳过二采（保护钉死的首尾帧）；关掉 Refine 上的 `skip_fl2v` 才会采
 8. `upscale` 默认 `h3_latent`：在 Refine 节点里选 3D 权重（`upscale_method` 下方下拉框；`mode=latent_upscale` 时同样出现）。权重放 `ComfyUI/models/latent_upscale_models/`。`lanczos` 可另接 `upscale_model`（RealESRGAN 等），不接则纯插值；也可改 `nvidia_rtx_vsr`

@@ -12,6 +12,7 @@ import {
     refImagePromptTag,
     refVideoLabel,
     refVideoPromptTag,
+    resolveTaskKey,
 } from "./minimax_gen_timeline.js";
 import { t } from "./minimax_i18n.js";
 
@@ -185,7 +186,7 @@ function listAvailableMentions(refs, audios, videos) {
         items.push({
             index,
             kind: "video",
-            label: refVideoLabel(index),
+            label: v.mentionLabel || v.displayName || refVideoLabel(index),
             tag: refVideoPromptTag(index),
             thumb: videoThumbUrl(v),
         });
@@ -203,6 +204,49 @@ function listAvailableMentions(refs, audios, videos) {
         });
     }
     return items;
+}
+
+function sourceVideoMention(editor, seg = null) {
+    const taskKey = resolveTaskKey(
+        seg?.taskType
+        || seg?.task_type
+        || editor?.timeline?.global?.taskType
+        || editor?.getTaskKey?.()
+        || "",
+    );
+    if (taskKey !== "v2v" && taskKey !== "rv2v") return [];
+
+    const clips = Array.isArray(editor?.timeline?.videoClips)
+        ? editor.timeline.videoClips
+        : [];
+    const clipId = seg?.videoClipId || seg?.video_clip_id;
+    const source = (
+        (clipId ? clips.find((clip) => clip?.id === clipId) : null)
+        || clips[0]
+        || editor?.timeline?.video
+        || {}
+    );
+    const videoFile = source.videoFile || source.fileName || "";
+    if (!videoFile) return [];
+    const fileName = source.fileName || String(videoFile).split(/[\\/]/).pop() || videoFile;
+    return [{
+        ...source,
+        index: 0,
+        videoFile,
+        fileName,
+        mentionLabel: `${refVideoLabel(0)} · ${fileName}`,
+        isTimelineSource: true,
+    }];
+}
+
+function promptVideosFor(editor, seg, extraVideos) {
+    const source = sourceVideoMention(editor, seg);
+    if (!source.length) return extraVideos || [];
+    // v2v/rv2v reserves <Video 1> for the segment's timeline source.
+    return [
+        ...source,
+        ...(extraVideos || []).filter((video) => Number(video?.index ?? video?.slot ?? 0) !== 0),
+    ];
 }
 
 function kindFromTagType(type) {
@@ -1107,14 +1151,14 @@ export function mountPromptImageMentions(editor) {
     wirePromptImageMentions(editor, editor.globalPrompt, () => ({
         refs: editor.timeline?.global?.refs || [],
         audios: editor.timeline?.global?.refAudios || [],
-        videos: editor.timeline?.global?.refVideos || [],
+        videos: promptVideosFor(editor, null, editor.timeline?.global?.refVideos || []),
     }));
     wirePromptImageMentions(editor, editor.segPrompt, () => {
         const seg = editor.timeline?.segments?.[editor.selectedIndex];
         return {
             refs: seg?.refs || [],
             audios: seg?.refAudios || [],
-            videos: seg?.refVideos || [],
+            videos: promptVideosFor(editor, seg, seg?.refVideos || []),
         };
     });
 }

@@ -6,6 +6,7 @@ import json
 import logging
 
 import torch
+from comfy_execution.graph_utils import ExecutionBlocker
 
 from ..director.audio_export import (
     AUDIO_MODE_GENERATE,
@@ -90,7 +91,11 @@ def director_perf_inputs() -> dict:
             "BOOLEAN",
             {
                 "default": False,
-                "tooltip": "输出 source_images（时间轴原片帧对比）。默认关以节省内存。",
+                "tooltip": (
+                    "将时间轴原片解码到独立的 source_images 输出口；"
+                    "需将 source_images 另接预览/合成节点才能查看，不会改变主 images。"
+                    "默认关以节省内存。"
+                ),
             },
         ),
     }
@@ -339,6 +344,7 @@ def finalize_director_outputs(
     segment_frame_counts: list[int] | None = None,
     pre_refine_combined=None,
     pre_refine_segments: list | None = None,
+    block_final_images: bool = False,
 ):
     is_batch = is_prompt_batch_timeline(plan.raw, plan.global_task_key)
     export_segments = plan.export_mode == "segments"
@@ -429,10 +435,20 @@ def finalize_director_outputs(
                 images_out,
                 split_outputs=split_source_outputs,
             )
+            source_frames = sum(int(batch.shape[0]) for batch in source_images_out)
+            report = report + (
+                f"\n\nSource images: decoded {source_frames} timeline frame(s) "
+                f"on {len(source_images_out)} source_images batch(es)."
+            )
         except Exception as exc:
             log.warning("Source images output failed: %s", exc)
-            source_images_out = images_out
-            report = report + f"\n\nSource images: fallback to generated output ({exc})."
+            # Never disguise generated frames as the source comparison. A neutral
+            # placeholder makes the failure visible while preserving the expensive run.
+            source_images_out = _empty_source_images_for(images_out)
+            report = report + (
+                "\n\nSource images: FAILED — emitted neutral placeholder(s), not generated "
+                f"frames. Check the timeline source path/decode ({type(exc).__name__}: {exc})."
+            )
     else:
         source_images_out = _empty_source_images_for(images_out)
 
@@ -454,4 +470,10 @@ def finalize_director_outputs(
     report = report + "\n\n有问题联系作者：AI搅拌手  QQ交流群：551482703"
 
     fps_out = float(plan.frame_rate or 24.0)
+    if block_final_images:
+        report = report + (
+            "\n\n本轮仅确认一采：images（最终/二采输出）已阻断，"
+            "请从 images_pre_refine 查看或保存一采；再次 Queue 完成二采后 images 才会输出。"
+        )
+        images_out = ExecutionBlocker(None)
     return images_out, audio_out, fps_out, frame_count, source_images_out, report, pre_refine_out

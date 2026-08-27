@@ -269,6 +269,7 @@ def execute_director_plan_core(
     list[int],
     torch.Tensor,
     list[torch.Tensor],
+    bool,
 ]:
     """Process every segment with MiniMax H3 conditioning + single-stage sampling."""
     plan.sample_seed = int(seed)
@@ -375,10 +376,12 @@ def execute_director_plan_core(
     completed_av_latents: dict[int, dict] = {}
     completed_av_handoff: dict[int, dict] = {}
     completed_audios: dict[int, dict] = {}
+    held_for_confirmation = False
 
     def _run_one_segment(
         seg, *, progress_index: int
     ) -> tuple[torch.Tensor, dict[str, Any] | None, torch.Tensor]:
+        nonlocal held_for_confirmation
         if seg.task_key not in SUPPORTED_TASK_KEYS:
             raise ValueError(
                 f"Task '{seg.task_key}' is not supported on MiniMax H3 Director. "
@@ -395,6 +398,7 @@ def execute_director_plan_core(
         )
         skip_first_sample = pre_cache is not None
         hold_after_first = confirm_first and will_refine and not skip_first_sample
+        held_for_confirmation = held_for_confirmation or hold_after_first
         meta = {
             "frames_label": frames_label(seg),
             "task_key": seg.task_key,
@@ -707,14 +711,25 @@ def execute_director_plan_core(
                             replace_audio=False,
                         )
                         # Rewrite incremental mp4 so mid-run files match trimmed length.
-                        mp4_paths = maybe_export_segment_mp4s(
-                            mp4_run_dir,
-                            plan,
-                            prev_seg,
-                            prev_chunk,
-                            completed_audios.get(prev_idx),
-                            pre_frames=completed_pre_refine.get(prev_idx),
-                        )
+                        if hold_after_first:
+                            pre_path = maybe_export_segment_mp4(
+                                mp4_run_dir,
+                                plan,
+                                prev_seg,
+                                prev_chunk,
+                                completed_audios.get(prev_idx),
+                                suffix="pre",
+                            )
+                            mp4_paths = [pre_path] if pre_path else []
+                        else:
+                            mp4_paths = maybe_export_segment_mp4s(
+                                mp4_run_dir,
+                                plan,
+                                prev_seg,
+                                prev_chunk,
+                                completed_audios.get(prev_idx),
+                                pre_frames=completed_pre_refine.get(prev_idx),
+                            )
                         extra_passes = list(completed_refine_passes.get(prev_idx) or [])
                         rewritten_extra: list[tuple[str, torch.Tensor]] = []
                         for suffix, frames in extra_passes:
@@ -1037,15 +1052,27 @@ def execute_director_plan_core(
         completed_refine_passes[seg.index] = pass_clips
 
         #「分段导出」: flush mp4 as soon as this segment succeeds (crash-safe).
-        # Final clip = last refine pass; _pre = 一采; _pN = each refine round.
-        mp4_paths = maybe_export_segment_mp4s(
-            mp4_run_dir,
-            plan,
-            seg,
-            chunk,
-            audio_dict if isinstance(audio_dict, dict) else None,
-            pre_frames=pre_chunk,
-        )
+        # Confirmation hold has no final/second-pass clip yet: save only _pre.
+        if hold_after_first:
+            pre_path = maybe_export_segment_mp4(
+                mp4_run_dir,
+                plan,
+                seg,
+                chunk,
+                audio_dict if isinstance(audio_dict, dict) else None,
+                suffix="pre",
+            )
+            mp4_paths = [pre_path] if pre_path else []
+        else:
+            # Final clip = last refine pass; _pre = 一采; _pN = each refine round.
+            mp4_paths = maybe_export_segment_mp4s(
+                mp4_run_dir,
+                plan,
+                seg,
+                chunk,
+                audio_dict if isinstance(audio_dict, dict) else None,
+                pre_frames=pre_chunk if run_refine else None,
+            )
         n_refine = refine_passes_for(getattr(plan, "refine", None)) if run_refine else 1
         if isinstance(pack, dict) and (pack.get("mode") or "") == "latent_upscale":
             n_refine = 1
@@ -1252,4 +1279,5 @@ def execute_director_plan_core(
         export_frame_counts,
         pre_combined,
         segment_pre_refine,
+        held_for_confirmation,
     )

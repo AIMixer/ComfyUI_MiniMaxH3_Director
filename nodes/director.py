@@ -155,6 +155,10 @@ class MiniMaxH3Director:
                     return f"{name}: expected {want}, linked node returns {got}."
         return True
 
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+
     RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "INT", "IMAGE", "STRING", "IMAGE")
     RETURN_NAMES = ("images", "audio", "fps", "frame_count", "source_images", "report", "images_pre_refine")
     OUTPUT_IS_LIST = (True, True, False, False, True, False, True)
@@ -216,7 +220,7 @@ class MiniMaxH3Director:
             refine=refine,
         )
 
-        combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments = (
+        combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, held_for_confirmation = (
             execute_director_plan_core(
                 plan,
                 node_id=unique_id,
@@ -245,4 +249,5 @@ class MiniMaxH3Director:
             segment_frame_counts=export_frame_counts,
             pre_refine_combined=pre_combined,
             pre_refine_segments=pre_segments,
+            block_final_images=held_for_confirmation,
         )
