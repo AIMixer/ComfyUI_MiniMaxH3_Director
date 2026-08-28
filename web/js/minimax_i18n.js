@@ -23,6 +23,10 @@ const ZH = {
     "toolbar.timelineZoomTitle": "开启后可用滑块横向放大时间轴；超出部分用下方滚动条查看",
     "tooltip.timelineZoom": "横向放大时间轴",
     "toolbar.noVideo": "未上传视频",
+    "toolbar.exportPack": "导出导演包",
+    "toolbar.importPack": "导入导演包",
+    "tooltip.exportPack": "导出当前时间轴与参考素材为 zip（英文目录名，可换机器再导入）",
+    "tooltip.importPack": "导入导演包，覆盖当前时间轴与素材槽",
 
     "tooltip.addRefGroup": "添加一组参考素材（图片 / 音频 / 视频）",
     "tooltip.addShot": "添加一组（可只写提示词文生，或上传首帧/尾帧；支持只传尾帧）",
@@ -431,6 +435,13 @@ const ZH = {
     "player.frameOf": "帧 {cur}/{total}{clip}",
     "executing.parseTimeline": "解析时间轴 / 加载视频",
     "executing.error": "执行出错",
+    "pack.confirmReplace": "导入将覆盖当前导演台时间轴与参考素材，是否继续？",
+    "pack.largeConfirm": "导演包约 {mb} MB（含参考视频时可能很大）。确定导出？",
+    "pack.exportFailed": "导出导演包失败",
+    "pack.importFailed": "导入导演包失败",
+    "pack.exportDoneMissing": "已导出，但以下素材文件未找到，包内对应槽位为空：",
+    "pack.importDoneMissing": "已导入，但以下素材缺失：",
+    "pack.alertFailed": "导演包操作失败：{err}",
 };
 
 const EN = {
@@ -454,6 +465,10 @@ const EN = {
     "toolbar.timelineZoomTitle": "When on, drag the slider to zoom the timeline horizontally; use the scrollbar for overflow",
     "tooltip.timelineZoom": "Zoom the timeline horizontally",
     "toolbar.noVideo": "No video uploaded",
+    "toolbar.exportPack": "Export pack",
+    "toolbar.importPack": "Import pack",
+    "tooltip.exportPack": "Export the current timeline and reference media as a zip (ASCII folders; portable)",
+    "tooltip.importPack": "Import a director pack, replacing the current timeline and media slots",
 
     "tooltip.addRefGroup": "Add a reference group (images / audio / video)",
     "tooltip.addShot": "Add a shot (prompt-only text-to-video, or start and/or end; end-only OK)",
@@ -862,6 +877,13 @@ const EN = {
     "player.frameOf": "Frame {cur}/{total}{clip}",
     "executing.parseTimeline": "Parse timeline / load video",
     "executing.error": "Execution error",
+    "pack.confirmReplace": "Import will replace the current Director timeline and reference media. Continue?",
+    "pack.largeConfirm": "This pack is about {mb} MB (reference videos can be large). Export anyway?",
+    "pack.exportFailed": "Failed to export director pack",
+    "pack.importFailed": "Failed to import director pack",
+    "pack.exportDoneMissing": "Exported, but these media files were missing so their slots are empty:",
+    "pack.importDoneMissing": "Imported, but these media files were missing:",
+    "pack.alertFailed": "Director pack failed: {err}",
 };
 
 const DICTS = { zh: ZH, en: EN };

@@ -111,6 +111,7 @@ import {
     taskDisplayLabel,
     toggleLocale,
 } from "./minimax_i18n.js";
+import { bindPackActions } from "./minimax_pack.js";
 
 const RULER_H = 24;
 const SEG_LABEL_H = 20;
@@ -2390,6 +2391,8 @@ class MiniMaxH3DirectorEditor {
                         <button type="button" class="bd-btn bd-btn-zoom" data-a="zoom-toggle" data-i18n="toolbar.timelineZoom" data-i18n-title="toolbar.timelineZoomTitle">放大</button>
                         <input type="range" class="bd-tl-zoom-slider hidden" data-r="zoom" min="1" max="10" step="any" value="1" data-i18n-title="tooltip.timelineZoom">
                     </div>
+                    <button type="button" class="bd-btn" data-a="pack-import" data-i18n="toolbar.importPack" data-i18n-title="tooltip.importPack">导入导演包</button>
+                    <button type="button" class="bd-btn" data-a="pack-export" data-i18n="toolbar.exportPack" data-i18n-title="tooltip.exportPack">导出导演包</button>
                     <button type="button" class="bd-btn" data-a="lang-toggle" data-i18n="toolbar.langToggle" data-i18n-title="toolbar.langToggleTitle">EN</button>
                     <div class="bd-bounds" data-r="bounds">起点: 0.00 | 终点: -</div>
                     <div class="bd-timecode" data-r="timecode">0.00s</div>
@@ -2871,6 +2874,7 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="mode-segment"]', () => this.setEditMode("segment"));
         bind('[data-a="lang-toggle"]', () => toggleLocale());
         bind('[data-a="zoom-toggle"]', () => this.toggleTimelineZoom());
+        bindPackActions(this);
         bind('[data-a="play"]', () => this.togglePlay());
         bind('[data-a="loop"]', () => this.toggleLoop());
         bind('[data-a="live-tae-preview"]', () => this.toggleLiveTaePreview());
@@ -3310,6 +3314,63 @@ class MiniMaxH3DirectorEditor {
     }
 
     widget(name) { return this.node.widgets?.find((w) => w.name === name); }
+
+    applyImportedTimeline(timeline, widgets = {}) {
+        const data = timeline && typeof timeline === "object" ? timeline : {};
+        // Replace, do not merge: drop in-memory drafts from the previous task so
+        // later t2v/r2v/v2v switches restore pack batchWorkspaces, not stale slots.
+        this._batchWsMem = {};
+        this._videoWsMem = {};
+        this._lastOutputWasBatchFixed = false;
+        this._legacyFrames = [];
+        this._clearPreviewVideos?.(true);
+        const taskType = widgets.task_type || widgets.taskType || data.global?.taskType || "";
+        if (this.taskTypeWidget && taskType) this.taskTypeWidget.value = taskType;
+        if (this.globalTask && taskType) this.globalTask.value = taskType;
+        for (const name of ["steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed"]) {
+            if (widgets[name] == null || widgets[name] === "") continue;
+            const w = this.widget(name);
+            if (w) w.value = widgets[name];
+        }
+        const out = data.output && typeof data.output === "object" ? data.output : {};
+        if (this.widthWidget && out.width) this.widthWidget.value = out.width;
+        if (this.heightWidget && out.height) this.heightWidget.value = out.height;
+        if (this.frameRateWidget && (data.frameRate || out.frameRate)) {
+            this.frameRateWidget.value = data.frameRate || out.frameRate;
+        }
+        if (this.refMaxWidget && (data.refMaxSize || out.longEdge)) {
+            this.refMaxWidget.value = data.refMaxSize || out.longEdge;
+        }
+        if (this.globalPromptWidget && data.global?.prompt != null) {
+            this.globalPromptWidget.value = data.global.prompt;
+        }
+        if (this.timelineWidget) this.timelineWidget.value = JSON.stringify(data);
+        const initTotal = Math.max(0, parseInt(this.totalFramesWidget?.value || data.totalFrames || 124, 10));
+        const initFps = coerceTimelineFps(this.frameRateWidget?.value || data.frameRate || 24);
+        this.timeline = parseTimeline(this.timelineWidget?.value, initTotal, initFps);
+        this.syncFrameRateUI?.(this.timeline.frameRate);
+        this._directorMode = this.getDirectorMode();
+        this._taskKey = resolveTaskKey(this.taskTypeWidget?.value || taskType);
+        if (this._directorMode === "video") {
+            this.restoreVideoFromTimeline();
+        } else if (this._directorMode === "prompt_batch" || this._directorMode === "image_batch") {
+            ensureImageBatchTimeline(this);
+        } else if (this._directorMode === "fl2v") {
+            ensureFl2vTimeline(this);
+        } else {
+            this.ensureGenTimeline();
+        }
+        this.applyTaskLayout(this._directorMode);
+        this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value);
+        this.setEditMode(this.timeline.editMode || "global");
+        this.selectedIndex = 0;
+        this.updateSelectionUI();
+        this.commit(true, { syncTimeline: true });
+        this._externalGroupsSyncSig = null;
+        this.syncExternalGroupsTimeline?.();
+        this.scheduleSettleRender?.();
+        this.updateDomWidgetHeight?.();
+    }
 
     _videoIdentityFromParts(video, clips) {
         const list = Array.isArray(clips) && clips.length ? clips : [];
