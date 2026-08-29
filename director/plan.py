@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -38,6 +39,36 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director")
 
 MIN_SEGMENT_FRAMES = 4
 DEFAULT_CONTINUITY_OVERLAP = 22
+
+# Same idea as Comfy LoadImage execution cache: skip re-decode when the file is unchanged.
+_REF_IMAGE_CACHE: OrderedDict[tuple, torch.Tensor] = OrderedDict()
+_REF_IMAGE_CACHE_MAX = 16
+
+
+def _ref_image_cache_key(file_path: str) -> tuple | None:
+    try:
+        st = os.stat(file_path)
+    except OSError:
+        return None
+    mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+    return (file_path, int(st.st_size), mtime_ns)
+
+
+def _ref_image_cache_get(key: tuple) -> torch.Tensor | None:
+    hit = _REF_IMAGE_CACHE.get(key)
+    if hit is None:
+        return None
+    _REF_IMAGE_CACHE.move_to_end(key)
+    return hit
+
+
+def _ref_image_cache_put(key: tuple, tensor: torch.Tensor) -> None:
+    _REF_IMAGE_CACHE[key] = tensor
+    _REF_IMAGE_CACHE.move_to_end(key)
+    while len(_REF_IMAGE_CACHE) > _REF_IMAGE_CACHE_MAX:
+        _REF_IMAGE_CACHE.popitem(last=False)
+
+
 MIN_CONTINUITY_OVERLAP = 5
 MAX_CONTINUITY_OVERLAP = 56
 REF_IMAGE_SIZE_MATCH = "match"
@@ -254,9 +285,22 @@ def load_reference_tensor(ref: dict) -> torch.Tensor | None:
         rel = str(ref["imageFile"]).replace("\\", "/")
         file_path = os.path.join(folder_paths.get_input_directory(), rel.replace("/", os.sep))
         if os.path.exists(file_path):
+            key = _ref_image_cache_key(file_path)
+            cached = _ref_image_cache_get(key) if key else None
+            if cached is not None:
+                return cached
             img = Image.open(file_path).convert("RGB")
             arr = np.array(img, dtype=np.float32) / 255.0
-            return torch.from_numpy(arr).unsqueeze(0)
+            tensor = torch.from_numpy(arr).unsqueeze(0)
+            try:
+                import comfy.model_management as mm
+
+                tensor = tensor.to(device=mm.intermediate_device(), dtype=mm.intermediate_dtype())
+            except Exception:
+                pass
+            if key:
+                _ref_image_cache_put(key, tensor)
+            return tensor
 
     b64_str = ref.get("imageB64", "")
     if not b64_str:

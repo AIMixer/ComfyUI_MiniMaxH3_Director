@@ -1,4 +1,4 @@
-﻿import { app } from "../../scripts/app.js";
+import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
     CUSTOM_ASPECT_RATIO,
@@ -1526,7 +1526,7 @@ function parseTimeline(raw, totalFrames, fps) {
         },
         runSelectEnabled: false,
         runSelection: [],
-        liveTaePreview: true,
+        liveTaePreview: false,
         batchDetailMode: "solo",
         segments: [{ id: uid(), start: 0, length: total, prompt: "", taskType: "", refs: [], refAudios: [], referenceVideo: {} }],
     };
@@ -1627,8 +1627,8 @@ function parseTimeline(raw, totalFrames, fps) {
         }
         data.runSelectEnabled = !!data.runSelectEnabled;
         data.runSelection = Array.isArray(data.runSelection) ? data.runSelection.map((i) => parseInt(i, 10)).filter((i) => i >= 0) : [];
-        // Default on when missing (older timelines).
-        data.liveTaePreview = data.liveTaePreview !== false && data.live_tae_preview !== false;
+        // Default off when missing. Explicit true keeps in-node TAE + segment playback.
+        data.liveTaePreview = data.liveTaePreview === true || data.live_tae_preview === true;
         const detailMode = data.batchDetailMode ?? data.batch_detail_mode;
         data.batchDetailMode = detailMode === "all" ? "all" : "solo";
         if (data.timelineMode === "fl2v" || resolveTaskKey(data.global?.taskType || "") === "fl2v") {
@@ -2516,7 +2516,7 @@ class MiniMaxH3DirectorEditor {
                     <option value="56">56</option>
                 </select>
             </span>
-            <button type="button" class="bd-btn bd-btn-live-preview active" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>`;
+            <button type="button" class="bd-btn bd-btn-live-preview" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>`;
         this.mainBody.appendChild(outputBar);
         this.outputBarEl = outputBar;
 
@@ -10595,7 +10595,7 @@ class MiniMaxH3DirectorEditor {
     }
 
     isLiveTaePreviewEnabled() {
-        return this.timeline?.liveTaePreview !== false;
+        return this.timeline?.liveTaePreview === true;
     }
 
     /** fl2v / v2v / rv2v (and aliases): show dedicated live-sample panel when toggle is on. */
