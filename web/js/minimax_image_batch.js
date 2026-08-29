@@ -2460,15 +2460,21 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             seg._videoFrameCount = frames;
             secRow.innerHTML = `${t("batch.seconds")} <input type="number" data-batch-sec-index="${index}" data-batch-seg-id="${seg.id || ""}" min="${minDurationSec()}" max="${maxDurationSec()}" step="0.1" value="${seg.durationSec}" title="${t("batch.durationTooltip", { frames, play: playSec })}">`;
             const secInput = secRow.querySelector("input");
+            // 聚焦编辑期间不要回写 value/title：帧对齐会把 20.7↔20.5 之类的中间值反复
+            // 改写回输入框，导致用户边打字边被打断、数值「卡住」。失焦时再统一规范化显示。
+            let secFocused = false;
+            secInput.addEventListener("focus", () => { secFocused = true; });
             const applySec = () => {
                 const updated = applyBatchSegmentDuration(editor, index, secInput.value);
                 if (!updated) return;
-                const play = framesToDurationSec(updated.frameCount, 24);
-                secInput.value = String(updated.durationSec);
-                secInput.title = t("batch.durationTooltip", {
-                    frames: updated.frameCount,
-                    play,
-                });
+                if (!secFocused) {
+                    const play = framesToDurationSec(updated.frameCount, 24);
+                    secInput.value = String(updated.durationSec);
+                    secInput.title = t("batch.durationTooltip", {
+                        frames: updated.frameCount,
+                        play,
+                    });
+                }
                 editor.scheduleTimelineSync();
                 editor.scheduleRender?.();
                 editor.updateVideoNameLabel?.();
@@ -2491,6 +2497,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                 secInput.onblur = () => {
                     clearTimeout(secInput._t);
                     secInput._t = null;
+                    secFocused = false;
                     applySec();
                 };
             }

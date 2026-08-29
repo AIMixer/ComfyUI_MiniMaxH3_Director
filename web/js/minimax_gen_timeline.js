@@ -311,7 +311,9 @@ export function maxDurationSec() {
 
 /**
  * Frame count for a duration, capped to MAX_GEN_FRAMES on the 17k+5 grid.
- * Returns the 1-decimal seconds that produced that count (may step down near the cap).
+ * 返回的 durationSec 始终是该帧数对应的「规范化」秒数（preferredDurationSecFromFrames），
+ * 而不是用户输入的原始秒数。否则同一帧数在不同代码路径会显示成不同秒数
+ * （例如 498 帧正向取整得 20.7、反向规范化得 20.5），输入框被反复改写、难以编辑。
  */
 export function durationToClampedMiniMaxFrames(seconds, fps = 24) {
     let sec = roundDurationSec(seconds);
@@ -323,9 +325,8 @@ export function durationToClampedMiniMaxFrames(seconds, fps = 24) {
     if (fc > MAX_GEN_FRAMES) {
         fc = alignMiniMaxFrameCount(MAX_GEN_FRAMES);
         while (fc > MAX_GEN_FRAMES) fc -= 17;
-        sec = preferredDurationSecFromFrames(fc, fps);
     }
-    return { frames: fc, durationSec: sec };
+    return { frames: fc, durationSec: preferredDurationSecFromFrames(fc, fps) };
 }
 
 export function sumFrameCounts(segments) {

@@ -1000,6 +1000,61 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
         openIfMention();
     });
 
+    // Serialized text of the current (possibly non-collapsed) selection, with chips
+    // written as official <Picture N>/<Video K>/<Audio J> tags. The clipboard's native
+    // text/plain only carries the chip's visible label, so without this copy/paste
+    // loses the tags and @-mentioned media can't be copied at all.
+    const serializedSelectionText = () => {
+        const { start, end } = serializedSelectionOffsets(rich);
+        if (end <= start) return "";
+        return serializeTokenEditor(rich).slice(start, end);
+    };
+
+    rich.addEventListener("copy", (e) => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !rich.contains(sel.anchorNode)) return;
+        const text = serializedSelectionText();
+        if (!text || !e.clipboardData) return;
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", text);
+    });
+
+    rich.addEventListener("cut", (e) => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !rich.contains(sel.anchorNode)) return;
+        const text = serializedSelectionText();
+        if (!text || !e.clipboardData) return;
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", text);
+        const { start, end } = serializedSelectionOffsets(rich);
+        const full = serializeTokenEditor(rich);
+        const next = full.slice(0, start) + full.slice(end);
+        hydrateTokenEditor(rich, next, getMedia, chipOpts);
+        setCaretBySerializedOffset(rich, start);
+        syncToTextarea({ emitInput: true });
+    });
+
+    // When the caret sits at the element level (directly before/after a chip, at the
+    // start of a line, or at the editor edge) rather than inside a text node, native
+    // typing is unreliable around contenteditable=false chips — text may fail to insert
+    // or land in the wrong spot. Route those keystrokes through the serialized editor
+    // so text can always be typed directly before an @-chip (including a line-leading one).
+    rich.addEventListener("beforeinput", (e) => {
+        if (composing) return;
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount || !rich.contains(sel.anchorNode)) return;
+        const node = sel.getRangeAt(0).startContainer;
+        if (node.nodeType === Node.TEXT_NODE) return;
+        let insert = null;
+        if (e.inputType === "insertText" && e.data != null) insert = e.data;
+        else if (e.inputType === "insertParagraph" || e.inputType === "insertLineBreak") insert = "\n";
+        if (insert == null) return;
+        e.preventDefault();
+        insertAtCaret(rich, insert, getMedia, chipOpts);
+        syncToTextarea({ emitInput: true });
+        openIfMention();
+    });
+
     rich.addEventListener("keydown", (e) => {
         // contenteditable is not INPUT/TEXTAREA — Comfy treats Ctrl+V as graph paste.
         if ((e.ctrlKey || e.metaKey) && ["v", "c", "x"].includes(e.key?.toLowerCase?.())) {
@@ -1059,6 +1114,16 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
                 if (node === rich) {
                     const next = rich.childNodes[offset];
                     if (next?.classList?.contains(TOKEN_CLASS)) {
+                        const prev = rich.childNodes[offset - 1];
+                        // Chip at the start of a line (previous node is a <br>): Delete
+                        // should merge this line up into the previous one — drop the line
+                        // break and KEEP the chip, instead of deleting the chip itself.
+                        if (prev && prev.tagName === "BR") {
+                            e.preventDefault();
+                            prev.remove();
+                            syncToTextarea({ emitInput: true });
+                            return;
+                        }
                         e.preventDefault();
                         next.remove();
                         syncToTextarea({ emitInput: true });

@@ -423,6 +423,19 @@ def ref_videos_to_dict(videos: list[SegmentRefVideo]) -> dict | None:
     return ref_videos_dict([(v.index, v.tensor) for v in videos])
 
 
+# r2v 的公共参数/主体描述是纯视觉自由文本，H3 Ref2VA 在缺少明确音频约束时，
+# 会把这类描述性文字当成旁白/台词念出来（r2v 批生成又没有静音开关）。
+# 这里显式声明：描述文字仅供画面/主体参考、不得朗读；仅明确写出的台词才发声，
+# 其余只生成与画面匹配的自然环境音。与官方 r2v PE 模板「纯视觉描述→环境音」语义一致。
+R2V_NO_NARRATION_DIRECTIVE = (
+    "Audio note: the following description is visual/subject reference only. "
+    "Do not narrate, caption, or read any descriptive text aloud as voiceover. "
+    "Produce speech or singing only for dialogue that is explicitly written as such; "
+    "otherwise generate only natural ambient sound that matches the visuals."
+)
+_R2V_NO_NARRATION_MARKER = "do not narrate, caption, or read"
+
+
 def reinforce_r2v_prompt(
     prompt: str,
     *,
@@ -430,7 +443,11 @@ def reinforce_r2v_prompt(
     video_indices: list[int] | None = None,
     audio_indices: list[int] | None = None,
 ) -> str:
-    """Remind <Picture N> / <Video K> / <Audio J> when tags are missing (r2v batch)."""
+    """Remind <Picture N> / <Video K> / <Audio J> when tags are missing (r2v batch).
+
+    同时在正文前插入「禁止朗读描述」音频指令，避免公共参数/主体描述被 H3 当旁白念出。
+    指令放在标签之后、正文之前，靠前置位置以规避长提示词尾部截断。
+    """
     text = (prompt or "").strip() or "Generate a cinematic scene."
     pic_indices = sorted({int(i) for i in (ref_indices or []) if int(i) >= 0})
     vid_indices = sorted({int(i) for i in (video_indices or []) if int(i) >= 0})
@@ -442,9 +459,12 @@ def reinforce_r2v_prompt(
         prefix_parts.append(" ".join(f"<Video {i + 1}>" for i in vid_indices))
     if aud_indices and "<Audio" not in text and "<audio" not in text:
         prefix_parts.append(" ".join(f"<Audio {i + 1}>" for i in aud_indices))
+    # 已含等价指令（如用户/PE 已写明）则不重复插入。
+    if _R2V_NO_NARRATION_MARKER not in text.lower():
+        prefix_parts.append(R2V_NO_NARRATION_DIRECTIVE)
     if not prefix_parts:
         return text
-    return f"{' '.join(prefix_parts)} {text}"
+    return f"{' '.join(prefix_parts)}\n\n{text}"
 
 
 def _segment_ranges_from_timeline(timeline: dict, total: int) -> list[tuple[int, int, dict]]:
