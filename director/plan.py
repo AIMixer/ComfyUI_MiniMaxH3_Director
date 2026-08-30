@@ -229,6 +229,8 @@ class DirectorPlan:
     sample_steps: int = 25
     sample_sampler: str = ""
     sample_scheduler: str = ""
+    sample_sigmas: tuple[float, ...] | None = None
+    sample_sigmas_linked: bool = False
     sample_shift_video: float = 12.0
     sample_shift_audio: float = 3.0
 

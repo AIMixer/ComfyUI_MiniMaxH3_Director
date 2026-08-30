@@ -110,7 +110,10 @@ class MiniMaxH3Director:
                         "default": 25,
                         "min": 1,
                         "max": 200,
-                        "tooltip": "Sampling steps — official template: 25.",
+                        "tooltip": (
+                            "一采步数（官方模板 25）。"
+                            "接了 sigmas 口后忽略此项，改用外接噪声表。"
+                        ),
                     },
                 ),
                 "sampler": (
@@ -124,7 +127,10 @@ class MiniMaxH3Director:
                     comfy.samplers.KSampler.SCHEDULERS,
                     {
                         "default": "simple",
-                        "tooltip": "Official template: BasicScheduler simple.",
+                        "tooltip": (
+                            "一采调度器（官方模板 simple）。"
+                            "接了 sigmas 口后忽略此项，改用外接噪声表。"
+                        ),
                     },
                 ),
                 "shift_video": (
@@ -136,6 +142,18 @@ class MiniMaxH3Director:
                     {"default": 3.0, "min": 0.01, "max": 100.0, "step": 0.01, "tooltip": "MiniMaxH3SigmaShift shift_audio."},
                 ),
                 **director_perf_inputs(),
+                "sigmas": (
+                    "SIGMAS",
+                    {
+                        "forceInput": True,
+                        "tooltip": (
+                            "可选。一采噪声表，接 BasicScheduler 或 ManualSigmas。"
+                            "接线后覆盖导演台「步数」和「调度器」（采样器下拉仍有效）。"
+                            "BasicScheduler 请接 SigmaShift 之后的同一套 H3 MODEL。"
+                            "不接则仍用步数 + 调度器、denoise=1 自动算表。"
+                        ),
+                    },
+                ),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -153,6 +171,9 @@ class MiniMaxH3Director:
                 got = input_types.get(name)
                 if got is not None and got != want:
                     return f"{name}: expected {want}, linked node returns {got}."
+            got_sigmas = input_types.get("sigmas")
+            if got_sigmas is not None and got_sigmas != "SIGMAS":
+                return f"sigmas: expected SIGMAS, linked node returns {got_sigmas}."
         return True
 
     @classmethod
@@ -198,6 +219,7 @@ class MiniMaxH3Director:
         i2v_groups=None,
         r2v_groups=None,
         refine=None,
+        sigmas=None,
         steps=25,
         sampler="res_multistep",
         scheduler="simple",
@@ -239,6 +261,7 @@ class MiniMaxH3Director:
                 steps=steps,
                 sampler=sampler,
                 scheduler=scheduler,
+                sigmas=sigmas,
                 shift_video=shift_video,
                 shift_audio=shift_audio,
                 clear_vram_between_segments=clear_vram_between_segments,

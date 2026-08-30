@@ -548,6 +548,7 @@ async def minimax_first_pass_cache_status(request):
         plan.sample_steps = int(body.get("steps") or 25)
         plan.sample_sampler = str(body.get("sampler") or "")
         plan.sample_scheduler = str(body.get("scheduler") or "")
+        plan.sample_sigmas_linked = bool(body.get("sigmas_linked"))
         plan.sample_shift_video = float(body.get("shift_video") or 12.0)
         plan.sample_shift_audio = float(body.get("shift_audio") or 3.0)
         return web.json_response(inspect_first_pass_cache(node_id, plan))

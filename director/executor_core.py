@@ -14,6 +14,7 @@ from ..nodes.conditioning import run_minimax_conditioning
 from .core_sampling import sample_single_stage
 from .refine_pack import (
     confirm_first_pass_enabled,
+    first_pass_sigmas_override,
     refine_needs_canvas,
     refine_passes_for,
     refine_will_sample,
@@ -276,6 +277,7 @@ def execute_director_plan_core(
     steps: int = 25,
     sampler: str = "res_multistep",
     scheduler: str = "simple",
+    sigmas=None,
     shift_video: float = 12.0,
     shift_audio: float = 3.0,
     clear_vram_between_segments: bool = True,
@@ -295,6 +297,9 @@ def execute_director_plan_core(
     plan.sample_steps = int(steps)
     plan.sample_sampler = str(sampler or "")
     plan.sample_scheduler = str(scheduler or "")
+    first_pass_sigmas = first_pass_sigmas_override(sigmas)
+    plan.sample_sigmas = first_pass_sigmas
+    plan.sample_sigmas_linked = first_pass_sigmas is not None
     plan.sample_shift_video = float(shift_video)
     plan.sample_shift_audio = float(shift_audio)
     audio_mode = resolve_audio_mode(plan)
@@ -332,10 +337,22 @@ def execute_director_plan_core(
     segment_audios: list[dict[str, Any]] = []
     skipped_no_cache: list[int] = []
     reports: list[str] = [plan_summary(plan), "", "Execution path: ComfyUI official MiniMax H3"]
-    reports.append(
-        "Sample: official MiniMaxH3SigmaShift → BasicScheduler → "
-        "BasicGuider/CFGGuider → SamplerCustomAdvanced."
-    )
+    if first_pass_sigmas is not None:
+        sigma_steps = max(0, len(first_pass_sigmas) - 1)
+        reports.append(
+            f"Sample: 外接 SIGMAS（{sigma_steps} 步）→ MiniMaxH3SigmaShift(model) → "
+            "BasicGuider/CFGGuider → SamplerCustomAdvanced。"
+            "导演台步数/调度器已忽略。"
+        )
+    else:
+        if sigmas is not None:
+            reports.append(
+                "Sample: 外接 SIGMAS 无效（至少需要 2 个数），回退步数 + 调度器。"
+            )
+        reports.append(
+            "Sample: official MiniMaxH3SigmaShift → BasicScheduler → "
+            "BasicGuider/CFGGuider → SamplerCustomAdvanced."
+        )
     # One timestamp folder per execute so all segments of this run stay together.
     mp4_run_dir = new_segment_mp4_run_dir(plan)
     if mp4_run_dir is not None:
@@ -882,6 +899,7 @@ def execute_director_plan_core(
                 scheduler=scheduler,
                 shift_video=shift_video,
                 shift_audio=shift_audio,
+                sigmas=first_pass_sigmas,
                 on_phase=_report_sample_phase,
                 on_step_preview=_report_step_preview if live_tae_preview else None,
                 preview_every=1,
