@@ -544,6 +544,50 @@ function insertAtCaret(editor, insertText, getMedia, options, { replaceFrom = nu
     return next;
 }
 
+// 序列化标签字符串层的删除：contenteditable=false 的 chip 会让浏览器报告的光标位置
+// 多变（chip 正前方的元素级位置、chip 之后文本节点的行首位置、键盘 Home/方向键落点都
+// 不同），DOM 节点判断无法覆盖。这里在官方标签字符串上按「原子单位（整个 tag / 单个
+// 字符 / 换行符）」删除，并用「光标到行首之间是否只有 chip 与空白」识别行首合并区，
+// 让行首 Delete 删除上一处换行来合并行、而不是删掉行首 chip 或行首字符。
+const SERIAL_TAG_AT = /^<(?:Picture|Video|Audio)\s+\d+\s*>/i;
+const SERIAL_TAG_BEFORE = /<(?:Picture|Video|Audio)\s+\d+\s*>$/i;
+const SERIAL_TAG_GLOBAL = /<(?:Picture|Video|Audio)\s+\d+\s*>/gi;
+
+/** Delete 键（向前删）。返回 {text, caret} 或 null（无可删）。 */
+function serializedDeleteForward(full, offset) {
+    // 当前行首 = 光标之前最近的换行之后。
+    const lineStart = full.lastIndexOf("\n", offset - 1) + 1;
+    // 光标到行首之间去掉 chip 标签与空白后若为空，说明光标处于「行首合并区」
+    // （行首可能隔着 chip；键盘 Home 常把光标落在 chip 之后的文本开头）。
+    const headHasText =
+        full
+            .slice(lineStart, offset)
+            .replace(SERIAL_TAG_GLOBAL, "")
+            .replace(/\s+/g, "").length > 0;
+    if (!headHasText && lineStart > 0) {
+        // 删除行首前的换行符合并到上一行，保留行首 chip。
+        return { text: full.slice(0, lineStart - 1) + full.slice(lineStart), caret: lineStart - 1 };
+    }
+    const tagLen = SERIAL_TAG_AT.exec(full.slice(offset))?.[0]?.length || 0;
+    if (tagLen > 0) {
+        return { text: full.slice(0, offset) + full.slice(offset + tagLen), caret: offset };
+    }
+    if (offset < full.length) {
+        return { text: full.slice(0, offset) + full.slice(offset + 1), caret: offset };
+    }
+    return null;
+}
+
+/** Backspace 键（向后删）：光标前是整个 chip 则删 chip，否则删前一个字符（含换行）。 */
+function serializedDeleteBackward(full, offset) {
+    if (offset <= 0) return null;
+    const tagLen = SERIAL_TAG_BEFORE.exec(full.slice(0, offset))?.[0]?.length || 0;
+    if (tagLen > 0) {
+        return { text: full.slice(0, offset - tagLen) + full.slice(offset), caret: offset - tagLen };
+    }
+    return { text: full.slice(0, offset - 1) + full.slice(offset), caret: offset - 1 };
+}
+
 function editorHasRawTagsInTextNodes(editor) {
     for (const node of editor.childNodes || []) {
         if (node.nodeType === Node.TEXT_NODE && TAG_RE.test(node.textContent || "")) {
@@ -782,6 +826,71 @@ function writeTextareaValue(textarea, value) {
  * Wire @-mention dropdown + token chip editor on a prompt textarea.
  * Typing `@` lists uploaded reference images / audios / videos; pick one to insert official tags.
  */
+// ComfyUI/litegraph 在 window capture 阶段全局监听 copy/cut/paste：当事件目标位于画布 /
+// DOM-widget 内（@ 芯片编辑器正是）时会 stopPropagation，事件从此不再向下传递——绑在
+// 编辑器（rich）甚至 document 上的剪贴板监听器都收不到。结果复制只带走芯片的可见文字、
+// 丢掉 <Picture N>/<Video K>/<Audio J> 标签，粘贴也进不来。stopPropagation 不阻止同一
+// window 上的其他 capture 监听器，所以这里同样挂在 window capture（整页只注册一次），
+// 按当前选区找到 .bd-token-editor 并接管剪贴板；每个编辑器把自己的操作闭包挂在
+// rich.__bdClipboard 上（见 wirePromptImageMentions）。
+let __bdClipboardHookInstalled = false;
+function installGlobalClipboardHook() {
+    if (__bdClipboardHookInstalled) return;
+    __bdClipboardHookInstalled = true;
+
+    const editorFromSelection = () => {
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount) return null;
+        const node = sel.anchorNode;
+        const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+        const editor =
+            el && typeof el.closest === "function" ? el.closest(".bd-token-editor") : null;
+        return editor && editor.__bdClipboard ? editor : null;
+    };
+
+    window.addEventListener(
+        "copy",
+        (e) => {
+            const editor = editorFromSelection();
+            if (!editor) return;
+            const text = editor.__bdClipboard.serializedSelectionText();
+            if (!text || !e.clipboardData) return;
+            e.preventDefault();
+            e.stopImmediatePropagation?.();
+            e.clipboardData.setData("text/plain", text);
+        },
+        true
+    );
+
+    window.addEventListener(
+        "cut",
+        (e) => {
+            const editor = editorFromSelection();
+            if (!editor) return;
+            const text = editor.__bdClipboard.serializedSelectionText();
+            if (!text || !e.clipboardData) return;
+            e.preventDefault();
+            e.stopImmediatePropagation?.();
+            e.clipboardData.setData("text/plain", text);
+            editor.__bdClipboard.cutSelection();
+        },
+        true
+    );
+
+    window.addEventListener(
+        "paste",
+        (e) => {
+            const editor = editorFromSelection();
+            if (!editor) return;
+            e.preventDefault();
+            e.stopImmediatePropagation?.();
+            const text = (e.clipboardData || window.clipboardData)?.getData("text/plain") || "";
+            editor.__bdClipboard.pasteText(text.replace(/\r\n/g, "\n"));
+        },
+        true
+    );
+}
+
 export function wirePromptImageMentions(editorHost, textarea, getMedia) {
     if (!textarea || textarea.dataset.mentionWired) return;
     textarea.dataset.mentionWired = "1";
@@ -989,50 +1098,34 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
         if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) openIfMention();
     });
 
-    rich.addEventListener("paste", (e) => {
-        // Block Comfy canvas node-paste (clipboard still holds last copied nodes).
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation?.();
-        const text = (e.clipboardData || window.clipboardData)?.getData("text/plain") || "";
-        insertAtCaret(rich, text.replace(/\r\n/g, "\n"), getMedia, chipOpts);
-        syncToTextarea({ emitInput: true });
-        openIfMention();
-    });
-
-    // Serialized text of the current (possibly non-collapsed) selection, with chips
-    // written as official <Picture N>/<Video K>/<Audio J> tags. The clipboard's native
-    // text/plain only carries the chip's visible label, so without this copy/paste
-    // loses the tags and @-mentioned media can't be copied at all.
+    // 选区的官方标签文本（chip 写成 <Picture N>/<Video K>/<Audio J>）。剪贴板原生
+    // text/plain 只带芯片的可见 label，不接管的话复制会丢标签、@ 的媒体无法复制。
     const serializedSelectionText = () => {
         const { start, end } = serializedSelectionOffsets(rich);
         if (end <= start) return "";
         return serializeTokenEditor(rich).slice(start, end);
     };
 
-    rich.addEventListener("copy", (e) => {
-        const sel = window.getSelection();
-        if (!sel || sel.isCollapsed || !rich.contains(sel.anchorNode)) return;
-        const text = serializedSelectionText();
-        if (!text || !e.clipboardData) return;
-        e.preventDefault();
-        e.clipboardData.setData("text/plain", text);
-    });
-
-    rich.addEventListener("cut", (e) => {
-        const sel = window.getSelection();
-        if (!sel || sel.isCollapsed || !rich.contains(sel.anchorNode)) return;
-        const text = serializedSelectionText();
-        if (!text || !e.clipboardData) return;
-        e.preventDefault();
-        e.clipboardData.setData("text/plain", text);
-        const { start, end } = serializedSelectionOffsets(rich);
-        const full = serializeTokenEditor(rich);
-        const next = full.slice(0, start) + full.slice(end);
-        hydrateTokenEditor(rich, next, getMedia, chipOpts);
-        setCaretBySerializedOffset(rich, start);
-        syncToTextarea({ emitInput: true });
-    });
+    // 剪贴板事件在画布内会被全局 window-capture 监听器截走（见 installGlobalClipboardHook
+    // 的注释），绑在 rich 上的 copy/cut/paste 永远收不到。这里把本编辑器的操作闭包挂到
+    // rich.__bdClipboard，由唯一的全局 window-capture hook 按选区找到本编辑器后调用。
+    rich.__bdClipboard = {
+        serializedSelectionText,
+        cutSelection() {
+            const { start, end } = serializedSelectionOffsets(rich);
+            const full = serializeTokenEditor(rich);
+            const next = full.slice(0, start) + full.slice(end);
+            hydrateTokenEditor(rich, next, getMedia, chipOpts);
+            setCaretBySerializedOffset(rich, start);
+            syncToTextarea({ emitInput: true });
+        },
+        pasteText(text) {
+            insertAtCaret(rich, text, getMedia, chipOpts);
+            syncToTextarea({ emitInput: true });
+            openIfMention();
+        },
+    };
+    installGlobalClipboardHook();
 
     // When the caret sits at the element level (directly before/after a chip, at the
     // start of a line, or at the editor edge) rather than inside a text node, native
@@ -1083,61 +1176,24 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
             }
         }
 
-        // Atomic backspace/delete against chips.
+        // Backspace/Delete 在序列化标签字符串层处理（见 serializedDeleteForward/
+        // Backward 的注释）。DOM 节点判断覆盖不到键盘 Home/方向键落到 chip 之后文本
+        // 节点的情况，导致行首 Delete 误删行首字符/芯片而不是合并行。
         if (e.key === "Backspace" || e.key === "Delete") {
             const sel = window.getSelection();
             if (!sel || !sel.isCollapsed || !sel.rangeCount) return;
-            const range = sel.getRangeAt(0);
-            if (e.key === "Backspace") {
-                let node = range.startContainer;
-                let offset = range.startOffset;
-                if (node === rich && offset > 0) {
-                    const prev = rich.childNodes[offset - 1];
-                    if (prev?.classList?.contains(TOKEN_CLASS)) {
-                        e.preventDefault();
-                        prev.remove();
-                        syncToTextarea({ emitInput: true });
-                        return;
-                    }
-                }
-                if (node.nodeType === Node.TEXT_NODE && offset === 0) {
-                    const prev = node.previousSibling;
-                    if (prev?.classList?.contains(TOKEN_CLASS)) {
-                        e.preventDefault();
-                        prev.remove();
-                        syncToTextarea({ emitInput: true });
-                    }
-                }
-            } else if (e.key === "Delete") {
-                let node = range.startContainer;
-                let offset = range.startOffset;
-                if (node === rich) {
-                    const next = rich.childNodes[offset];
-                    if (next?.classList?.contains(TOKEN_CLASS)) {
-                        const prev = rich.childNodes[offset - 1];
-                        // Chip at the start of a line (previous node is a <br>): Delete
-                        // should merge this line up into the previous one — drop the line
-                        // break and KEEP the chip, instead of deleting the chip itself.
-                        if (prev && prev.tagName === "BR") {
-                            e.preventDefault();
-                            prev.remove();
-                            syncToTextarea({ emitInput: true });
-                            return;
-                        }
-                        e.preventDefault();
-                        next.remove();
-                        syncToTextarea({ emitInput: true });
-                        return;
-                    }
-                }
-                if (node.nodeType === Node.TEXT_NODE && offset === (node.textContent || "").length) {
-                    const next = node.nextSibling;
-                    if (next?.classList?.contains(TOKEN_CLASS)) {
-                        e.preventDefault();
-                        next.remove();
-                        syncToTextarea({ emitInput: true });
-                    }
-                }
+            if (!rich.contains(sel.anchorNode)) return;
+            const { start: offset } = serializedSelectionOffsets(rich);
+            const full = serializeTokenEditor(rich);
+            const result =
+                e.key === "Delete"
+                    ? serializedDeleteForward(full, offset)
+                    : serializedDeleteBackward(full, offset);
+            if (result) {
+                e.preventDefault();
+                hydrateTokenEditor(rich, result.text, getMedia, chipOpts);
+                setCaretBySerializedOffset(rich, result.caret);
+                syncToTextarea({ emitInput: true });
             }
         }
     });
@@ -1176,6 +1232,7 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
         window.removeEventListener("resize", closeMenu);
         menu?.remove();
         menu = null;
+        delete rich.__bdClipboard;
         textarea.__bdTokenPlaceholderObserver?.disconnect();
         delete textarea.__bdTokenPlaceholderObserver;
         delete textarea.dataset.mentionWired;
