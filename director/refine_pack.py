@@ -63,6 +63,16 @@ def is_refine_sigmas_tensor(raw: Any) -> bool:
     return raw is not None and not isinstance(raw, (str, bytes, list, tuple)) and hasattr(raw, "reshape")
 
 
+def first_pass_sigmas_override(raw: Any):
+    """Optional Director first-pass SIGMAS. None = use steps + scheduler."""
+    if raw is None:
+        return None
+    try:
+        return parse_refine_sigmas(raw, fallback=False)
+    except (TypeError, ValueError):
+        return None
+
+
 def refine_sigmas_override(pack: dict[str, Any] | None):
     """Wired BasicScheduler / ManualSigmas tensor. No text fallback."""
     pack = pack or {}

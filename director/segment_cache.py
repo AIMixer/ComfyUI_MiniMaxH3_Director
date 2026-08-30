@@ -137,16 +137,25 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
 def first_pass_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
     """Exact-match key for first-pass AV latent. Refine knobs are excluded."""
     fp = _segment_identity_fingerprint(seg, plan)
+    sigmas = getattr(plan, "sample_sigmas", None)
+    linked = bool(sigmas) or bool(getattr(plan, "sample_sigmas_linked", False))
     fp.update({
         "kind": "first_pass",
         "seed": int(getattr(plan, "sample_seed", 0) or 0),
         "cfg": round(float(getattr(plan, "sample_cfg", 1.0) or 1.0), 6),
-        "steps": int(getattr(plan, "sample_steps", 25) or 25),
         "sampler": str(getattr(plan, "sample_sampler", "") or ""),
-        "scheduler": str(getattr(plan, "sample_scheduler", "") or ""),
         "shift_video": round(float(getattr(plan, "sample_shift_video", 12.0) or 12.0), 6),
         "shift_audio": round(float(getattr(plan, "sample_shift_audio", 3.0) or 3.0), 6),
     })
+    if linked:
+        fp["steps"] = 0
+        fp["scheduler"] = "external_sigmas"
+        fp["sigmas_source"] = "linked"
+        if sigmas:
+            fp["sigmas"] = [round(float(x), 6) for x in sigmas]
+    else:
+        fp["steps"] = int(getattr(plan, "sample_steps", 25) or 25)
+        fp["scheduler"] = str(getattr(plan, "sample_scheduler", "") or "")
     return fp
 
 
@@ -753,9 +762,14 @@ def inspect_first_pass_cache(
                 read_error = str(exc)
 
         expected = first_pass_cache_fingerprint(seg, plan)
-        matches = bool(cache_exists and isinstance(stored, dict) and stored == expected)
+        stored_cmp = stored
+        expected_cmp = expected
+        if getattr(plan, "sample_sigmas_linked", False) and isinstance(stored, dict):
+            stored_cmp = {k: v for k, v in stored.items() if k != "sigmas"}
+            expected_cmp = {k: v for k, v in expected.items() if k != "sigmas"}
+        matches = bool(cache_exists and isinstance(stored, dict) and stored_cmp == expected_cmp)
         diff = (
-            _fingerprint_diff_keys(stored, expected)
+            _fingerprint_diff_keys(stored_cmp, expected_cmp)
             if isinstance(stored, dict)
             else (["<invalid-meta>"] if meta_exists else ["<missing-cache>"])
         )
