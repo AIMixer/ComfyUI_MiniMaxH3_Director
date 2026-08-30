@@ -264,6 +264,35 @@ def _ref_video_audios_to_dict(items) -> dict | None:
     return out or None
 
 
+def _release_segment_file_ref_audios(plan: DirectorPlan, seg) -> None:
+    """Drop decoded per-segment file PCM; keep execution-shared/global slots."""
+    shared_ids = {id(item) for item in (getattr(plan, "global_ref_audios", None) or [])}
+    for item in getattr(seg, "ref_audios", None) or []:
+        if id(item) in shared_ids:
+            continue
+        if getattr(item, "audio_path", ""):
+            item.audio = None
+
+
+def _prune_continuity_working_set(
+    next_segment_index: int,
+    av_latents: dict[int, dict],
+    refine_passes: dict[int, list[tuple[str, torch.Tensor]]],
+) -> None:
+    """Keep only the direct predecessor needed by the next segment.
+
+    Final/pre-refine frames and export audio live in separate collections and
+    are intentionally untouched.  A missing direct predecessor is loaded from
+    the existing disk cache by the continuity path.
+    """
+    current = int(next_segment_index)
+    keep = current - 1
+    for working_set in (av_latents, refine_passes):
+        for index in tuple(working_set):
+            if int(index) < current and int(index) != keep:
+                working_set.pop(index, None)
+
+
 def execute_director_plan_core(
     plan: DirectorPlan,
     *,
@@ -1201,12 +1230,23 @@ def execute_director_plan_core(
         return chunk, audio_dict, pre_chunk
 
     for seg in all_segments:
+        # AV latent and decoded refine-pass clips are a rolling continuity
+        # working set, not final outputs.  At the start of segment N, only N-1
+        # can still be consumed; older entries have already been persisted.
+        _prune_continuity_working_set(
+            seg.index,
+            completed_av_latents,
+            completed_refine_passes,
+        )
         if seg.index in run_indices:
             if clear_vram_between_segments and segment_outputs:
                 cleanup_segment_vram(enabled=True)
-            chunk, audio_dict, pre_chunk = _run_one_segment(
-                seg, progress_index=progress_pos[seg.index]
-            )
+            try:
+                chunk, audio_dict, pre_chunk = _run_one_segment(
+                    seg, progress_index=progress_pos[seg.index]
+                )
+            finally:
+                _release_segment_file_ref_audios(plan, seg)
             segment_outputs.append(chunk)
             segment_pre_refine.append(pre_chunk)
             segment_audios.append(audio_dict or {})

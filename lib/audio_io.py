@@ -42,7 +42,6 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.audio")
 
 _ENCODE_ARGS = ("utf-8", "backslashreplace")
 
-_FULL_AUDIO_CACHE: dict[str, dict[str, Any]] = {}
 _OPENCV_FPS_CACHE: dict[str, float] = {}
 # path -> (video_pts0, audio_start, frame_dur)
 _AV_TIMING_CACHE: dict[str, tuple[float, float, float]] = {}
@@ -329,10 +328,23 @@ def load_reference_audio(path: str) -> dict[str, Any] | None:
     return _load_full_audio(path)
 
 
-def _load_full_audio(path: str) -> dict[str, Any] | None:
-    cached = _FULL_AUDIO_CACHE.get(path)
-    if cached is not None:
-        return cached
+def _load_full_audio(
+    path: str,
+    *,
+    cache: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Decode a complete audio stream, optionally reusing a caller-owned cache.
+
+    The module deliberately has no process-wide PCM cache.  Callers that need
+    to slice the same source repeatedly during one Director execution may pass
+    an execution-scoped ``cache``; uploaded/reference files otherwise behave
+    like images and videos and are decoded only while their current plan needs
+    them.
+    """
+    if cache is not None:
+        cached = cache.get(path)
+        if cached is not None:
+            return cached
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg or not path or not os.path.isfile(path):
         return None
@@ -373,7 +385,8 @@ def _load_full_audio(path: str) -> dict[str, Any] | None:
         audio = audio[:usable]
     wave = audio.reshape((-1, out_ac)).transpose(0, 1).unsqueeze(0).contiguous()
     out = {"waveform": wave, "sample_rate": int(ar)}
-    _FULL_AUDIO_CACHE[path] = out
+    if cache is not None:
+        cache[path] = out
     return out
 
 
@@ -566,6 +579,8 @@ def extract_timeline_audio(
     logical_start: int,
     logical_end: int,
     frame_rate: float,
+    *,
+    audio_cache: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Extract source audio for logical timeline range [start, end)."""
     spans = _timeline_audio_spans(timeline, logical_start, logical_end, frame_rate)
@@ -586,7 +601,7 @@ def extract_timeline_audio(
     sr = 44100
     fallback_seeks = 0
     for path, pcm_start, out_dur, native0, file_fps in spans:
-        full = _load_full_audio(path)
+        full = _load_full_audio(path, cache=audio_cache)
         if full is None:
             return None
         sr = int(full["sample_rate"] or sr)
