@@ -451,6 +451,75 @@ function widgetByName(node, name) {
     return node.widgets?.find((w) => w.name === name);
 }
 
+function findDirectorWidget(node, name) {
+    const key = String(name || "");
+    const direct = widgetByName(node, key);
+    if (direct) return direct;
+    if (/control[_\s]?after[_\s]?generate/i.test(key)) {
+        for (const w of node?.widgets || []) {
+            for (const linked of w.linkedWidgets || []) {
+                const linkedName = String(linked?.name || linked?.label || "");
+                if (/control[_\s]?after[_\s]?generate/i.test(linkedName)) return linked;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * ComfyUI applies widgets_values by index during configure(), before seed's
+ * control_after_generate linked combo may exist — shifting optional widgets
+ * (steps defaults back to 25). Re-apply saved values by name once widgets settle.
+ */
+function restoreDirectorWidgetsFromSaved(node, data) {
+    if (!node || !data) return false;
+
+    const named = data.widgets_values_named;
+    if (named && typeof named === "object") {
+        node._mmxRestoringSampleWidgets = true;
+        try {
+            for (const [name, value] of Object.entries(named)) {
+                if (name === DIRECTOR_DOM_WIDGET_NAME) continue;
+                if (value === undefined) continue;
+                const w = findDirectorWidget(node, name);
+                if (!w || w.serialize === false) continue;
+                w.value = value;
+            }
+        } finally {
+            node._mmxRestoringSampleWidgets = false;
+        }
+        return true;
+    }
+
+    const values = data.widgets_values;
+    if (!Array.isArray(values) || !values.length) return false;
+
+    node._mmxRestoringSampleWidgets = true;
+    try {
+        let idx = 0;
+        for (const w of node.widgets ?? []) {
+            if (w.serialize === false) continue;
+            if (idx >= values.length) break;
+            w.value = values[idx++];
+        }
+    } finally {
+        node._mmxRestoringSampleWidgets = false;
+    }
+    return true;
+}
+
+function applyDirectorConfigureRestore(node, data) {
+    if (!node) return false;
+    finalizeDirectorWidgetOrder(node);
+    return restoreDirectorWidgetsFromSaved(node, data);
+}
+
+function finishDirectorConfigureRestore(node) {
+    applyDirectorConfigureRestore(node, node._mmxSavedConfigureData);
+    node._mmxPendingConfigureRestore = false;
+    snapshotDirectorSampleWidgets(node, { includeHidden: true });
+}
+
 const DIRECTOR_SAMPLE_VALUE_WIDGETS = [
     "steps",
     "sampler",
@@ -495,6 +564,7 @@ function isValidSampleWidgetValue(name, widget, value) {
 
 function snapshotDirectorSampleWidgets(node, { force = false, includeHidden = false } = {}) {
     if (!node || node._mmxRestoringSampleWidgets || node._mmxLockSampleSnap) return;
+    if (node._mmxPendingConfigureRestore && !force) return;
     const snap = { ...(node._mmxSampleWidgetSnap || {}) };
     for (const name of DIRECTOR_SAMPLE_VALUE_WIDGETS) {
         const w = widgetByName(node, name);
@@ -12013,7 +12083,7 @@ app.registerExtension({
         normalizeDirectorOutputs(node);
         pruneDirectorDomWidgets(node);
         if (!node._minimaxDomWidget) return;
-        finalizeDirectorWidgetOrder(node);
+        applyDirectorConfigureRestore(node, node._mmxSavedConfigureData);
         ensureDirectorDomWidgetWidth(node);
         bindDirectorDomWidgetSizing(node, node._minimaxDomWidget, () => node._minimaxEditor);
         const editor = initDirectorEditor(node);
@@ -12144,12 +12214,18 @@ app.registerExtension({
 
         const onConnectionsChange = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function (...args) {
-            snapshotDirectorSampleWidgets(this);
+            if (!this._mmxPendingConfigureRestore) {
+                snapshotDirectorSampleWidgets(this);
+            }
             lockDirectorSampleSnap(this, 400);
             lockDirectorSigmasInput(this);
             const out = onConnectionsChange?.apply(this, args);
             this._minimaxEditor?.syncExternalGroupsTimeline?.();
-            settleDirectorSampleWidgets(this);
+            if (this._mmxPendingConfigureRestore) {
+                syncDirectorSchedulerWidgets(this, { restore: false });
+            } else {
+                settleDirectorSampleWidgets(this);
+            }
             return out;
         };
 
@@ -12176,12 +12252,17 @@ app.registerExtension({
         };
 
         const onConfigure = nodeType.prototype.onConfigure;
-        nodeType.prototype.onConfigure = function () {
+        nodeType.prototype.onConfigure = function (...args) {
             normalizeDirectorOutputs(this);
-            const out = onConfigure?.apply(this, arguments);
+            const saved = args[0];
+            if (saved) this._mmxSavedConfigureData = saved;
+            this._mmxPendingConfigureRestore = true;
+            const out = onConfigure?.apply(this, args);
+            const runRestore = () => applyDirectorConfigureRestore(this, this._mmxSavedConfigureData);
+            queueMicrotask(runRestore);
+            setTimeout(runRestore, 0);
             setTimeout(() => {
-                finalizeDirectorWidgetOrder(this);
-                snapshotDirectorSampleWidgets(this);
+                finishDirectorConfigureRestore(this);
                 syncDirectorSchedulerWidgets(this, { restore: false });
                 const ed = initDirectorEditor(this) || this._minimaxEditor;
                 if (!ed) return;
