@@ -248,6 +248,13 @@ function directorValue(node, name, fallback) {
     return value == null || value === "" ? fallback : value;
 }
 
+function directorHasSigmasLink(node) {
+    const inp = (node?.inputs || []).find((i) => String(i.name) === "sigmas");
+    if (!inp) return false;
+    if (inp.link != null) return true;
+    return Array.isArray(inp.links) && inp.links.length > 0;
+}
+
 function cacheStatusPayload(director) {
     try {
         director?._minimaxEditor?._writeTimelineWidget?.();
@@ -271,6 +278,7 @@ function cacheStatusPayload(director) {
         scheduler: String(directorValue(director, "scheduler", "")),
         shift_video: Number(directorValue(director, "shift_video", 12)),
         shift_audio: Number(directorValue(director, "shift_audio", 3)),
+        sigmas_linked: directorHasSigmasLink(director),
     };
 }
 
@@ -318,6 +326,8 @@ function renderCacheStatus(node, data, kind = "normal") {
         steps: "一采步数",
         sampler: "一采采样器",
         scheduler: "调度器",
+        sigmas: "一采噪声表",
+        sigmas_source: "一采 SIGMAS 接线",
         shift_video: "视频 shift",
         shift_audio: "音频 shift",
         "<invalid-meta>": "缓存信息损坏",
