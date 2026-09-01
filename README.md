@@ -25,6 +25,7 @@
 | **段间引导** | 默认关闭；多段 `t2v` / `i2v` / `fl2v` / `r2v` / `v2v` / `rv2v` 时可开启，将上一段生成结果的末尾运动（及生成音频）钉入下一段采样再裁掉前缀。上下文帧数：5 / 22 / 39 / 56，**默认推荐为 22**。**感谢 [ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context) 提供的实现思路** |
 | **二采 / 放大 (Refine)** | 外接 **MiniMax H3 Director Refine** 到导演台 `refine` 口。未接线 = 原来的单次采样。`refine` = 同分辨率精修；`upscale` = 先放大到目标画布再按 SIGMAS 二采（像素插值 / RTX VSR / H3 latent）；`latent_upscale` = 只放大 H3 latent、不二采。`passes` 可多次精修（upscale 只放大一次）。可选接 `refine_model` 换二采 UNET。`images` 为二采后成片，`images_pre_refine` 为一采（放大前）画面 |
 | **运行报告** | `report` 口输出分段计划、每段任务摘要 |
+| **导演包导入导出** | 工具栏「导入/导出导演包」：zip 内保存时间轴 JSON 与参考图/视频/音频。目录名为英文（`shared_params/`、`asset_groups/01/`、`Picture1`…），与切到 EN 后的界面用语对应，避免路径编码问题 |
 
 参考音频槽可直接选择已有视频，或从本地选择音频/视频；视频会立即提取首条音轨为 FLAC，结果直接保存到 `input/`。本地视频只在临时目录中用于提取，不会作为视频素材保存。音频沿用 ComfyUI 现有上传规则：同名同内容直接复用，同名不同内容自动添加序号且不会覆盖；当前素材组也不会重复添加同一路径。
 
@@ -39,6 +40,34 @@
 > `t2v` / `i2v` / `fl2v` 用 **fl2va** UNET；`r2v` / `v2v` / `rv2v` 用 **ref2va** UNET。
 
 `输出原片到 source_images` 只填充独立的 `source_images` 输出，不会改变主 `images`。请将 `source_images` 另接预览或视频合成节点查看；解码失败时运行报告会明确说明，并输出灰色占位而不会冒充生成画面。
+
+## 导演包（剧本 + 素材）
+
+工具栏右侧 **导入导演包 / 导出导演包**。导出为 `*.mmxpack.zip`。路径只用 ASCII，与英文界面一致（与当前 UI 语言无关）。
+
+| English UI | Pack path |
+|------|------|
+| Shared params | `shared_params/` |
+| Asset group 1 | `asset_groups/01/` |
+| Picture 1–9 | `Picture1.png` … `Picture9.webp` |
+| Video 1–3 | `Video1.mp4` |
+| Audio 1–3 | `Audio1.wav` |
+| start / end (fl2v) | `start.jpg` / `end.jpg` in that group folder |
+| Upload video (v2v source) | `source_video/` |
+
+```
+pack.json
+shared_params/shared_params.json
+shared_params/Picture1.png
+asset_groups/01/group.json
+asset_groups/01/Picture4.png
+timeline.json
+```
+
+- `timeline.json`：导演台导出时写入，用于无损往返（含其它任务草稿等）。
+- 转换工具可以只写 `pack.json` + `shared_params/` + `asset_groups/`，不必手写 `timeline.json`。
+- 槽位编号与界面相同：公共参数占用 Picture 1–3 时，组文件夹里从 `Picture4` 续编，不要在组内把第一张改名为 `Picture1`。
+- 不含 UNET / CLIP / VAE。导入会覆盖当前节点时间轴（有确认）。媒体落到 ComfyUI `input/minimax_director_packs/`。
 
 ## 依赖
 
