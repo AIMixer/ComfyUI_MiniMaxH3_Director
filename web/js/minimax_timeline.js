@@ -12360,6 +12360,13 @@ function bindPromptDropEvents(editor) {
     const root = editor.root;
     if (!root || root.dataset.promptDropBound === "1") return;
     root.dataset.promptDropBound = "1";
+    // Track the last focused prompt textarea: document.activeElement is
+    // unreliable during a drag (the frontend can steal or blur it mid-drag).
+    let lastFocused = null;
+    root.addEventListener("focusin", (e) => {
+        const t = e.target;
+        if (t instanceof HTMLTextAreaElement && root.contains(t)) lastFocused = t;
+    });
     root.addEventListener("dragover", (e) => {
         if (!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files"))) return;
         e.preventDefault();
@@ -12377,9 +12384,14 @@ function bindPromptDropEvents(editor) {
         file.text().then((text) => {
             if (!text) return;
             const active = document.activeElement;
-            const target = (active instanceof HTMLTextAreaElement && root.contains(active))
-                ? active
-                : editor.globalPrompt;
+            let target = null;
+            if (lastFocused && lastFocused.isConnected && !lastFocused.classList.contains("hidden")) {
+                target = lastFocused;
+            } else if (active instanceof HTMLTextAreaElement && root.contains(active)) {
+                target = active;
+            } else {
+                target = editor.globalPrompt;
+            }
             if (!target) return;
             target.value = text;
             target.dispatchEvent(new Event("input", { bubbles: true }));
