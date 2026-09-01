@@ -12357,45 +12357,34 @@ app.registerExtension({
 });
 
 function bindPromptDropEvents(editor) {
-    const root = editor.root;
-    if (!root || root.dataset.promptDropBound === "1") return;
-    root.dataset.promptDropBound = "1";
-    // Track the last focused prompt textarea: document.activeElement is
-    // unreliable during a drag (the frontend can steal or blur it mid-drag).
-    let lastFocused = null;
-    root.addEventListener("focusin", (e) => {
-        const t = e.target;
-        // Segment prompt boxes only — the global prompt never accepts drops.
-        // Covers both the timeline seg editor and per-group batch cards.
-        const isPromptBox = t instanceof HTMLTextAreaElement && root.contains(t)
-            && (t.dataset.r === "seg-prompt" || t.dataset.batchPromptIndex !== undefined);
-        if (isPromptBox) {
-            lastFocused = t;
-        }
-    });
-    root.addEventListener("dragover", (e) => {
-        if (!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files"))) return;
+    // Document-level capture: batch group cards may live outside editor.root,
+    // so we match the drop target itself — drop onto a prompt box fills it.
+    if (window.__minimaxPromptDropBound === "1") return;
+    window.__minimaxPromptDropBound = "1";
+    const isPromptBox = (t) => !!(t && t.closest && t.closest(
+        "textarea[data-batch-prompt-index], textarea[data-r='seg-prompt']"));
+    const onDragOver = (e) => {
+        if (!isPromptBox(e.target)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
-    });
-    root.addEventListener("drop", (e) => {
+    };
+    const onDrop = (e) => {
+        const box = isPromptBox(e.target) ? e.target.closest(
+            "textarea[data-batch-prompt-index], textarea[data-r='seg-prompt']") : null;
+        if (!box) return;
         const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
         if (!file) return;
         const name = (file.name || "").toLowerCase();
-        const isText = name.endsWith(".txt") || name.endsWith(".md")
-            || (file.type || "").startsWith("text/");
-        if (!isText) return;
+        if (!(name.endsWith(".txt") || name.endsWith(".md")
+                || (file.type || "").startsWith("text/"))) return;
         e.preventDefault();
         e.stopPropagation();
         file.text().then((text) => {
             if (!text) return;
-            // Only a focused segment prompt accepts a drop; never the global
-            // prompt (no fallback — an unfocused drop is ignored entirely).
-            const target = (lastFocused && lastFocused.isConnected
-                && !lastFocused.classList.contains("hidden")) ? lastFocused : null;
-            if (!target) return;
-            target.value = text;
-            target.dispatchEvent(new Event("input", { bubbles: true }));
+            box.value = text;
+            box.dispatchEvent(new Event("input", { bubbles: true }));
         }).catch(() => {});
-    });
+    };
+    document.addEventListener("dragover", onDragOver, true);
+    document.addEventListener("drop", onDrop, true);
 }
