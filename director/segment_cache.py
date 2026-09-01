@@ -594,6 +594,43 @@ def save_first_pass_cache(
             _safe_unlink(stray)
 
 
+def load_first_pass_frames_stale(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+) -> torch.Tensor | None:
+    """Load ``.pre.pt`` frames for unselected-segment pre-refine fill.
+
+    Stale-tolerant counterpart of :func:`load_first_pass_cache`: fingerprint
+    drift (different seed, sampling-knob churn) does NOT invalidate the fill,
+    so「选择运行」re-roll previews merge all-first-pass frames instead of
+    mixing a fresh first pass with cached refined renders. A different source
+    video still rejects (same rule as the final-cache fill). Never raises.
+    """
+    if not node_id:
+        return None
+    root = _cache_root(node_id)
+    if root is None:
+        return None
+    idx = seg.index
+    frames_path = root / f"seg_{idx:04d}.pre.pt"
+    meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+    if not frames_path.is_file():
+        return None
+    try:
+        if meta_path.is_file():
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = first_pass_cache_fingerprint(seg, plan)
+            if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
+                return None
+        loaded = torch.load(frames_path, map_location="cpu", weights_only=True)
+        if isinstance(loaded, torch.Tensor) and loaded.numel() > 0:
+            return _frames_from_disk(loaded)
+    except Exception as exc:
+        log.debug("Segment %d first-pass stale frames skipped: %s", idx + 1, exc)
+    return None
+
+
 def load_first_pass_cache(
     node_id: str | None,
     seg: SegmentPlan,
