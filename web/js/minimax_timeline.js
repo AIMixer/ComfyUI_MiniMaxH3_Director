@@ -12365,7 +12365,10 @@ function bindPromptDropEvents(editor) {
     let lastFocused = null;
     root.addEventListener("focusin", (e) => {
         const t = e.target;
-        if (t instanceof HTMLTextAreaElement && root.contains(t)) lastFocused = t;
+        // Segment prompt boxes only — the global prompt never accepts drops.
+        if (t instanceof HTMLTextAreaElement && t.dataset && t.dataset.r === "seg-prompt") {
+            lastFocused = t;
+        }
     });
     root.addEventListener("dragover", (e) => {
         if (!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files"))) return;
@@ -12383,15 +12386,10 @@ function bindPromptDropEvents(editor) {
         e.stopPropagation();
         file.text().then((text) => {
             if (!text) return;
-            const active = document.activeElement;
-            let target = null;
-            if (lastFocused && lastFocused.isConnected && !lastFocused.classList.contains("hidden")) {
-                target = lastFocused;
-            } else if (active instanceof HTMLTextAreaElement && root.contains(active)) {
-                target = active;
-            } else {
-                target = editor.globalPrompt;
-            }
+            // Only a focused segment prompt accepts a drop; never the global
+            // prompt (no fallback — an unfocused drop is ignored entirely).
+            const target = (lastFocused && lastFocused.isConnected
+                && !lastFocused.classList.contains("hidden")) ? lastFocused : null;
             if (!target) return;
             target.value = text;
             target.dispatchEvent(new Event("input", { bubbles: true }));
