@@ -56,6 +56,42 @@ def resolve_audio_mode(plan) -> str:
     return mode
 
 
+def _normalize_audio(audio: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Force reference audio to 44.1 kHz stereo before mux (any input format)."""
+    if audio is None or not _audio_has_samples(audio):
+        return audio
+    wave = audio["waveform"]
+    sr = int(audio.get("sample_rate") or SILENT_SAMPLE_RATE)
+    try:
+        import torchaudio
+        if sr != SILENT_SAMPLE_RATE:
+            wave = torchaudio.functional.resample(wave, sr, SILENT_SAMPLE_RATE)
+            sr = SILENT_SAMPLE_RATE
+        if wave.shape[1] < 2:
+            wave = wave.repeat(1, 2, 1)
+        return {"waveform": wave.contiguous(), "sample_rate": sr}
+    except Exception:
+        return audio
+
+
+def _ref_audio_for_segment(seg) -> dict[str, Any] | None:
+    """First usable reference audio on a segment (the 'original sound' source)."""
+    for ref in (getattr(seg, "ref_audios", None) or []):
+        audio = getattr(ref, "audio", None)
+        if _audio_has_samples(audio):
+            return _normalize_audio(audio)
+    return None
+
+
+def _first_ref_audio(plan) -> dict[str, Any] | None:
+    """First usable reference audio across the plan (global source fallback)."""
+    for seg in (getattr(plan, "segments", None) or []):
+        audio = _ref_audio_for_segment(seg)
+        if audio is not None:
+            return audio
+    return None
+
+
 def empty_audio_dict(sample_rate: int = SILENT_SAMPLE_RATE) -> dict[str, Any]:
     return {"waveform": torch.zeros(1, 1, 0), "sample_rate": int(sample_rate)}
 
@@ -104,9 +140,10 @@ def prepare_segment_audio_for_file_export(
         # first reference audio (the "original sound" option) when present.
         ref_audios = getattr(seg, "ref_audios", None) or []
         if ref_audios and _audio_has_samples(ref_audios[0].audio):
-            sr = int(ref_audios[0].audio.get("sample_rate") or SILENT_SAMPLE_RATE)
+            ref = _normalize_audio(ref_audios[0].audio)
+            sr = int(ref.get("sample_rate") or SILENT_SAMPLE_RATE)
             return _pad_or_trim_audio_to_frames(
-                ref_audios[0].audio, frame_count=n_frames, fps=fps, sample_rate=sr
+                ref, frame_count=n_frames, fps=fps, sample_rate=sr
             )
     return None
 
@@ -387,6 +424,8 @@ def build_director_audio_outputs(
             seg = plan.segments[seg_indices[i]]
             extracted = extract_timeline_audio(timeline, seg.start_frame, seg.end_frame, fps)
             if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
+                extracted = _ref_audio_for_segment(seg) or extracted
+            if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
                 hint = diagnose_source_audio_failure(
                     timeline, seg.start_frame, seg.end_frame, fps
                 )
@@ -411,6 +450,8 @@ def build_director_audio_outputs(
     if images_out and hasattr(images_out[0], "shape"):
         end = max(end, int(images_out[0].shape[0]))
     extracted = extract_timeline_audio(timeline, 0, end, fps) if end > 0 else None
+    if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
+        extracted = _first_ref_audio(plan) or extracted
     if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
         hint = diagnose_source_audio_failure(timeline, 0, end, fps)
         # Soft fallback after a successful video run: silent only (no model audio).
