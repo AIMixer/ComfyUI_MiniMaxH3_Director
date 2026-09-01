@@ -12366,7 +12366,10 @@ function bindPromptDropEvents(editor) {
     root.addEventListener("focusin", (e) => {
         const t = e.target;
         // Segment prompt boxes only — the global prompt never accepts drops.
-        if (t instanceof HTMLTextAreaElement && t.dataset && t.dataset.r === "seg-prompt") {
+        // Covers both the timeline seg editor and per-group batch cards.
+        const isPromptBox = t instanceof HTMLTextAreaElement && root.contains(t)
+            && (t.dataset.r === "seg-prompt" || t.dataset.batchPromptIndex !== undefined);
+        if (isPromptBox) {
             lastFocused = t;
         }
     });
