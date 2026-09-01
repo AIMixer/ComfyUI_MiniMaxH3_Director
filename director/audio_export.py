@@ -23,7 +23,7 @@ SILENT_SAMPLE_RATE = 44100
 AUDIO_MODE_GENERATE = "generate"
 AUDIO_MODE_SOURCE = "source"
 AUDIO_MODE_MUTE = "mute"
-VIDEO_EDIT_AUDIO_TASKS = frozenset({"v2v", "rv2v"})
+VIDEO_EDIT_AUDIO_TASKS = frozenset({"v2v", "rv2v", "r2v"})
 
 
 def task_passes_source_audio(task_key: str) -> bool:
@@ -99,6 +99,14 @@ def prepare_segment_audio_for_file_export(
             sr = int(extracted.get("sample_rate") or SILENT_SAMPLE_RATE)
             return _pad_or_trim_audio_to_frames(
                 extracted, frame_count=n_frames, fps=fps, sample_rate=sr
+            )
+        # r2v has no source-timeline video; fall back to the segment's
+        # first reference audio (the "original sound" option) when present.
+        ref_audios = getattr(seg, "ref_audios", None) or []
+        if ref_audios and _audio_has_samples(ref_audios[0].audio):
+            sr = int(ref_audios[0].audio.get("sample_rate") or SILENT_SAMPLE_RATE)
+            return _pad_or_trim_audio_to_frames(
+                ref_audios[0].audio, frame_count=n_frames, fps=fps, sample_rate=sr
             )
     return None
 

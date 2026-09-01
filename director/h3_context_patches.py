@@ -329,6 +329,9 @@ def _classify_layout_owner() -> str | None:
     if (
         module.endswith("ComfyUI-SolAttn_triton._morton_h3")
         and qualname == "_patch_packed_layout.<locals>.__init__"
+    ) or (
+        module.endswith("sol_attn_minimax_v5")
+        and qualname == "_patch_packed_layout.<locals>.__init__"
     ):
         return "compatible_solattn"
     if getattr(init, "__name__", "") in {"_patched_init", "_director_layout_init"}:
