@@ -451,7 +451,13 @@ def build_director_audio_outputs(
         end = max(end, int(images_out[0].shape[0]))
     extracted = extract_timeline_audio(timeline, 0, end, fps) if end > 0 else None
     if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
-        extracted = _first_ref_audio(plan) or extracted
+        # Multi-segment source: use each segment's own reference audio, joined
+        # along the timeline (segments without a ref audio become silence).
+        refs = [_ref_audio_for_segment(seg) for seg in (getattr(plan, "segments", None) or [])]
+        if any(a is not None for a in refs):
+            extracted = _merge_generated_segment_audios(
+                plan, refs, total_frames=end, fps=fps,
+            )
     if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
         hint = diagnose_source_audio_failure(timeline, 0, end, fps)
         # Soft fallback after a successful video run: silent only (no model audio).
