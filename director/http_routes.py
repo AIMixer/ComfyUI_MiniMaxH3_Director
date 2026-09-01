@@ -606,6 +606,11 @@ def register_routes() -> bool:
         "/minimax/director/first_pass_cache_status",
         minimax_first_pass_cache_status,
     )
+    from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
+
+    _register_route(routes, "POST", "/minimax/director/export_pack", minimax_export_pack)
+    _register_route(routes, "GET", "/minimax/director/download_pack", minimax_download_pack)
+    _register_route(routes, "POST", "/minimax/director/import_pack", minimax_import_pack)
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")
     return True
