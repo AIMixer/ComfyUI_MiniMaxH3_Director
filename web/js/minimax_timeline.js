@@ -3119,6 +3119,7 @@ class MiniMaxH3DirectorEditor {
         this.syncNegativeFromWidget();
         this.syncOutputUIFromTimeline();
         bindImageBatchEvents(this);
+        bindPromptDropEvents(this);
     }
 
     renderImageBatchGroups() {
@@ -12354,3 +12355,34 @@ app.registerExtension({
         };
     },
 });
+
+function bindPromptDropEvents(editor) {
+    const root = editor.root;
+    if (!root || root.dataset.promptDropBound === "1") return;
+    root.dataset.promptDropBound = "1";
+    root.addEventListener("dragover", (e) => {
+        if (!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files"))) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+    });
+    root.addEventListener("drop", (e) => {
+        const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        const name = (file.name || "").toLowerCase();
+        const isText = name.endsWith(".txt") || name.endsWith(".md")
+            || (file.type || "").startsWith("text/");
+        if (!isText) return;
+        e.preventDefault();
+        e.stopPropagation();
+        file.text().then((text) => {
+            if (!text) return;
+            const active = document.activeElement;
+            const target = (active instanceof HTMLTextAreaElement && root.contains(active))
+                ? active
+                : editor.globalPrompt;
+            if (!target) return;
+            target.value = text;
+            target.dispatchEvent(new Event("input", { bubbles: true }));
+        }).catch(() => {});
+    });
+}
