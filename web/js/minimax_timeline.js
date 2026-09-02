@@ -4806,7 +4806,7 @@ class MiniMaxH3DirectorEditor {
             this.outHint.classList.toggle("hidden", !showHint);
             this.outHint.textContent = showHint ? genLayoutHint(this.getTaskKey()) : "";
         }
-        const isVideoEditTask = isVideoEditTaskKey(taskKey);
+        const isVideoEditTask = isVideoEditTaskKey(taskKey) || taskKey === "r2v";
         this.outAudioWrap?.classList.toggle("hidden", !isVideoEditTask);
         this.syncExportSourceImagesUI();
         if (this.outExportMode) {
@@ -12354,3 +12354,4 @@ app.registerExtension({
         };
     },
 });
+
