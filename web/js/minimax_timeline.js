@@ -10912,7 +10912,8 @@ class MiniMaxH3DirectorEditor {
 
     onGlobalField(field, value) {
         this.timeline.global = this.timeline.global || { refs: [] };
-        if (field === "taskType") {
+        const taskTypeChanged = field === "taskType";
+        if (taskTypeChanged) {
             const prevTaskKey = this._taskKey || resolveTaskKey(this.timeline.global?.taskType || "");
             this.timeline.global[field] = value;
             const prevMode = this._directorMode || "video";
@@ -10928,6 +10929,11 @@ class MiniMaxH3DirectorEditor {
         }
         if (field === "prompt" && this.globalPromptWidget) this.globalPromptWidget.value = value;
         this.scheduleTimelineSync();
+        if (taskTypeChanged) {
+            // Task selector is a custom DOM control; assigning the hidden
+            // task_type widget does not fire LiteGraph onWidgetChanged.
+            this.node?._mmxRefreshFirstPassCache?.(0);
+        }
         if (field === "prompt") this._schedulePromptRender();
         else this.scheduleRender();
     }

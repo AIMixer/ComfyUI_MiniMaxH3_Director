@@ -295,6 +295,13 @@ def build_gen_director_plan(
         if global_block.get("commonEnabled") is not None
         else global_block.get("common_enabled")
     )
+    shared_ref_audios = (
+        _load_ref_audios(
+            global_block.get("refAudios") or global_block.get("ref_audios") or []
+        )
+        if edit_mode == "global" or common_enabled
+        else []
+    )
 
     output_block = timeline.get("output") or {}
     gen_block = timeline.get("gen") or {}
@@ -415,7 +422,7 @@ def build_gen_director_plan(
         if edit_mode == "global":
             seg_ref_audios = segment_ref_audios_for_context(
                 seg_task_key,
-                _load_ref_audios(global_block.get("refAudios") or global_block.get("ref_audios") or []),
+                list(shared_ref_audios),
             )
         else:
             local_audios = segment_ref_audios_for_context(
@@ -425,9 +432,7 @@ def build_gen_director_plan(
             if seg_task_key == "r2v" and common_enabled:
                 common_audios = segment_ref_audios_for_context(
                     seg_task_key,
-                    _load_ref_audios(
-                        global_block.get("refAudios") or global_block.get("ref_audios") or []
-                    ),
+                    list(shared_ref_audios),
                 )
                 seg_ref_audios = merge_indexed_refs(common_audios, local_audios)
             else:
@@ -539,4 +544,5 @@ def build_gen_director_plan(
         run_indices=_parse_run_selection(timeline, len(segments)),
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        global_ref_audios=shared_ref_audios,
     )

@@ -42,7 +42,6 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.audio")
 
 _ENCODE_ARGS = ("utf-8", "backslashreplace")
 
-_FULL_AUDIO_CACHE: dict[str, dict[str, Any]] = {}
 _OPENCV_FPS_CACHE: dict[str, float] = {}
 # path -> (video_pts0, audio_start, frame_dur)
 _AV_TIMING_CACHE: dict[str, tuple[float, float, float]] = {}
@@ -324,15 +323,29 @@ def _pcm_time_for_native(
     return max(0.0, video_t - float(audio_start))
 
 
-def load_reference_audio(path: str) -> dict[str, Any] | None:
+def load_reference_audio(
+    path: str,
+    *,
+    cache: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Load a standalone audio file into ComfyUI AUDIO dict ``{waveform, sample_rate}``."""
-    return _load_full_audio(path)
+    return _load_full_audio(path, cache=cache)
 
 
-def _load_full_audio(path: str) -> dict[str, Any] | None:
-    cached = _FULL_AUDIO_CACHE.get(path)
-    if cached is not None:
-        return cached
+def _load_full_audio(
+    path: str,
+    *,
+    cache: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Decode a complete audio stream, optionally reusing a caller-owned cache.
+
+    No process-wide PCM cache: callers that slice the same source during one
+    Director execution may pass an execution-scoped ``cache``.
+    """
+    if cache is not None:
+        cached = cache.get(path)
+        if cached is not None:
+            return cached
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg or not path or not os.path.isfile(path):
         return None
@@ -373,7 +386,8 @@ def _load_full_audio(path: str) -> dict[str, Any] | None:
         audio = audio[:usable]
     wave = audio.reshape((-1, out_ac)).transpose(0, 1).unsqueeze(0).contiguous()
     out = {"waveform": wave, "sample_rate": int(ar)}
-    _FULL_AUDIO_CACHE[path] = out
+    if cache is not None:
+        cache[path] = out
     return out
 
 
@@ -566,6 +580,8 @@ def extract_timeline_audio(
     logical_start: int,
     logical_end: int,
     frame_rate: float,
+    *,
+    audio_cache: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Extract source audio for logical timeline range [start, end)."""
     spans = _timeline_audio_spans(timeline, logical_start, logical_end, frame_rate)
@@ -586,7 +602,7 @@ def extract_timeline_audio(
     sr = 44100
     fallback_seeks = 0
     for path, pcm_start, out_dur, native0, file_fps in spans:
-        full = _load_full_audio(path)
+        full = _load_full_audio(path, cache=audio_cache)
         if full is None:
             return None
         sr = int(full["sample_rate"] or sr)
