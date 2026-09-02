@@ -913,15 +913,14 @@ const STYLES = `
 .bd-media-meta{display:flex;flex-direction:column;gap:4px;color:#9a9a9a;font-size:10px;line-height:1.45;word-break:break-all}
 .bd-media-view-toggle{display:inline-flex;gap:4px}
 .bd-media-view-toggle .bd-btn.active{border-color:#4fff8f;color:#4fff8f}
-.bd-media-gallery{display:none;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px;align-content:start;flex:1;min-height:220px;max-height:320px;overflow:auto;padding:8px;background:#141414;border:1px solid #333;border-radius:6px;box-sizing:border-box}
+.bd-media-gallery{display:none;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:max-content;align-content:start;align-items:start;gap:8px;width:100%;height:min(48vh,320px);min-height:180px;flex:0 1 auto;overflow-y:scroll;overflow-x:hidden;padding:8px;box-sizing:border-box;background:#141414;border:1px solid #333;border-radius:6px;scrollbar-width:auto;scrollbar-color:#687783 #151515}
 .bd-media-gallery .bd-media-empty-row{grid-column:1/-1}
 .bd-media-left.is-thumbs .bd-media-table{display:none}
 .bd-media-left.is-thumbs .bd-media-gallery{display:grid}
-.bd-media-card{appearance:none;display:flex;flex-direction:column;min-width:0;padding:4px;background:#161616;border:1px solid #333;border-radius:6px;color:#ddd;cursor:pointer;text-align:left;font:inherit;overflow:hidden}
+.bd-media-card{appearance:none;position:relative;min-width:0;padding:4px;background:#161616;border:1px solid #333;border-radius:6px;color:#ddd;cursor:pointer;text-align:left;font:inherit;overflow:hidden}
 .bd-media-card:hover,.bd-media-card.selected{border-color:#4fff8f;background:#202820}
-.bd-media-card-frame{position:relative;width:100%;aspect-ratio:1/1;overflow:hidden;border-radius:4px;background:#090909;flex-shrink:0}
-.bd-media-card-frame>img,.bd-media-card-frame>video,.bd-media-card-frame>.bd-media-card-audio{position:absolute;inset:0;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:cover;display:block;border:0;border-radius:0;background:#090909}
-.bd-media-card-audio{display:flex!important;align-items:center;justify-content:center;color:#9a9a9a;font-size:22px;object-fit:none}
+.bd-media-card img,.bd-media-card video,.bd-media-card .bd-media-card-audio{display:block;width:100%;height:94px;object-fit:cover;background:#090909;border-radius:4px}
+.bd-media-card-audio{display:flex;align-items:center;justify-content:center;color:#9a9a9a;font-size:28px}
 .bd-media-card-name{display:block;padding:5px 2px 1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:1.35}
 .bd-toolbar-wrap{display:flex;flex-direction:column;gap:4px;width:100%}
 .bd-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
@@ -7708,31 +7707,32 @@ class MiniMaxH3DirectorEditor {
                     card.type = "button";
                     card.className = "bd-media-card";
                     card.dataset.path = item.relPath;
-                    const frame = document.createElement("div");
-                    frame.className = "bd-media-card-frame";
                     const previewKind = thumbKind(item);
                     const src = inputViewUrl(item.relPath, item.type || "input");
+                    const thumbCss = "display:block;width:100%;height:94px;object-fit:cover;background:#090909;border-radius:4px";
                     if (previewKind === "audio") {
                         const ph = document.createElement("div");
                         ph.className = "bd-media-card-audio";
+                        ph.style.cssText = thumbCss;
                         ph.textContent = "♪";
-                        frame.appendChild(ph);
+                        card.appendChild(ph);
                     } else if (previewKind === "video") {
                         const video = document.createElement("video");
+                        video.style.cssText = thumbCss;
                         video.muted = true;
                         video.playsInline = true;
                         video.preload = "none";
                         video.dataset.src = src;
-                        frame.appendChild(video);
+                        card.appendChild(video);
                         this._mediaThumbObserver.observe(video);
                     } else {
                         const img = document.createElement("img");
+                        img.style.cssText = thumbCss;
                         img.alt = "";
                         img.dataset.src = src;
-                        frame.appendChild(img);
+                        card.appendChild(img);
                         this._mediaThumbObserver.observe(img);
                     }
-                    card.appendChild(frame);
                     const name = document.createElement("span");
                     name.className = "bd-media-card-name";
                     name.textContent = item.relPath || item.fileName || item.name || "";
