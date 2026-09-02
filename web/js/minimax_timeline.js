@@ -911,6 +911,17 @@ const STYLES = `
 .bd-media-preview img,.bd-media-preview video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
 .bd-media-preview-empty{padding:18px;color:#666;font-size:11px;line-height:1.45;text-align:center}
 .bd-media-meta{display:flex;flex-direction:column;gap:4px;color:#9a9a9a;font-size:10px;line-height:1.45;word-break:break-all}
+.bd-media-view-toggle{display:inline-flex;gap:4px}
+.bd-media-view-toggle .bd-btn.active{border-color:#4fff8f;color:#4fff8f}
+.bd-media-gallery{display:none;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px;align-content:start;flex:1;min-height:220px;max-height:320px;overflow:auto;padding:8px;background:#141414;border:1px solid #333;border-radius:6px;box-sizing:border-box}
+.bd-media-gallery .bd-media-empty-row{grid-column:1/-1}
+.bd-media-left.is-thumbs .bd-media-table{display:none}
+.bd-media-left.is-thumbs .bd-media-gallery{display:grid}
+.bd-media-card{appearance:none;min-width:0;padding:4px;background:#161616;border:1px solid #333;border-radius:6px;color:#ddd;cursor:pointer;text-align:left;font:inherit;overflow:hidden}
+.bd-media-card:hover,.bd-media-card.selected{border-color:#4fff8f;background:#202820}
+.bd-media-card-thumb{display:block;width:100%;height:72px;object-fit:cover;background:#090909;border-radius:4px}
+.bd-media-card-audio{display:flex;align-items:center;justify-content:center;height:72px;background:#090909;border-radius:4px;color:#9a9a9a;font-size:22px}
+.bd-media-card-name{display:block;padding:5px 2px 1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:1.35}
 .bd-toolbar-wrap{display:flex;flex-direction:column;gap:4px;width:100%}
 .bd-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
 .bd-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0}
@@ -1343,6 +1354,24 @@ function inputViewUrl(relativePath, type = "input") {
     const params = new URLSearchParams({ filename, type });
     if (subfolder) params.set("subfolder", subfolder);
     return api.apiURL(`/view?${params.toString()}`);
+}
+
+const MEDIA_PICKER_VIEW_KEY = "minimax.director.mediaPickerView";
+
+function readMediaPickerView() {
+    try {
+        return localStorage.getItem(MEDIA_PICKER_VIEW_KEY) === "thumbs" ? "thumbs" : "list";
+    } catch {
+        return "list";
+    }
+}
+
+function writeMediaPickerView(view) {
+    try {
+        localStorage.setItem(MEDIA_PICKER_VIEW_KEY, view === "thumbs" ? "thumbs" : "list");
+    } catch {
+        /* private mode / quota */
+    }
 }
 
 function refViewUrl(imageFile) {
@@ -7218,6 +7247,10 @@ class MiniMaxH3DirectorEditor {
             window.removeEventListener("keydown", this._modalKeyHandler, true);
             this._modalKeyHandler = null;
         }
+        if (this._mediaThumbObserver) {
+            this._mediaThumbObserver.disconnect();
+            this._mediaThumbObserver = null;
+        }
         if (this._modalEl) {
             this._modalEl.remove();
             this._modalEl = null;
@@ -7399,6 +7432,7 @@ class MiniMaxH3DirectorEditor {
                             </div>
                             <div class="bd-media-tbody"></div>
                         </div>
+                        <div class="bd-media-gallery" tabindex="0"></div>
                     </div>
                     <div class="bd-media-right">
                         <div class="bd-media-preview">
@@ -7413,6 +7447,8 @@ class MiniMaxH3DirectorEditor {
             const actionsTop = panel.querySelector(".bd-media-head-actions");
             const tableEl = panel.querySelector(".bd-media-table");
             const tbodyEl = panel.querySelector(".bd-media-tbody");
+            const leftEl = panel.querySelector(".bd-media-left");
+            const galleryEl = panel.querySelector(".bd-media-gallery");
             const previewEl = panel.querySelector(".bd-media-preview");
             const previewEmptyEl = panel.querySelector(".bd-media-preview-empty");
             const metaEl = panel.querySelector(".bd-media-meta");
@@ -7435,6 +7471,9 @@ class MiniMaxH3DirectorEditor {
             let listedItems = [];
             let sortKey = "time";
             let sortDir = "desc";
+            let view = readMediaPickerView();
+            let listBtn;
+            let thumbsBtn;
 
             const finish = (val) => {
                 this._closeBdModal();
@@ -7547,14 +7586,54 @@ class MiniMaxH3DirectorEditor {
                 metaEl.appendChild(pathEl);
             };
 
-            const selectRow = (relPath, { scroll = false } = {}) => {
-                selectedValue = relPath || "";
+            const thumbKind = (item) => (kind === "reference_audio" ? item.mediaKind : kind);
+
+            const ensureThumbObserver = () => {
+                if (this._mediaThumbObserver) this._mediaThumbObserver.disconnect();
+                this._mediaThumbObserver = new IntersectionObserver((entries) => {
+                    for (const entry of entries) {
+                        const el = entry.target;
+                        const src = el.dataset.src;
+                        if (!src) continue;
+                        if (entry.isIntersecting) {
+                            if (el.getAttribute("src") !== src) el.src = src;
+                        } else if (el.tagName === "VIDEO") {
+                            el.removeAttribute("src");
+                            el.load();
+                        }
+                    }
+                }, { root: galleryEl, rootMargin: "120px", threshold: 0.01 });
+            };
+
+            const galleryColumns = () => {
+                const cards = [...galleryEl.querySelectorAll(".bd-media-card")];
+                if (cards.length < 2) return 1;
+                const top = cards[0].offsetTop;
+                let n = 1;
+                for (let i = 1; i < cards.length; i++) {
+                    if (cards[i].offsetTop !== top) break;
+                    n += 1;
+                }
+                return Math.max(1, n);
+            };
+
+            const highlightSelection = ({ scroll = false } = {}) => {
                 tbodyEl.querySelectorAll(".bd-media-tr").forEach((row) => {
                     const on = row.dataset.path === selectedValue;
                     row.classList.toggle("selected", on);
-                    if (on && scroll) row.scrollIntoView({ block: "nearest" });
+                    if (on && scroll && view === "list") row.scrollIntoView({ block: "nearest" });
+                });
+                galleryEl.querySelectorAll(".bd-media-card").forEach((card) => {
+                    const on = card.dataset.path === selectedValue;
+                    card.classList.toggle("selected", on);
+                    if (on && scroll && view === "thumbs") card.scrollIntoView({ block: "nearest" });
                 });
                 renderPreview(itemsByPath.get(selectedValue));
+            };
+
+            const selectRow = (relPath, { scroll = false } = {}) => {
+                selectedValue = relPath || "";
+                highlightSelection({ scroll });
             };
 
             const renderRows = () => {
@@ -7566,8 +7645,8 @@ class MiniMaxH3DirectorEditor {
                     empty.textContent = t("mediaPicker.empty");
                     tbodyEl.appendChild(empty);
                     selectedValue = "";
-                    renderPreview(null);
                     syncHeaderState();
+                    highlightSelection();
                     return;
                 }
                 if (!selectedValue || !itemsByPath.has(selectedValue)) {
@@ -7577,7 +7656,6 @@ class MiniMaxH3DirectorEditor {
                     const row = document.createElement("div");
                     row.className = "bd-media-tr";
                     row.dataset.path = item.relPath;
-                    if (item.relPath === selectedValue) row.classList.add("selected");
                     const nameTd = document.createElement("div");
                     nameTd.className = "bd-media-td bd-media-td-name";
                     const mediaPrefix = kind === "reference_audio"
@@ -7604,9 +7682,88 @@ class MiniMaxH3DirectorEditor {
                     tbodyEl.appendChild(row);
                 }
                 syncHeaderState();
-                renderPreview(itemsByPath.get(selectedValue));
-                const selectedRow = tbodyEl.querySelector(".bd-media-tr.selected");
-                selectedRow?.scrollIntoView({ block: "nearest" });
+                highlightSelection({ scroll: true });
+            };
+
+            const renderGallery = () => {
+                if (this._mediaThumbObserver) this._mediaThumbObserver.disconnect();
+                galleryEl.innerHTML = "";
+                const rows = sortedItems();
+                if (!rows.length) {
+                    const empty = document.createElement("div");
+                    empty.className = "bd-media-empty-row";
+                    empty.textContent = t("mediaPicker.empty");
+                    galleryEl.appendChild(empty);
+                    selectedValue = "";
+                    highlightSelection();
+                    return;
+                }
+                if (!selectedValue || !itemsByPath.has(selectedValue)) {
+                    selectedValue = rows[0].relPath || "";
+                }
+                ensureThumbObserver();
+                for (const item of rows) {
+                    const card = document.createElement("button");
+                    card.type = "button";
+                    card.className = "bd-media-card";
+                    card.dataset.path = item.relPath;
+                    const previewKind = thumbKind(item);
+                    const src = inputViewUrl(item.relPath, item.type || "input");
+                    if (previewKind === "audio") {
+                        const ph = document.createElement("div");
+                        ph.className = "bd-media-card-audio";
+                        ph.textContent = "♪";
+                        card.appendChild(ph);
+                    } else if (previewKind === "video") {
+                        const video = document.createElement("video");
+                        video.className = "bd-media-card-thumb";
+                        video.muted = true;
+                        video.playsInline = true;
+                        video.preload = "none";
+                        video.dataset.src = src;
+                        card.appendChild(video);
+                        this._mediaThumbObserver.observe(video);
+                    } else {
+                        const img = document.createElement("img");
+                        img.className = "bd-media-card-thumb";
+                        img.alt = "";
+                        img.dataset.src = src;
+                        card.appendChild(img);
+                        this._mediaThumbObserver.observe(img);
+                    }
+                    const name = document.createElement("span");
+                    name.className = "bd-media-card-name";
+                    name.textContent = item.relPath || item.fileName || item.name || "";
+                    name.title = name.textContent;
+                    card.appendChild(name);
+                    card.addEventListener("click", () => selectRow(item.relPath));
+                    card.addEventListener("dblclick", () => {
+                        const choice = selectedChoice();
+                        if (choice) finish(choice);
+                    });
+                    galleryEl.appendChild(card);
+                }
+                highlightSelection({ scroll: true });
+            };
+
+            const applyViewClass = () => {
+                leftEl.classList.toggle("is-thumbs", view === "thumbs");
+                listBtn?.classList.toggle("active", view === "list");
+                thumbsBtn?.classList.toggle("active", view === "thumbs");
+            };
+
+            const renderBrowser = () => {
+                applyViewClass();
+                if (view === "thumbs") {
+                    renderGallery();
+                } else {
+                    if (this._mediaThumbObserver) {
+                        this._mediaThumbObserver.disconnect();
+                        this._mediaThumbObserver = null;
+                    }
+                    galleryEl.innerHTML = "";
+                    renderRows();
+                }
             };
 
             const moveSelection = (delta) => {
@@ -7620,11 +7777,12 @@ class MiniMaxH3DirectorEditor {
             const loadItems = async () => {
                 statusEl.textContent = t("mediaPicker.loading");
                 tbodyEl.innerHTML = "";
+                galleryEl.innerHTML = "";
                 renderPreview(null);
                 try {
                     listedItems = await this.listInputMedia(kind);
                     itemsByPath = new Map(listedItems.map((item) => [item.relPath, item]));
-                    renderRows();
+                    renderBrowser();
                     statusEl.textContent = listedItems.length
                         ? t("mediaPicker.count", { n: listedItems.length })
                         : t("mediaPicker.empty");
@@ -7632,6 +7790,7 @@ class MiniMaxH3DirectorEditor {
                     listedItems = [];
                     itemsByPath = new Map();
                     tbodyEl.innerHTML = "";
+                    galleryEl.innerHTML = "";
                     statusEl.textContent = err?.message || String(err);
                 }
             };
@@ -7645,9 +7804,31 @@ class MiniMaxH3DirectorEditor {
                         sortKey = key;
                         sortDir = key === "name" ? "asc" : "desc";
                     }
-                    renderRows();
+                    renderBrowser();
                 });
             });
+
+            const viewToggle = document.createElement("div");
+            viewToggle.className = "bd-media-view-toggle";
+            listBtn = document.createElement("button");
+            listBtn.type = "button";
+            listBtn.className = "bd-btn";
+            listBtn.textContent = t("mediaPicker.viewList");
+            thumbsBtn = document.createElement("button");
+            thumbsBtn.type = "button";
+            thumbsBtn.className = "bd-btn";
+            thumbsBtn.textContent = t("mediaPicker.viewThumbs");
+            const setView = (next) => {
+                view = next === "thumbs" ? "thumbs" : "list";
+                writeMediaPickerView(view);
+                renderBrowser();
+                if (view === "thumbs") galleryEl.focus();
+                else tableEl.focus();
+            };
+            listBtn.onclick = () => setView("list");
+            thumbsBtn.onclick = () => setView("thumbs");
+            viewToggle.append(listBtn, thumbsBtn);
+            actionsTop.appendChild(viewToggle);
 
             const refreshBtn = document.createElement("button");
             refreshBtn.type = "button";
@@ -7698,10 +7879,16 @@ class MiniMaxH3DirectorEditor {
                     finish(null);
                     return;
                 }
-                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
                     if (!panel.contains(e.target) && e.target !== document.body) return;
+                    if (view === "list" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) return;
                     e.preventDefault();
-                    moveSelection(e.key === "ArrowDown" ? 1 : -1);
+                    const cols = view === "thumbs" ? galleryColumns() : 1;
+                    const delta = e.key === "ArrowDown" ? cols
+                        : e.key === "ArrowUp" ? -cols
+                        : e.key === "ArrowRight" ? 1
+                        : -1;
+                    moveSelection(delta);
                     return;
                 }
                 if (e.key !== "Enter") return;
@@ -7714,8 +7901,10 @@ class MiniMaxH3DirectorEditor {
             overlay.appendChild(panel);
             this.root.appendChild(overlay);
             this._modalEl = overlay;
+            applyViewClass();
             void loadItems();
-            tableEl.focus();
+            if (view === "thumbs") galleryEl.focus();
+            else tableEl.focus();
         });
     }
 
