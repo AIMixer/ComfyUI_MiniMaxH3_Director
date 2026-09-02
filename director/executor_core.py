@@ -1234,7 +1234,9 @@ def execute_director_plan_core(
             #「选择运行」re-roll previews merge all-first-pass frames instead of
             # mixing fresh 一采 with cached 二采. Falls back to the final render
             # when no first-pass cache exists (e.g. refine was never connected).
-            pre_fill = load_first_pass_frames_stale(node_id, seg, plan)
+            pre_fill = load_first_pass_frames_stale(
+                node_id, seg, plan, match_len=int(cached.shape[0])
+            )
             completed_pre_refine[seg.index] = (
                 pre_fill if pre_fill is not None else cached
             )
