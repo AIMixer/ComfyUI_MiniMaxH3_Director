@@ -311,7 +311,10 @@ export function maxDurationSec() {
 
 /**
  * Frame count for a duration, capped to MAX_GEN_FRAMES on the 17k+5 grid.
- * Returns the 1-decimal seconds that produced that count (may step down near the cap).
+ * durationSec is always the normalized seconds for that frame count
+ * (preferredDurationSecFromFrames). Returning the raw typed seconds would
+ * make the same frame count display as 20.7 vs 20.5 on different paths and
+ * fight the input while the user is editing.
  */
 export function durationToClampedMiniMaxFrames(seconds, fps = 24) {
     let sec = roundDurationSec(seconds);
@@ -323,9 +326,8 @@ export function durationToClampedMiniMaxFrames(seconds, fps = 24) {
     if (fc > MAX_GEN_FRAMES) {
         fc = alignMiniMaxFrameCount(MAX_GEN_FRAMES);
         while (fc > MAX_GEN_FRAMES) fc -= 17;
-        sec = preferredDurationSecFromFrames(fc, fps);
     }
-    return { frames: fc, durationSec: sec };
+    return { frames: fc, durationSec: preferredDurationSecFromFrames(fc, fps) };
 }
 
 export function sumFrameCounts(segments) {

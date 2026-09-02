@@ -2462,15 +2462,21 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             seg._videoFrameCount = frames;
             secRow.innerHTML = `${t("batch.seconds")} <input type="number" data-batch-sec-index="${index}" data-batch-seg-id="${seg.id || ""}" min="${minDurationSec()}" max="${maxDurationSec()}" step="0.1" value="${seg.durationSec}" title="${t("batch.durationTooltip", { frames, play: playSec })}">`;
             const secInput = secRow.querySelector("input");
+            // Do not rewrite value/title while focused: frame snapping would
+            // bounce 20.7↔20.5 and interrupt typing. Normalize on blur.
+            let secFocused = false;
+            secInput.addEventListener("focus", () => { secFocused = true; });
             const applySec = () => {
                 const updated = applyBatchSegmentDuration(editor, index, secInput.value);
                 if (!updated) return;
-                const play = framesToDurationSec(updated.frameCount, 24);
-                secInput.value = String(updated.durationSec);
-                secInput.title = t("batch.durationTooltip", {
-                    frames: updated.frameCount,
-                    play,
-                });
+                if (!secFocused) {
+                    const play = framesToDurationSec(updated.frameCount, 24);
+                    secInput.value = String(updated.durationSec);
+                    secInput.title = t("batch.durationTooltip", {
+                        frames: updated.frameCount,
+                        play,
+                    });
+                }
                 editor.scheduleTimelineSync();
                 editor.scheduleRender?.();
                 editor.updateVideoNameLabel?.();
@@ -2493,6 +2499,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                 secInput.onblur = () => {
                     clearTimeout(secInput._t);
                     secInput._t = null;
+                    secFocused = false;
                     applySec();
                 };
             }
