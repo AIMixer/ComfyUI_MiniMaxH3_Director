@@ -59,6 +59,7 @@ from .h3_motion_context import (
 )
 from .segment_cache import (
     load_first_pass_cache,
+    load_first_pass_frames_stale,
     load_segment_audio,
     load_segment_av_latent,
     load_segment_cache,
@@ -1284,7 +1285,16 @@ def execute_director_plan_core(
         if cached is not None:
             cached = cached.float()
             completed_outputs[seg.index] = cached
-            completed_pre_refine[seg.index] = cached
+            # images_pre_refine fill prefers the first-pass render (.pre.pt) so
+            #「选择运行」re-roll previews merge all-first-pass frames instead of
+            # mixing fresh 一采 with cached 二采. Falls back to the final render
+            # when no first-pass cache exists (e.g. refine was never connected).
+            pre_fill = load_first_pass_frames_stale(
+                node_id, seg, plan, match_len=int(cached.shape[0])
+            )
+            completed_pre_refine[seg.index] = (
+                pre_fill if pre_fill is not None else cached
+            )
             cached_audio = load_segment_audio(
                 node_id, seg, plan, allow_stale=used_stale
             )
@@ -1308,7 +1318,7 @@ def execute_director_plan_core(
                 f"({cached.shape[0]} frames{audio_note}{stale_note})"
             )
             output_chunks.append(cached)
-            output_pre_chunks.append(cached)
+            output_pre_chunks.append(completed_pre_refine[seg.index])
             output_segments.append(seg)
             continue
 

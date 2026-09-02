@@ -18,7 +18,7 @@ import torch
 
 import folder_paths
 
-from .h3_motion_context import CONTINUITY_PIPELINE_ID
+from .h3_motion_context import CONTINUITY_PIPELINE_ID, trim_context_prefix, trim_export_tail
 from .plan import DirectorPlan, SegmentPlan, resolve_ref_image_size
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.cache")
@@ -592,6 +592,90 @@ def save_first_pass_cache(
         )
         for stray in root.glob(f".seg_{idx:04d}.pre.*"):
             _safe_unlink(stray)
+
+
+def _trim_stale_first_pass_frames(
+    frames: torch.Tensor,
+    *,
+    plan: DirectorPlan,
+    handoff: dict[str, Any] | None,
+    match_len: int | None,
+) -> torch.Tensor | None:
+    """Match in-memory first-pass export: drop context prefix, then crop length."""
+    fps = float(getattr(plan, "frame_rate", 24) or 24)
+    trim_frames = int((handoff or {}).get("trim_frames") or 0)
+    export_len = int((handoff or {}).get("export_frames") or 0)
+    if trim_frames > 0:
+        if int(frames.shape[0]) <= trim_frames:
+            return None
+        frames, _ = trim_context_prefix(
+            frames, None, trim_frames, fps=fps, match_tail=True
+        )
+    if export_len > 0 and int(frames.shape[0]) > export_len:
+        frames = frames[:export_len]
+    want = int(match_len or 0)
+    extra = int(frames.shape[0]) - want if want > 0 else 0
+    if extra > 0:
+        frames, _ = trim_export_tail(frames, None, extra, fps=fps)
+    return frames
+
+
+def load_first_pass_frames_stale(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+    *,
+    match_len: int | None = None,
+) -> torch.Tensor | None:
+    """Load ``.pre.pt`` frames for unselected-segment pre-refine fill.
+
+    Stale-tolerant counterpart of :func:`load_first_pass_cache`: fingerprint
+    drift (different seed, sampling-knob churn) does NOT invalidate the fill,
+    so「选择运行」re-roll previews merge all-first-pass frames instead of
+    mixing a fresh first pass with cached refined renders. A different source
+    video still rejects (same rule as the final-cache fill). Never raises.
+
+    Disk ``.pre.pt`` is written before export trim; this reapplies
+    ``.pre.handoff.json`` (context prefix + export length) and optionally
+    matches the final-cache frame count after later phase-align tail trims.
+    """
+    if not node_id:
+        return None
+    root = _cache_root(node_id)
+    if root is None:
+        return None
+    idx = seg.index
+    frames_path = root / f"seg_{idx:04d}.pre.pt"
+    meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+    handoff_path = root / f"seg_{idx:04d}.pre.handoff.json"
+    if not frames_path.is_file():
+        return None
+    try:
+        if meta_path.is_file():
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = first_pass_cache_fingerprint(seg, plan)
+            if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
+                return None
+        loaded = torch.load(frames_path, map_location="cpu", weights_only=True)
+        if not isinstance(loaded, torch.Tensor) or loaded.numel() <= 0:
+            return None
+        frames = _frames_from_disk(loaded)
+        if frames is None:
+            return None
+        handoff = None
+        if handoff_path.is_file():
+            try:
+                data = json.loads(handoff_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    handoff = data
+            except Exception:
+                handoff = None
+        return _trim_stale_first_pass_frames(
+            frames, plan=plan, handoff=handoff, match_len=match_len
+        )
+    except Exception as exc:
+        log.debug("Segment %d first-pass stale frames skipped: %s", idx + 1, exc)
+    return None
 
 
 def load_first_pass_cache(
