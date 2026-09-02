@@ -34,7 +34,8 @@ def task_passes_source_audio(task_key: str) -> bool:
 def resolve_audio_mode(plan) -> str:
     """Return generate | source | mute from timeline.output.audioMode.
 
-    ``source`` is only honored for v2v/rv2v; other tasks treat it as generate.
+    ``source`` is honored for v2v/rv2v (source-video extract) and r2v
+    (per-segment reference audio). Other tasks treat it as generate.
     """
     out = (getattr(plan, "raw", None) or {}).get("output") or {}
     raw = str(out.get("audioMode") or out.get("audio_mode") or AUDIO_MODE_GENERATE).strip().lower()
@@ -64,13 +65,19 @@ def _normalize_audio(audio: dict[str, Any] | None) -> dict[str, Any] | None:
     sr = int(audio.get("sample_rate") or SILENT_SAMPLE_RATE)
     try:
         import torchaudio
+        if not isinstance(wave, torch.Tensor) or wave.ndim != 3:
+            return audio
         if sr != SILENT_SAMPLE_RATE:
             wave = torchaudio.functional.resample(wave, sr, SILENT_SAMPLE_RATE)
             sr = SILENT_SAMPLE_RATE
-        if wave.shape[1] < 2:
+        ch = int(wave.shape[1])
+        if ch < 2:
             wave = wave.repeat(1, 2, 1)
+        elif ch > 2:
+            wave = wave[:, :2, :]
         return {"waveform": wave.contiguous(), "sample_rate": sr}
-    except Exception:
+    except Exception as exc:
+        log.warning("参考音频归一化到 44.1k 立体声失败（%s）；按原始格式 mux。", exc)
         return audio
 
 
@@ -80,15 +87,6 @@ def _ref_audio_for_segment(seg) -> dict[str, Any] | None:
         audio = getattr(ref, "audio", None)
         if _audio_has_samples(audio):
             return _normalize_audio(audio)
-    return None
-
-
-def _first_ref_audio(plan) -> dict[str, Any] | None:
-    """First usable reference audio across the plan (global source fallback)."""
-    for seg in (getattr(plan, "segments", None) or []):
-        audio = _ref_audio_for_segment(seg)
-        if audio is not None:
-            return audio
     return None
 
 
@@ -137,10 +135,9 @@ def prepare_segment_audio_for_file_export(
                 extracted, frame_count=n_frames, fps=fps, sample_rate=sr
             )
         # r2v has no source-timeline video; fall back to the segment's
-        # first reference audio (the "original sound" option) when present.
-        ref_audios = getattr(seg, "ref_audios", None) or []
-        if ref_audios and _audio_has_samples(ref_audios[0].audio):
-            ref = _normalize_audio(ref_audios[0].audio)
+        # first usable reference audio (the "original sound" option).
+        ref = _ref_audio_for_segment(seg)
+        if _audio_has_samples(ref):
             sr = int(ref.get("sample_rate") or SILENT_SAMPLE_RATE)
             return _pad_or_trim_audio_to_frames(
                 ref, frame_count=n_frames, fps=fps, sample_rate=sr

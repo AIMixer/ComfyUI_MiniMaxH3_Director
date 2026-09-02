@@ -2570,8 +2570,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         const ph = t(isR2v ? "placeholder.batchR2v" : "placeholder.batchDefault");
         prompts.innerHTML = `
             <span class="bd-label">${t("batch.prompt")}</span>
-            <textarea data-f="prompt" data-batch-prompt-index="${index}" data-batch-seg-id="${seg.id || ""}" placeholder=""></textarea>
-            <button type="button" class="bd-prompt-import-btn" style="margin-top:4px;padding:2px 8px;font-size:11px;background:#2a2a2a;color:#ccc;border:1px solid #444;border-radius:4px;cursor:pointer">导入 txt</button>`;
+            <textarea data-f="prompt" data-batch-prompt-index="${index}" data-batch-seg-id="${seg.id || ""}" placeholder=""></textarea>`;
         prompts.querySelector("textarea").placeholder = ph;
         prompts.querySelector("textarea").value = seg.prompt || "";
         const promptEl = prompts.querySelector('[data-f="prompt"]');

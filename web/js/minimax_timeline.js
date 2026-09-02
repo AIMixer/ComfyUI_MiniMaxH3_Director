@@ -2943,7 +2943,6 @@ class MiniMaxH3DirectorEditor {
                     <div class="bd-prompt-col">
                         <span class="bd-label" data-i18n="panel.prompt">提示词</span>
                         <textarea class="bd-prompt" data-r="seg-prompt" data-i18n-placeholder="placeholder.segmentPrompt" placeholder=""></textarea>
-                            <button type="button" class="bd-prompt-import-btn" style="margin-top:4px;padding:2px 8px;font-size:11px;background:#2a2a2a;color:#ccc;border:1px solid #444;border-radius:4px;cursor:pointer">导入 txt</button>
                         <textarea class="bd-prompt bd-prompt-negative hidden" data-r="seg-negative" hidden aria-hidden="true"></textarea>
                     </div>
                 </div>
@@ -3120,7 +3119,6 @@ class MiniMaxH3DirectorEditor {
         this.syncNegativeFromWidget();
         this.syncOutputUIFromTimeline();
         bindImageBatchEvents(this);
-        bindPromptImportButtons();
     }
 
     renderImageBatchGroups() {
@@ -12357,33 +12355,3 @@ app.registerExtension({
     },
 });
 
-function bindPromptImportButtons() {
-    if (window.__minimaxPromptImportBound === "1") return;
-    window.__minimaxPromptImportBound = "1";
-    document.addEventListener("click", (e) => {
-        const btn = e.target && e.target.closest ? e.target.closest(".bd-prompt-import-btn") : null;
-        if (!btn) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const holder = btn.parentElement;
-        const box = holder ? holder.querySelector("textarea") : null;
-        if (!box) return;
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = ".txt,.md,text/plain";
-        input.style.display = "none";
-        document.body.appendChild(input);
-        input.addEventListener("change", () => {
-            const file = input.files && input.files[0];
-            if (file) {
-                file.text().then((text) => {
-                    if (!text) return;
-                    box.value = text;
-                    box.dispatchEvent(new Event("input", { bubbles: true }));
-                }).catch(() => {});
-            }
-            input.remove();
-        });
-        input.click();
-    });
-}
