@@ -921,6 +921,7 @@ const STYLES = `
 .bd-media-card:hover,.bd-media-card.selected{border-color:#4fff8f;background:#202820}
 .bd-media-card img,.bd-media-card video,.bd-media-card .bd-media-card-audio{display:block;width:100%;height:94px;object-fit:cover;background:#090909;border-radius:4px}
 .bd-media-card-audio{display:flex;align-items:center;justify-content:center;color:#9a9a9a;font-size:28px}
+.bd-media-card-has-video::after{content:"▶";position:absolute;right:8px;bottom:22px;width:18px;height:18px;border-radius:9px;background:rgba(0,0,0,.55);color:#fff;font-size:9px;line-height:18px;text-align:center;pointer-events:none}
 .bd-media-card-name{display:block;padding:5px 2px 1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:1.35}
 .bd-toolbar-wrap{display:flex;flex-direction:column;gap:4px;width:100%}
 .bd-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
@@ -7587,6 +7588,95 @@ class MiniMaxH3DirectorEditor {
             };
 
             const thumbKind = (item) => (kind === "reference_audio" ? item.mediaKind : kind);
+            const VIDEO_THUMB_MAX = 3;
+            const videoThumbQueue = [];
+            let videoThumbInflight = 0;
+
+            const paintVideoPoster = (video) => {
+                if (!video.isConnected || video.videoWidth <= 0) return false;
+                try {
+                    const canvas = document.createElement("canvas");
+                    const w = 192;
+                    const h = Math.max(1, Math.round((w * video.videoHeight) / video.videoWidth));
+                    canvas.width = w;
+                    canvas.height = h;
+                    canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+                    const img = document.createElement("img");
+                    img.style.cssText = video.style.cssText;
+                    img.alt = "";
+                    img.src = canvas.toDataURL("image/jpeg", 0.72);
+                    video.replaceWith(img);
+                    return true;
+                } catch {
+                    return false;
+                }
+            };
+
+            const loadOneVideoThumb = (video) => new Promise((resolve) => {
+                let settled = false;
+                const finishThumb = () => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    video.removeAttribute("src");
+                    try { video.load(); } catch { /* ignore */ }
+                    resolve();
+                };
+                const timer = setTimeout(finishThumb, 8000);
+                if (!video.isConnected) {
+                    finishThumb();
+                    return;
+                }
+                const src = video.dataset.src;
+                if (!src) {
+                    finishThumb();
+                    return;
+                }
+                const onSeeked = () => {
+                    paintVideoPoster(video);
+                    finishThumb();
+                };
+                const onMeta = () => {
+                    try {
+                        const dur = Number(video.duration);
+                        const t = Number.isFinite(dur) && dur > 0
+                            ? Math.min(0.25, dur * 0.08)
+                            : 0.05;
+                        if (video.readyState >= 2 && Math.abs((video.currentTime || 0) - t) < 0.01) {
+                            onSeeked();
+                            return;
+                        }
+                        video.currentTime = t;
+                    } catch {
+                        onSeeked();
+                    }
+                };
+                video.addEventListener("seeked", onSeeked, { once: true });
+                video.addEventListener("loadedmetadata", onMeta, { once: true });
+                video.addEventListener("error", finishThumb, { once: true });
+                video.preload = "metadata";
+                video.muted = true;
+                video.src = src;
+            });
+
+            const pumpVideoThumbs = () => {
+                while (videoThumbInflight < VIDEO_THUMB_MAX && videoThumbQueue.length) {
+                    const video = videoThumbQueue.shift();
+                    if (!video?.isConnected || video.dataset.armed !== "1") continue;
+                    videoThumbInflight += 1;
+                    void loadOneVideoThumb(video).finally(() => {
+                        videoThumbInflight -= 1;
+                        pumpVideoThumbs();
+                    });
+                }
+            };
+
+            const armVideoThumb = (video) => {
+                if (video.dataset.armed === "1") return;
+                video.dataset.armed = "1";
+                videoThumbQueue.push(video);
+                pumpVideoThumbs();
+            };
 
             const ensureThumbObserver = () => {
                 if (this._mediaThumbObserver) this._mediaThumbObserver.disconnect();
@@ -7596,13 +7686,15 @@ class MiniMaxH3DirectorEditor {
                         const src = el.dataset.src;
                         if (!src) continue;
                         if (entry.isIntersecting) {
-                            if (el.getAttribute("src") !== src) el.src = src;
+                            if (el.tagName === "VIDEO") armVideoThumb(el);
+                            else if (el.getAttribute("src") !== src) el.src = src;
                         } else if (el.tagName === "VIDEO") {
+                            el.dataset.armed = "0";
                             el.removeAttribute("src");
-                            el.load();
+                            try { el.load(); } catch { /* ignore */ }
                         }
                     }
-                }, { root: galleryEl, rootMargin: "120px", threshold: 0.01 });
+                }, { root: galleryEl, rootMargin: "80px", threshold: 0.01 });
             };
 
             const galleryColumns = () => {
@@ -7717,6 +7809,7 @@ class MiniMaxH3DirectorEditor {
                         ph.textContent = "♪";
                         card.appendChild(ph);
                     } else if (previewKind === "video") {
+                        card.classList.add("bd-media-card-has-video");
                         const video = document.createElement("video");
                         video.style.cssText = thumbCss;
                         video.muted = true;
