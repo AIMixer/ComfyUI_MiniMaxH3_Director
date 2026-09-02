@@ -285,7 +285,7 @@ def _decode_image_b64(b64_str: str) -> torch.Tensor:
 def load_reference_tensor(ref: dict) -> torch.Tensor | None:
     if ref.get("imageFile"):
         rel = str(ref["imageFile"]).replace("\\", "/")
-        file_path = os.path.join(folder_paths.get_input_directory(), rel.replace("/", os.sep))
+        file_path = folder_paths.get_annotated_filepath(rel)
         if os.path.exists(file_path):
             key = _ref_image_cache_key(file_path)
             cached = _ref_image_cache_get(key) if key else None

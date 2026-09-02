@@ -910,6 +910,14 @@ const STYLES = `
 .bd-media-preview img,.bd-media-preview video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
 .bd-media-preview-empty{padding:18px;color:#666;font-size:11px;line-height:1.45;text-align:center}
 .bd-media-meta{display:flex;flex-direction:column;gap:4px;color:#9a9a9a;font-size:10px;line-height:1.45;word-break:break-all}
+.bd-media-source-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.bd-media-source-tabs .bd-btn.active{border-color:#4fff8f;color:#4fff8f}
+.bd-media-gallery{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:max-content;align-content:start;gap:8px;width:100%;height:min(60vh,480px);min-height:180px;max-height:min(60vh,480px);flex:0 1 auto;overflow-y:scroll;overflow-x:hidden;padding:2px;box-sizing:border-box;scrollbar-width:auto;scrollbar-color:#687783 #151515}
+.bd-media-card{position:relative;min-width:0;padding:4px;background:#161616;border:1px solid #333;border-radius:6px;color:#ddd;cursor:pointer;text-align:left;overflow:hidden}
+.bd-media-card:hover,.bd-media-card.selected{border-color:#4fff8f;background:#202820}
+.bd-media-card img,.bd-media-card video,.bd-media-card .bd-media-audio-thumb{display:block;width:100%;height:94px;object-fit:cover;background:#090909;border-radius:4px}
+.bd-media-audio-thumb{display:flex!important;align-items:center;justify-content:center;color:#9a9a9a;font-size:28px}
+.bd-media-card-name{display:block;padding:5px 2px 1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}
 .bd-toolbar-wrap{display:flex;flex-direction:column;gap:4px;width:100%}
 .bd-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
 .bd-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0}
@@ -1345,7 +1353,8 @@ function inputViewUrl(relativePath, type = "input") {
 }
 
 function refViewUrl(imageFile) {
-    return inputViewUrl(imageFile, "input");
+    const output = String(imageFile || "").endsWith(" [output]");
+    return inputViewUrl(String(imageFile || "").replace(/ \[output\]$/, ""), output ? "output" : "input");
 }
 
 function deletedSourceRanges(video) {
@@ -7284,8 +7293,8 @@ class MiniMaxH3DirectorEditor {
         });
     }
 
-    async listInputMedia(kind) {
-        const resp = await api.fetchApi(`/minimax/director/list_input_media?kind=${encodeURIComponent(kind)}`);
+    async listInputMedia(kind, source = "input") {
+        const resp = await api.fetchApi(`/minimax/director/list_input_media?kind=${encodeURIComponent(kind)}&source=${encodeURIComponent(source)}`);
         if (!resp.ok) {
             const text = (await resp.text()).trim();
             if (resp.status === 404) throw new Error(t("mediaPicker.needRestart"));
@@ -7320,59 +7329,20 @@ class MiniMaxH3DirectorEditor {
                     <div class="bd-modal-title"></div>
                     <div class="bd-modal-actions bd-media-head-actions"></div>
                 </div>
+                <div class="bd-media-source-tabs"></div>
                 <div class="bd-media-status"></div>
-                <div class="bd-media-body">
-                    <div class="bd-media-left">
-                        <div class="bd-media-table" tabindex="0">
-                            <div class="bd-media-thead">
-                                <button type="button" class="bd-media-th" data-sort="name">
-                                    <span></span><i class="bd-media-sort"></i>
-                                </button>
-                                <button type="button" class="bd-media-th" data-sort="dims">
-                                    <span></span><i class="bd-media-sort"></i>
-                                </button>
-                                <button type="button" class="bd-media-th" data-sort="time">
-                                    <span></span><i class="bd-media-sort"></i>
-                                </button>
-                            </div>
-                            <div class="bd-media-tbody"></div>
-                        </div>
-                    </div>
-                    <div class="bd-media-right">
-                        <div class="bd-media-preview">
-                            <div class="bd-media-preview-empty"></div>
-                        </div>
-                        <div class="bd-media-meta"></div>
-                    </div>
-                </div>`;
+                <div class="bd-media-gallery"></div>`;
 
             panel.querySelector(".bd-modal-title").textContent = title || "";
             const statusEl = panel.querySelector(".bd-media-status");
             const actionsTop = panel.querySelector(".bd-media-head-actions");
-            const tableEl = panel.querySelector(".bd-media-table");
-            const tbodyEl = panel.querySelector(".bd-media-tbody");
-            const previewEl = panel.querySelector(".bd-media-preview");
-            const previewEmptyEl = panel.querySelector(".bd-media-preview-empty");
-            const metaEl = panel.querySelector(".bd-media-meta");
-            const showDims = kind !== "audio" && kind !== "reference_audio";
-            if (!showDims) {
-                tableEl.classList.add("bd-media-nodims");
-                tableEl.querySelector('.bd-media-th[data-sort="dims"]')?.remove();
-            }
-            const thEls = [...panel.querySelectorAll(".bd-media-th")];
-            thEls.forEach((th) => {
-                const key = th.dataset.sort;
-                const label = key === "dims" ? t("mediaPicker.dims")
-                    : key === "time" ? t("mediaPicker.time")
-                    : t("mediaPicker.file");
-                th.querySelector("span").textContent = label;
-            });
+            const sourceTabs = panel.querySelector(".bd-media-source-tabs");
+            const galleryEl = panel.querySelector(".bd-media-gallery");
 
             let selectedValue = currentValue || "";
             let itemsByPath = new Map();
             let listedItems = [];
-            let sortKey = "time";
-            let sortDir = "desc";
+            let source = "input";
 
             const finish = (val) => {
                 this._closeBdModal();
@@ -7392,200 +7362,25 @@ class MiniMaxH3DirectorEditor {
                 };
             };
 
-            const formatMediaTime = (unixSec) => {
-                const n = Number(unixSec);
-                if (!Number.isFinite(n) || n <= 0) return "—";
-                const d = new Date(n * 1000);
-                if (Number.isNaN(d.getTime())) return "—";
-                const pad = (v) => String(v).padStart(2, "0");
-                return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-            };
-
-            const dimsText = (item) => {
-                const w = Number(item?.width) || 0;
-                const h = Number(item?.height) || 0;
-                return w > 0 && h > 0 ? `${w}x${h}` : "—";
-            };
-
-            const dimScore = (item) => {
-                const w = Number(item?.width) || 0;
-                const h = Number(item?.height) || 0;
-                return w > 0 && h > 0 ? w * 100000 + h : -1;
-            };
-
-            const sortedItems = () => {
-                const copy = listedItems.slice();
-                copy.sort((a, b) => {
-                    if (sortKey === "name") {
-                        const av = (a.fileName || a.name || a.relPath || "").toLowerCase();
-                        const bv = (b.fileName || b.name || b.relPath || "").toLowerCase();
-                        const c = av.localeCompare(bv, undefined, { numeric: true, sensitivity: "base" });
-                        if (c) return sortDir === "asc" ? c : -c;
-                    } else if (sortKey === "dims") {
-                        const as = dimScore(a);
-                        const bs = dimScore(b);
-                        const aMiss = as < 0;
-                        const bMiss = bs < 0;
-                        if (aMiss !== bMiss) return aMiss ? 1 : -1;
-                        if (as !== bs) return sortDir === "asc" ? as - bs : bs - as;
-                    } else {
-                        const av = Number(a.modified) || 0;
-                        const bv = Number(b.modified) || 0;
-                        if (av !== bv) return sortDir === "asc" ? av - bv : bv - av;
-                    }
-                    return (a.relPath || "").localeCompare(b.relPath || "");
-                });
-                return copy;
-            };
-
-            const syncHeaderState = () => {
-                thEls.forEach((th) => {
-                    const active = th.dataset.sort === sortKey;
-                    th.classList.toggle("is-active", active);
-                    th.classList.toggle("is-asc", active && sortDir === "asc");
+            const renderGallery = () => {
+                galleryEl.innerHTML = "";
+                if (!listedItems.length) { galleryEl.textContent = t("mediaPicker.empty"); return; }
+                listedItems.forEach((item) => {
+                    const card = document.createElement("button"); card.type = "button"; card.className = "bd-media-card"; card.classList.toggle("selected", item.relPath === selectedValue);
+                    const previewKind = kind === "reference_audio" ? item.mediaKind : kind;
+                    if (previewKind === "image") { const preview = document.createElement("img"); preview.src = inputViewUrl(item.relPath, item.type || source); card.appendChild(preview); }
+                    else if (previewKind === "video") { const preview = document.createElement("video"); preview.src = inputViewUrl(item.relPath, item.type || source); preview.muted = true; preview.preload = "metadata"; preview.playsInline = true; card.appendChild(preview); }
+                    else { const preview = document.createElement("div"); preview.className = "bd-media-audio-thumb"; preview.textContent = "♫"; card.appendChild(preview); }
+                    const name = document.createElement("span"); name.className = "bd-media-card-name"; name.textContent = item.relPath || item.fileName || item.name || ""; name.title = name.textContent; card.appendChild(name);
+                    card.onclick = () => { selectedValue = item.relPath; finish(selectedChoice()); }; galleryEl.appendChild(card);
                 });
             };
-
-            const renderPreview = (item) => {
-                previewEl.innerHTML = "";
-                metaEl.innerHTML = "";
-                if (!item?.relPath) {
-                    previewEmptyEl.textContent = t("mediaPicker.previewEmpty");
-                    previewEl.appendChild(previewEmptyEl);
-                    return;
-                }
-                const relPath = item.relPath;
-                const type = item.type || "input";
-                const previewKind = kind === "reference_audio" ? item.mediaKind : kind;
-                if (previewKind === "image") {
-                    const img = document.createElement("img");
-                    img.src = inputViewUrl(relPath, type);
-                    img.alt = item.fileName || item.name || relPath;
-                    previewEl.appendChild(img);
-                } else if (previewKind === "audio") {
-                    const audio = document.createElement("audio");
-                    audio.src = inputViewUrl(relPath, type);
-                    audio.controls = true;
-                    audio.preload = "metadata";
-                    previewEl.appendChild(audio);
-                } else {
-                    const video = document.createElement("video");
-                    video.src = inputViewUrl(relPath, type);
-                    video.controls = true;
-                    video.preload = "metadata";
-                    video.muted = true;
-                    video.playsInline = true;
-                    previewEl.appendChild(video);
-                }
-                const fileEl = document.createElement("div");
-                fileEl.textContent = `${t("mediaPicker.file")}: ${item.fileName || item.name || relPath}`;
-                metaEl.appendChild(fileEl);
-                const pathEl = document.createElement("div");
-                pathEl.textContent = `${t("mediaPicker.path")}: ${relPath}`;
-                metaEl.appendChild(pathEl);
-            };
-
-            const selectRow = (relPath, { scroll = false } = {}) => {
-                selectedValue = relPath || "";
-                tbodyEl.querySelectorAll(".bd-media-tr").forEach((row) => {
-                    const on = row.dataset.path === selectedValue;
-                    row.classList.toggle("selected", on);
-                    if (on && scroll) row.scrollIntoView({ block: "nearest" });
-                });
-                renderPreview(itemsByPath.get(selectedValue));
-            };
-
-            const renderRows = () => {
-                tbodyEl.innerHTML = "";
-                const rows = sortedItems();
-                if (!rows.length) {
-                    const empty = document.createElement("div");
-                    empty.className = "bd-media-empty-row";
-                    empty.textContent = t("mediaPicker.empty");
-                    tbodyEl.appendChild(empty);
-                    selectedValue = "";
-                    renderPreview(null);
-                    syncHeaderState();
-                    return;
-                }
-                if (!selectedValue || !itemsByPath.has(selectedValue)) {
-                    selectedValue = rows[0].relPath || "";
-                }
-                for (const item of rows) {
-                    const row = document.createElement("div");
-                    row.className = "bd-media-tr";
-                    row.dataset.path = item.relPath;
-                    if (item.relPath === selectedValue) row.classList.add("selected");
-                    const nameTd = document.createElement("div");
-                    nameTd.className = "bd-media-td bd-media-td-name";
-                    const mediaPrefix = kind === "reference_audio"
-                        ? (item.mediaKind === "video" ? "🎞 " : "♪ ")
-                        : "";
-                    nameTd.textContent = `${mediaPrefix}${item.relPath || item.fileName || item.name || ""}`;
-                    nameTd.title = nameTd.textContent;
-                    const timeTd = document.createElement("div");
-                    timeTd.className = "bd-media-td bd-media-td-time";
-                    timeTd.textContent = formatMediaTime(item.modified);
-                    if (showDims) {
-                        const dimsTd = document.createElement("div");
-                        dimsTd.className = "bd-media-td bd-media-td-dims";
-                        dimsTd.textContent = dimsText(item);
-                        row.append(nameTd, dimsTd, timeTd);
-                    } else {
-                        row.append(nameTd, timeTd);
-                    }
-                    row.addEventListener("click", () => selectRow(item.relPath));
-                    row.addEventListener("dblclick", () => {
-                        const choice = selectedChoice();
-                        if (choice) finish(choice);
-                    });
-                    tbodyEl.appendChild(row);
-                }
-                syncHeaderState();
-                renderPreview(itemsByPath.get(selectedValue));
-                const selectedRow = tbodyEl.querySelector(".bd-media-tr.selected");
-                selectedRow?.scrollIntoView({ block: "nearest" });
-            };
-
-            const moveSelection = (delta) => {
-                const rows = sortedItems();
-                if (!rows.length) return;
-                const idx = rows.findIndex((item) => item.relPath === selectedValue);
-                const next = rows[Math.max(0, Math.min(rows.length - 1, (idx < 0 ? 0 : idx) + delta))];
-                if (next) selectRow(next.relPath, { scroll: true });
-            };
-
             const loadItems = async () => {
-                statusEl.textContent = t("mediaPicker.loading");
-                tbodyEl.innerHTML = "";
-                renderPreview(null);
-                try {
-                    listedItems = await this.listInputMedia(kind);
-                    itemsByPath = new Map(listedItems.map((item) => [item.relPath, item]));
-                    renderRows();
-                    statusEl.textContent = listedItems.length
-                        ? t("mediaPicker.count", { n: listedItems.length })
-                        : t("mediaPicker.empty");
-                } catch (err) {
-                    listedItems = [];
-                    itemsByPath = new Map();
-                    tbodyEl.innerHTML = "";
-                    statusEl.textContent = err?.message || String(err);
-                }
+                statusEl.textContent = t("mediaPicker.loading"); galleryEl.innerHTML = "";
+                try { listedItems = await this.listInputMedia(kind, source); itemsByPath = new Map(listedItems.map((item) => [item.relPath, item])); if (!itemsByPath.has(selectedValue)) selectedValue = ""; renderGallery(); statusEl.textContent = listedItems.length ? t("mediaPicker.count", { n: listedItems.length }) : t("mediaPicker.empty"); }
+                catch (err) { listedItems = []; itemsByPath = new Map(); galleryEl.textContent = err?.message || String(err); statusEl.textContent = err?.message || String(err); }
             };
-
-            thEls.forEach((th) => {
-                th.addEventListener("click", () => {
-                    const key = th.dataset.sort || "time";
-                    if (sortKey === key) {
-                        sortDir = sortDir === "asc" ? "desc" : "asc";
-                    } else {
-                        sortKey = key;
-                        sortDir = key === "name" ? "asc" : "desc";
-                    }
-                    renderRows();
-                });
-            });
+            [["input", "ComfyUI Input"], ["output", "ComfyUI Output"]].forEach(([value, text]) => { const tab = document.createElement("button"); tab.type = "button"; tab.className = "bd-btn"; tab.textContent = text; tab.classList.toggle("active", value === source); tab.onclick = () => { source = value; sourceTabs.querySelectorAll("button").forEach(button => button.classList.toggle("active", button === tab)); void loadItems(); }; sourceTabs.appendChild(tab); });
 
             const refreshBtn = document.createElement("button");
             refreshBtn.type = "button";
@@ -7636,14 +7431,8 @@ class MiniMaxH3DirectorEditor {
                     finish(null);
                     return;
                 }
-                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                    if (!panel.contains(e.target) && e.target !== document.body) return;
-                    e.preventDefault();
-                    moveSelection(e.key === "ArrowDown" ? 1 : -1);
-                    return;
-                }
                 if (e.key !== "Enter") return;
-                if (e.target?.closest?.(".bd-media-th, .bd-media-head-actions, button.bd-btn:not(.bd-btn-primary)")) return;
+                if (e.target?.closest?.(".bd-media-head-actions, .bd-media-source-tabs, button.bd-btn:not(.bd-btn-primary)")) return;
                 e.preventDefault();
                 okBtn.click();
             };
@@ -7653,7 +7442,6 @@ class MiniMaxH3DirectorEditor {
             this.root.appendChild(overlay);
             this._modalEl = overlay;
             void loadItems();
-            tableEl.focus();
         });
     }
 
@@ -7680,7 +7468,7 @@ class MiniMaxH3DirectorEditor {
         }
         const dims = await this.probeInputImageDimensions(choice.relPath, choice.type || "input");
         return {
-            imageFile: choice.relPath,
+            imageFile: choice.type === "output" ? `${choice.relPath} [output]` : choice.relPath,
             fileName: choice.fileName || choice.relPath,
             subfolder: choice.subfolder || "",
             type: choice.type || "input",

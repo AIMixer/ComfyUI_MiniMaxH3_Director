@@ -68,8 +68,10 @@ def _peek_image_size(path: str) -> tuple[int, int]:
         return 0, 0
 
 
-def _list_input_media(kind: str) -> list[dict]:
-    input_dir = folder_paths.get_input_directory()
+def _list_input_media(kind: str, source: str = "input") -> list[dict]:
+    if source not in {"input", "output"}:
+        raise ValueError("source must be input or output")
+    input_dir = folder_paths.get_output_directory() if source == "output" else folder_paths.get_input_directory()
     exts = _get_media_exts(kind)
     peek_video = None
     if kind == "video":
@@ -111,7 +113,7 @@ def _list_input_media(kind: str) -> list[dict]:
                     "fileName": name,
                     "relPath": rel_path,
                     "subfolder": subfolder,
-                    "type": "input",
+                    "type": source,
                     "modified": float(stat.st_mtime),
                     "width": width,
                     "height": height,
@@ -412,7 +414,7 @@ async def minimax_list_input_media(request):
         kind = str(request.query.get("kind") or "").strip().lower()
         if not kind:
             return web.Response(status=400, text="Missing kind.")
-        items = _list_input_media(kind)
+        items = _list_input_media(kind, str(request.query.get("source") or "input").strip().lower())
     except ValueError as exc:
         return web.Response(status=400, text=str(exc))
     except Exception as exc:
