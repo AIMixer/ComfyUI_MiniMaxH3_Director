@@ -305,6 +305,7 @@ function renderCacheStatus(node, data, kind = "normal") {
         : "—";
     const diffLabels = {
         seed: "seed",
+        prev_chain: "本段沿用旧一采（未在选择范围内）",
         start: "片段起点",
         end: "片段终点（时间范围变化）",
         prompt: "提示词",
@@ -338,12 +339,33 @@ function renderCacheStatus(node, data, kind = "normal") {
             .slice(0, 8)
             .map((key) => diffLabels[key] || key)
         : [];
+    const stalePrev = Number(data?.stale_prev_count || 0);
+    const selTotal = data?.selected_total;
+    const selMatched = data?.selected_matched;
+    const selActive = Number.isFinite(selTotal) && Number(selTotal) !== total;
     const lines = [
         `一采缓存：${data?.exists ? `存在（${cached}/${total} 段）` : "不存在"}`,
-        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`,
-        `缓存 seed：${seeds}`,
-        `当前 seed：${data?.current_seed ?? "—"}`,
+        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`
+            + (selActive ? ` · 选中 ${selMatched ?? 0}/${selTotal ?? 0}` : ""),
     ];
+    if (stalePrev > 0) {
+        lines.push(`仅运行选择片段：其余 ${stalePrev}/${total} 段沿用旧一采，拼接处可能不衔接`);
+    }
+    const segs = Array.isArray(data?.segments) ? data.segments : [];
+    if (segs.length) {
+        const marks = segs
+            .map((s) => (
+                (s.selected === false ? "○" : "")
+                    + (s.status === "valid" ? "✓"
+                        : s.status === "stale_prev" ? "△"
+                            : s.status === "missing" ? "✕"
+                                : "≠")
+            ))
+            .join(" ");
+        lines.push(`逐段：${marks}（✓有效 △沿用旧缓存 ✕缺失 ≠参数已变 ○未选择）`);
+    }
+    lines.push(`缓存 seed：${seeds}`);
+    lines.push(`当前 seed：${data?.current_seed ?? "—"}`);
     if (diffs.length) lines.push(`差异：${diffs.join(", ")}`);
     ui.body.textContent = lines.join("\n");
 }

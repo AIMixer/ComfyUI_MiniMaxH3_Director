@@ -927,9 +927,15 @@ def execute_director_plan_core(
             cached_sample = int(cached_h.get("sample_frames") or 0)
             if cached_sample > 0:
                 sample_len = cached_sample
+            stale_prev_note = (
+                "；本段沿用旧一采（未在选择范围内），拼接处可能不衔接"
+                if pre_cache.get("stale_prev")
+                else ""
+            )
             reports.append(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: 命中一采缓存 "
-                f"(seed={int(getattr(plan, 'sample_seed', seed) or seed)})，跳过一采，开始二采"
+                f"(seed={int(getattr(plan, 'sample_seed', seed) or seed)})，"
+                f"跳过一采，开始二采{stale_prev_note}"
             )
         else:
             samples = sample_single_stage(

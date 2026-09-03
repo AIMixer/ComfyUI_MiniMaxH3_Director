@@ -6,6 +6,7 @@ blocks, full disks) must never abort the main generation run.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -134,9 +135,38 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
     }
 
 
+PREV_CHAIN_FP_KEY = "prev_chain"
+
+
+def prev_chain_identity(seg: SegmentPlan, plan: DirectorPlan) -> str | None:
+    """Hash identifying the upstream segment this one continues from.
+
+    Only non-None when inter-segment continuity is active for this segment.
+    With continuity, the previous segment's tail is physically pinned into
+    this segment's first-pass latent, so its identity is a semantic input of
+    the cache. The key is used for STATUS/WARNING only (safe-reuse semantics):
+    a drifted ``prev_chain`` does not veto a first-pass cache hit — the cached
+    latent may still be reused and the seam drift is surfaced to the user.
+    """
+    if not (plan.continuity_enabled and getattr(seg, "continuity_from_prev", True)):
+        return None
+    prev_index = int(seg.index) - 1
+    segments = list(getattr(plan, "segments", None) or [])
+    if 0 <= prev_index < len(segments):
+        prev_fp = _segment_identity_fingerprint(segments[prev_index], plan)
+        blob = json.dumps(prev_fp, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    return None
+
+
 def first_pass_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
     """Exact-match key for first-pass AV latent. Refine knobs are excluded."""
     fp = _segment_identity_fingerprint(seg, plan)
+    prev_chain = prev_chain_identity(seg, plan)
+    if prev_chain is not None:
+        # Omitted entirely when continuity is off → fingerprints (and cache
+        # hits) of continuity-free workflows are byte-identical to before.
+        fp[PREV_CHAIN_FP_KEY] = prev_chain
     sigmas = getattr(plan, "sample_sigmas", None)
     linked = bool(sigmas) or bool(getattr(plan, "sample_sigmas_linked", False))
     fp.update({
@@ -699,18 +729,49 @@ def load_first_pass_cache(
     try:
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
         expected = first_pass_cache_fingerprint(seg, plan)
-        if not isinstance(stored, dict) or stored != expected:
-            if isinstance(stored, dict) and _reject_source_stale(
+        stale_prev = False
+        stored_cmp = stored
+        expected_cmp = expected
+        if (
+            isinstance(stored, dict)
+            and PREV_CHAIN_FP_KEY not in stored
+            and PREV_CHAIN_FP_KEY in expected_cmp
+        ):
+            # Zero-migration: caches written before prev_chain existed never
+            # carry the key — ignore it on both sides so old hits survive.
+            expected_cmp = {k: v for k, v in expected_cmp.items() if k != PREV_CHAIN_FP_KEY}
+        if not isinstance(stored, dict) or stored_cmp != expected_cmp:
+            diff = (
+                _fingerprint_diff_keys(stored_cmp, expected_cmp)
+                if isinstance(stored, dict)
+                else ["<invalid-meta>"]
+            )
+            only_prev_drift = (
+                isinstance(stored, dict)
+                and set(diff) == {PREV_CHAIN_FP_KEY}
+                and stored.get(PREV_CHAIN_FP_KEY) is not None
+            )
+            if not only_prev_drift and isinstance(stored, dict) and _reject_source_stale(
                 stored, expected, seg_index=idx, quiet=True,
             ):
                 return None
-            diff = _fingerprint_diff_keys(stored, expected) if isinstance(stored, dict) else ["<invalid-meta>"]
-            log.info(
-                "Segment %d first-pass cache miss (diff=%s); will sample first pass.",
-                idx + 1,
-                diff[:8],
-            )
-            return None
+            if only_prev_drift:
+                # Safe reuse: the upstream segment was re-rolled but this
+                # segment's own identity is unchanged. Keep the cache hit
+                # (partial re-run stays cheap); flag the seam drift.
+                stale_prev = True
+                log.info(
+                    "Segment %d first-pass cache reused with drifted upstream "
+                    "(prev_chain mismatch); seam may not line up.",
+                    idx + 1,
+                )
+            else:
+                log.info(
+                    "Segment %d first-pass cache miss (diff=%s); will sample first pass.",
+                    idx + 1,
+                    diff[:8],
+                )
+                return None
         payload = torch.load(latent_path, map_location="cpu", weights_only=False)
         if not isinstance(payload, dict) or "samples" not in payload:
             return None
@@ -722,6 +783,16 @@ def load_first_pass_cache(
                     frames = _frames_from_disk(loaded)
             except Exception as exc:
                 log.debug("Segment %d first-pass frames skipped: %s", idx + 1, exc)
+        want_frames = max(1, int(seg.end_frame) - int(seg.start_frame))
+        if frames is not None and abs(int(frames.shape[0]) - want_frames) > 2:
+            # Length guard: cached frames from a different timeline era must
+            # not flow into the merge (shape mismatch → downstream errors).
+            log.info(
+                "Segment %d cached first-pass frames length mismatch "
+                "(%d vs %d); dropping frames, latent/handoff kept.",
+                idx + 1, int(frames.shape[0]), want_frames,
+            )
+            frames = None
         handoff: dict[str, Any] = {}
         if handoff_path.is_file():
             try:
@@ -730,7 +801,12 @@ def load_first_pass_cache(
                     handoff = data
             except Exception:
                 handoff = {}
-        return {"av_latent": payload, "frames": frames, "handoff": handoff}
+        return {
+            "av_latent": payload,
+            "frames": frames,
+            "handoff": handoff,
+            "stale_prev": stale_prev,
+        }
     except Exception as exc:
         log.warning("Failed to load segment %d first-pass cache: %s", idx + 1, exc)
         return None
@@ -808,6 +884,10 @@ def inspect_first_pass_cache(
         "segment_total": 0,
         "cached_count": 0,
         "matched_count": 0,
+        "stale_prev_count": 0,
+        "selected_total": 0,
+        "selected_cached": 0,
+        "selected_matched": 0,
         "diff_keys": [],
         "segments": [],
     }
@@ -817,20 +897,19 @@ def inspect_first_pass_cache(
     root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
     all_segments = list(getattr(plan, "segments", None) or [])
     run_indices = getattr(plan, "run_indices", None)
-    if run_indices is None:
-        selected = all_segments
-    else:
-        selected = [
-            all_segments[i]
-            for i in sorted(run_indices)
-            if 0 <= i < len(all_segments)
-        ]
-    result["segment_total"] = len(selected)
+    selected_set = (
+        frozenset(run_indices) if run_indices is not None else None
+    )
+    # Always inspect the WHOLE timeline so unselected segments (which will
+    # reuse old first-pass in「选择运行」partial runs) stay visible; the
+    # selection scope is reported per-row and via selected_* aggregates.
+    result["segment_total"] = len(all_segments)
 
     cached_seeds: set[int] = set()
     all_diffs: set[str] = set()
     rows: list[dict[str, Any]] = []
-    for seg in selected:
+    for seg in all_segments:
+        is_selected = selected_set is None or int(seg.index) in selected_set
         idx = int(seg.index)
         meta_path = root / f"seg_{idx:04d}.pre.meta.json"
         latent_path = root / f"seg_{idx:04d}.pre.av.pt"
@@ -851,12 +930,31 @@ def inspect_first_pass_cache(
         if getattr(plan, "sample_sigmas_linked", False) and isinstance(stored, dict):
             stored_cmp = {k: v for k, v in stored.items() if k != "sigmas"}
             expected_cmp = {k: v for k, v in expected.items() if k != "sigmas"}
+        if (
+            isinstance(stored, dict)
+            and PREV_CHAIN_FP_KEY not in stored_cmp
+            and PREV_CHAIN_FP_KEY in expected_cmp
+        ):
+            # Zero-migration: old metas never carry prev_chain.
+            expected_cmp = {k: v for k, v in expected_cmp.items() if k != PREV_CHAIN_FP_KEY}
         matches = bool(cache_exists and isinstance(stored, dict) and stored_cmp == expected_cmp)
         diff = (
             _fingerprint_diff_keys(stored_cmp, expected_cmp)
             if isinstance(stored, dict)
             else (["<invalid-meta>"] if meta_exists else ["<missing-cache>"])
         )
+        if not cache_exists:
+            status = "missing"
+        elif matches:
+            status = "valid"
+        elif (
+            isinstance(stored, dict)
+            and set(diff) == {PREV_CHAIN_FP_KEY}
+            and stored.get(PREV_CHAIN_FP_KEY) is not None
+        ):
+            status = "stale_prev"
+        else:
+            status = "mismatch"
         cached_seed = stored.get("seed") if isinstance(stored, dict) else None
         try:
             if cached_seed is not None:
@@ -870,6 +968,8 @@ def inspect_first_pass_cache(
                 "segment": idx + 1,
                 "exists": cache_exists,
                 "matches": matches,
+                "status": status,
+                "selected": is_selected,
                 "cached_seed": cached_seed,
                 "diff_keys": diff,
                 "error": read_error,
@@ -878,6 +978,11 @@ def inspect_first_pass_cache(
 
     cached_count = sum(1 for row in rows if row["exists"])
     matched_count = sum(1 for row in rows if row["matches"])
+    stale_prev_count = sum(1 for row in rows if row["status"] == "stale_prev")
+    selected_rows = [row for row in rows if row["selected"]]
+    selected_total = len(selected_rows) if selected_set is not None else len(rows)
+    selected_cached = sum(1 for row in selected_rows if row["exists"])
+    selected_matched = sum(1 for row in selected_rows if row["matches"])
     total = len(rows)
     result.update(
         {
@@ -886,6 +991,10 @@ def inspect_first_pass_cache(
             "cached_seeds": sorted(cached_seeds),
             "cached_count": cached_count,
             "matched_count": matched_count,
+            "stale_prev_count": stale_prev_count,
+            "selected_total": selected_total,
+            "selected_cached": selected_cached,
+            "selected_matched": selected_matched,
             "diff_keys": sorted(all_diffs),
             "segments": rows,
         }
