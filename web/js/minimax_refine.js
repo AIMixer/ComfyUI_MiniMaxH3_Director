@@ -441,10 +441,11 @@ function renderCacheStatus(node, data, kind = "normal") {
         ui.body.append(cacheStatusLine(data));
         return;
     }
+    const spacer = document.createElement("div");
+    spacer.textContent = "\u00A0"; // empty divs collapse to 0 height
     ui.body.append(
         buildCacheSection(data, "一采", ui.clearFirstPassBtn),
-        cacheStatusLine(""),
-        cacheStatusLine(""),
+        spacer,
         buildCacheSection(data?.final, "二采", ui.clearFinalBtn),
     );
 }
