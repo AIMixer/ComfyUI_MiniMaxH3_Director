@@ -307,7 +307,7 @@ function refineStatusPayload(refineNode) {
         sigmas: String(directorValue(refineNode, "sigmas", "")),
         target_width: Number(directorValue(refineNode, "width", 0)),
         target_height: Number(directorValue(refineNode, "height", 0)),
-        skip_fl2v: Boolean(directorValue(refineNode, "skip_fl2v", true)),
+        skip_fl2v: boolWidgetValue(refineNode, "skip_fl2v"),
         has_sigmas_tensor: refineInputLinked(refineNode, "sigmas"),
     };
     // Only include model keys when actually wired: the backend treats any
