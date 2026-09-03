@@ -394,6 +394,7 @@ function renderCacheStatus(node, data, kind = "normal") {
     ui.body.append(
         buildCacheSection(data, "一采", ui.clearFirstPassBtn),
         cacheStatusLine(""),
+        cacheStatusLine(""),
         buildCacheSection(data?.final, "二采", ui.clearFinalBtn),
     );
 }
