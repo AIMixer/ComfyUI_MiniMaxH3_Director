@@ -369,7 +369,7 @@ function cacheStatusLine(text) {
     return div;
 }
 
-function buildCacheSection(data, label, clearButton) {
+function buildCacheSection(data, label, clearButton, showSelection = true) {
     const frag = document.createDocumentFragment();
     const total = Number(data?.segment_total || 0);
     const cached = Number(data?.cached_count || 0);
@@ -401,14 +401,17 @@ function buildCacheSection(data, label, clearButton) {
     if (segs.length) {
         const marks = segs
             .map((s) => (
-                (s.selected === false ? "○" : "")
+                (showSelection && s.selected === false ? "○" : "")
                     + (s.status === "valid" ? "✓"
                         : s.status === "stale_prev" ? "△"
                             : s.status === "missing" ? "✕"
                                 : "≠")
             ))
             .join(" ");
-        frag.append(cacheStatusLine(`逐段：${marks}（✓有效 △沿用旧缓存 ✕缺失 ≠参数已变 ○未选择）`));
+        const legend = showSelection
+            ? "✓有效 △沿用旧缓存 ✕缺失 ≠参数已变 ○未选择"
+            : "✓有效 ✕缺失 ≠参数已变";
+        frag.append(cacheStatusLine(`逐段：${marks}（${legend}）`));
     }
     frag.append(cacheStatusLine(`缓存 seed：${seeds}`));
     const seedRow = document.createElement("div");
@@ -446,7 +449,7 @@ function renderCacheStatus(node, data, kind = "normal") {
     ui.body.append(
         buildCacheSection(data, "一采", ui.clearFirstPassBtn),
         spacer,
-        buildCacheSection(data?.final, "二采", ui.clearFinalBtn),
+        buildCacheSection(data?.final, "二采", ui.clearFinalBtn, false),
     );
 }
 
