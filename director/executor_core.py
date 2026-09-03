@@ -561,15 +561,33 @@ def execute_director_plan_core(
                 prev_seg is not None
                 and segment_cache_is_current(node_id, prev_seg, plan)
             )
-            prev_tail = resolve_prev_segment_output(
-                plan, all_segments, seg.index, completed_outputs, node_id
-            )
+            try:
+                prev_tail = resolve_prev_segment_output(
+                    plan, all_segments, seg.index, completed_outputs, node_id
+                )
+                prev_missing = False
+            except ValueError as exc:
+                # No usable prev material at all (e.g. partial re-run where the
+                # upstream segment has never been rendered): degrade to
+                # standalone sampling with a note instead of aborting the run.
+                log.info(
+                    "Segment %d continuity resolve failed (%s); "
+                    "sampling without motion context.",
+                    seg.index + 1, exc,
+                )
+                reports.append(
+                    f"Segment {seg.index + 1}/{timeline_seg_total}: "
+                    "上一段无有效缓存，已跳过段间引导"
+                    "（重跑上一段或将其纳入「选择运行」可恢复衔接）"
+                )
+                prev_tail = None
+                prev_missing = True
             # Hydrate prev into completed_* so phase-align trim can rewrite
             # in-memory exports + disk cache even on「分段导出」/ partial re-run
             # (resolve_prev may return a cache tensor without storing it).
             if prev_idx >= 0 and prev_tail is not None and prev_idx not in completed_outputs:
                 completed_outputs[prev_idx] = prev_tail
-            if not prev_era_ok and prev_seg is not None:
+            if not prev_era_ok and prev_seg is not None and not prev_missing:
                 log.warning(
                     "Segment %d: upstream segment %d cache is from an older "
                     "era; skipping motion-context pin (re-run the upstream "
