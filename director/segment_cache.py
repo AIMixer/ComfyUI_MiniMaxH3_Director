@@ -1020,6 +1020,13 @@ def inspect_final_cache(
                 read_error = str(exc)
 
         expected = segment_cache_fingerprint(seg, plan)
+        if getattr(plan, "_status_refine_sigmas_wired", False) and isinstance(stored, dict):
+            # External SIGMAS wiring: the tensor values can't be read from the
+            # status payload, so exclude those keys from the comparison (same
+            # treatment the first-pass inspection gives linked sigmas).
+            strip = {"refine_sigmas", "refine_sigmas_wired"}
+            stored = {k: v for k, v in stored.items() if k not in strip}
+            expected = {k: v for k, v in expected.items() if k not in strip}
         matches = bool(cache_exists and isinstance(stored, dict) and stored == expected)
         diff = (
             _fingerprint_diff_keys(stored, expected)

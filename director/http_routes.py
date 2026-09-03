@@ -551,6 +551,19 @@ async def minimax_first_pass_cache_status(request):
         plan.sample_sigmas_linked = bool(body.get("sigmas_linked"))
         plan.sample_shift_video = float(body.get("shift_video") or 12.0)
         plan.sample_shift_audio = float(body.get("shift_audio") or 3.0)
+        refine_raw = body.get("refine")
+        if isinstance(refine_raw, dict) and refine_raw:
+            # Rebuild the same refine pack the executor attached when the
+            # final cache was written, so inspect_final_cache compares
+            # against the real refine fingerprint instead of "refine off".
+            from .refine_pack import normalize_refine_pack
+
+            plan.refine = normalize_refine_pack(
+                {**refine_raw, "enabled": True},
+                base_width=int(body.get("width") or 864),
+                base_height=int(body.get("height") or 480),
+            )
+            plan._status_refine_sigmas_wired = bool(refine_raw.get("has_sigmas_tensor"))
         from .segment_cache import inspect_final_cache
 
         payload = inspect_first_pass_cache(node_id, plan)

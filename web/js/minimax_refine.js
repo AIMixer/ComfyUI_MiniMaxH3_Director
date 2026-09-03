@@ -282,6 +282,41 @@ function cacheStatusPayload(director) {
     };
 }
 
+function refineInputLinked(node, name) {
+    const inp = (node?.inputs || []).find((i) => String(i.name) === name);
+    if (!inp) return false;
+    if (inp.link != null) return true;
+    return Array.isArray(inp.links) && inp.links.length > 0;
+}
+
+// Refine widgets + input-link presence, so the backend can rebuild the SAME
+// refine fingerprint the executor wrote into seg_XXXX.meta.json. Without this
+// the 二采 status block compares real cached metas against a "refine off"
+// fingerprint and every segment shows ≠.
+function refineStatusPayload(refineNode) {
+    const payload = {
+        enabled: true,
+        mode: String(directorValue(refineNode, "mode", "refine")),
+        upscale_method: String(directorValue(refineNode, "upscale_method", "h3_latent")),
+        latent_upscale_model: String(directorValue(refineNode, "latent_upscale_model", "")),
+        sampler: String(directorValue(refineNode, "sampler", "")),
+        passes: Number(directorValue(refineNode, "passes", 1)),
+        seed_mode: String(directorValue(refineNode, "seed_mode", "inherit")),
+        aspect_ratio: String(directorValue(refineNode, "aspect_ratio", "")),
+        megapixels: Number(directorValue(refineNode, "megapixels", 0)),
+        sigmas: String(directorValue(refineNode, "sigmas", "")),
+        target_width: Number(directorValue(refineNode, "width", 0)),
+        target_height: Number(directorValue(refineNode, "height", 0)),
+        has_sigmas_tensor: refineInputLinked(refineNode, "sigmas"),
+    };
+    // Only include model keys when actually wired: the backend treats any
+    // non-None value (even false) as "model present", which would flip
+    // refine_sample_model / refine_upscale_model in the fingerprint.
+    if (refineInputLinked(refineNode, "refine_model")) payload.sample_model = true;
+    if (refineInputLinked(refineNode, "upscale_model")) payload.upscale_model = true;
+    return payload;
+}
+
 const CACHE_DIFF_LABELS = {
     seed: "seed",
     prev_chain: "本段沿用旧一采（未在选择范围内）",
@@ -310,6 +345,21 @@ const CACHE_DIFF_LABELS = {
     sigmas_source: "一采 SIGMAS 接线",
     shift_video: "视频 shift",
     shift_audio: "音频 shift",
+    refine: "二采开关",
+    refine_mode: "二采模式",
+    refine_passes: "二采次数",
+    refine_seed_mode: "二采 seed 模式",
+    refine_target: "二采目标尺寸",
+    refine_aspect: "二采长宽比",
+    refine_megapixels: "二采百万像素",
+    refine_upscale_method: "二采放大方式",
+    refine_upscale_model: "二采放大模型接线",
+    refine_latent_upscale_model: "latent 放大模型",
+    refine_sampler: "二采采样器",
+    refine_sigmas: "二采噪声表",
+    refine_sigmas_wired: "二采 SIGMAS 接线",
+    refine_sample_model: "二采模型接线",
+    refine_skip_fl2v: "二采跳过FL2V",
     "<invalid-meta>": "缓存信息损坏",
 };
 
@@ -414,7 +464,10 @@ async function refreshFirstPassCacheStatus(node) {
         const response = await api.fetchApi("/minimax/director/first_pass_cache_status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(cacheStatusPayload(director)),
+            body: JSON.stringify({
+                ...cacheStatusPayload(director),
+                refine: refineStatusPayload(node),
+            }),
         });
         const data = await response.json();
         if (seq !== node._mmxCacheStatusSeq) return;
