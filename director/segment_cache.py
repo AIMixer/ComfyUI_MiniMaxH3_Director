@@ -885,6 +885,9 @@ def inspect_first_pass_cache(
         "cached_count": 0,
         "matched_count": 0,
         "stale_prev_count": 0,
+        "selected_total": 0,
+        "selected_cached": 0,
+        "selected_matched": 0,
         "diff_keys": [],
         "segments": [],
     }
@@ -894,20 +897,19 @@ def inspect_first_pass_cache(
     root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
     all_segments = list(getattr(plan, "segments", None) or [])
     run_indices = getattr(plan, "run_indices", None)
-    if run_indices is None:
-        selected = all_segments
-    else:
-        selected = [
-            all_segments[i]
-            for i in sorted(run_indices)
-            if 0 <= i < len(all_segments)
-        ]
-    result["segment_total"] = len(selected)
+    selected_set = (
+        frozenset(run_indices) if run_indices is not None else None
+    )
+    # Always inspect the WHOLE timeline so unselected segments (which will
+    # reuse old first-pass in「选择运行」partial runs) stay visible; the
+    # selection scope is reported per-row and via selected_* aggregates.
+    result["segment_total"] = len(all_segments)
 
     cached_seeds: set[int] = set()
     all_diffs: set[str] = set()
     rows: list[dict[str, Any]] = []
-    for seg in selected:
+    for seg in all_segments:
+        is_selected = selected_set is None or int(seg.index) in selected_set
         idx = int(seg.index)
         meta_path = root / f"seg_{idx:04d}.pre.meta.json"
         latent_path = root / f"seg_{idx:04d}.pre.av.pt"
@@ -967,6 +969,7 @@ def inspect_first_pass_cache(
                 "exists": cache_exists,
                 "matches": matches,
                 "status": status,
+                "selected": is_selected,
                 "cached_seed": cached_seed,
                 "diff_keys": diff,
                 "error": read_error,
@@ -976,6 +979,10 @@ def inspect_first_pass_cache(
     cached_count = sum(1 for row in rows if row["exists"])
     matched_count = sum(1 for row in rows if row["matches"])
     stale_prev_count = sum(1 for row in rows if row["status"] == "stale_prev")
+    selected_rows = [row for row in rows if row["selected"]]
+    selected_total = len(selected_rows) if selected_set is not None else len(rows)
+    selected_cached = sum(1 for row in selected_rows if row["exists"])
+    selected_matched = sum(1 for row in selected_rows if row["matches"])
     total = len(rows)
     result.update(
         {
@@ -985,6 +992,9 @@ def inspect_first_pass_cache(
             "cached_count": cached_count,
             "matched_count": matched_count,
             "stale_prev_count": stale_prev_count,
+            "selected_total": selected_total,
+            "selected_cached": selected_cached,
+            "selected_matched": selected_matched,
             "diff_keys": sorted(all_diffs),
             "segments": rows,
         }
