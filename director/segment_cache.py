@@ -739,6 +739,38 @@ def load_first_pass_cache(
 _SEG_CACHE_FILE_RE = re.compile(r"^seg_(\d+)\.")
 
 
+def segment_cache_is_current(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+) -> bool:
+    """True when the on-disk final cache for this segment matches its CURRENT
+    fingerprint (i.e. the material is from the same era as the current plan).
+
+    Used as the continuity-pin era guard: a stale-era predecessor latent must
+    never be pinned into a freshly sampled segment (its audio/video tail would
+    leak across eras — the「音频/引导素材卡在旧时代」bug family). Read-only;
+    never creates the cache dir, never raises.
+    """
+    if not node_id:
+        return False
+    try:
+        root = (
+            Path(folder_paths.get_output_directory())
+            / "minimax_seg_cache"
+            / str(node_id)
+        )
+        meta_path = root / f"seg_{int(seg.index):04d}.meta.json"
+        if not meta_path.is_file():
+            return False
+        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not isinstance(stored, dict):
+            return False
+        return stored == segment_cache_fingerprint(seg, plan)
+    except Exception:
+        return False
+
+
 def prune_segment_cache(node_id: str | None, valid_indices) -> None:
     """Remove ``seg_XXXX.*`` files whose index is no longer on the timeline.
 

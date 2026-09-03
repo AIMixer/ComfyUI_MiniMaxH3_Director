@@ -67,6 +67,7 @@ from .segment_cache import (
     prune_segment_cache,
     save_first_pass_cache,
     save_segment_cache,
+    segment_cache_is_current,
 )
 from .segment_mp4_export import (
     copy_segment_mp4_suffix,
@@ -544,6 +545,22 @@ def execute_director_plan_core(
                     "是源视频透传（未采样/无有效缓存），不能作为 motion context。"
                     "请先运行该段，或将其纳入「选择运行」。"
                 )
+            prev_seg = all_segments[prev_idx] if prev_idx >= 0 else None
+            # ── Era guard for continuity pins ────────────────────────────
+            # Pin material may only come from (a) this run's fresh output, or
+            # (b) a disk cache whose fingerprint matches the CURRENT plan.
+            # A stale-era predecessor tail must never be pinned into a fresh
+            # sample — its audio/video would leak across eras (「音频/引导
+            # 素材卡在旧时代」bug family). Export fill is NOT affected: cached
+            # segments keep their own (old) frames + audio in the timeline.
+            prev_fresh = (
+                prev_idx in completed_av_latents
+                or prev_idx in completed_outputs
+            )
+            prev_era_ok = prev_fresh or (
+                prev_seg is not None
+                and segment_cache_is_current(node_id, prev_seg, plan)
+            )
             prev_tail = resolve_prev_segment_output(
                 plan, all_segments, seg.index, completed_outputs, node_id
             )
@@ -552,14 +569,20 @@ def execute_director_plan_core(
             # (resolve_prev may return a cache tensor without storing it).
             if prev_idx >= 0 and prev_tail is not None and prev_idx not in completed_outputs:
                 completed_outputs[prev_idx] = prev_tail
-            prev_seg = all_segments[prev_idx] if prev_idx >= 0 else None
-            prev_av = completed_av_latents.get(prev_idx)
-            if prev_av is None and prev_seg is not None:
-                prev_av = load_segment_av_latent(
-                    node_id, prev_seg, plan, allow_stale=True
+            if not prev_era_ok and prev_seg is not None:
+                log.warning(
+                    "Segment %d: upstream segment %d cache is from an older "
+                    "era; skipping motion-context pin (re-run the upstream "
+                    "segment or include it in「选择运行」to restore continuity).",
+                    seg.index + 1, prev_idx + 1,
                 )
-                if prev_av is not None:
-                    completed_av_latents[prev_idx] = prev_av
+                reports.append(
+                    f"Segment {seg.index + 1}/{timeline_seg_total}: "
+                    f"上游段 #{prev_idx + 1} 缓存为旧时代素材，已跳过段间引导"
+                    "（重跑上游或将其纳入「选择运行」可恢复衔接）"
+                )
+                # Pin skips stale material; export hydration below stays.
+                prev_tail = None
             prev_handoff = completed_av_handoff.get(prev_idx)
             if prev_handoff is None and prev_seg is not None:
                 prev_handoff = load_segment_handoff_meta(
@@ -567,6 +590,17 @@ def execute_director_plan_core(
                 )
                 if prev_handoff is not None:
                     completed_av_handoff[prev_idx] = prev_handoff
+            if prev_era_ok:
+                prev_av = completed_av_latents.get(prev_idx)
+                if prev_av is None and prev_seg is not None:
+                    prev_av = load_segment_av_latent(
+                        node_id, prev_seg, plan, allow_stale=True
+                    )
+                    if prev_av is not None:
+                        completed_av_latents[prev_idx] = prev_av
+            # Audio hydrates for EXPORT regardless of era (cached segments
+            # keep their own old audio in the merged timeline); the PIN
+            # below only consumes it when the era check passed.
             prev_audio = completed_audios.get(prev_idx)
             if prev_audio is None and prev_seg is not None:
                 prev_audio = load_segment_audio(
@@ -574,6 +608,8 @@ def execute_director_plan_core(
                 )
                 if prev_audio is not None:
                     completed_audios[prev_idx] = prev_audio
+            if not prev_era_ok:
+                prev_audio = None  # export keeps completed_audios; pin must not
             if prev_handoff:
                 prev_end_frame = handoff_end_frame(
                     trim_frames=int(prev_handoff.get("trim_frames") or 0),
