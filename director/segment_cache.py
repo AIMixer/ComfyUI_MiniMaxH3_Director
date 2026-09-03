@@ -739,6 +739,76 @@ def load_first_pass_cache(
 _SEG_CACHE_FILE_RE = re.compile(r"^seg_(\d+)\.")
 
 
+def segment_cache_is_current(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+) -> bool:
+    """True when the on-disk final cache for this segment matches its CURRENT
+    fingerprint (i.e. the material is from the same era as the current plan).
+
+    Used as the continuity-pin era guard: a stale-era predecessor latent must
+    never be pinned into a freshly sampled segment (its audio/video tail would
+    leak across eras — the「音频/引导素材卡在旧时代」bug family). Read-only;
+    never creates the cache dir, never raises.
+    """
+    if not node_id:
+        return False
+    try:
+        root = (
+            Path(folder_paths.get_output_directory())
+            / "minimax_seg_cache"
+            / str(node_id)
+        )
+        meta_path = root / f"seg_{int(seg.index):04d}.meta.json"
+        if not meta_path.is_file():
+            return False
+        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not isinstance(stored, dict):
+            return False
+        return stored == segment_cache_fingerprint(seg, plan)
+    except Exception:
+        return False
+
+
+def clear_segment_cache(node_id: str | None, kind: str = "all") -> int:
+    """Delete cached segment files for this Director node.
+
+    ``kind``:
+      - "first_pass": only ``seg_XXXX.pre.*`` files (一采 cache)
+      - "final": everything except ``.pre.*`` (二采/最终渲染 cache:
+        ``.pt`` / ``.meta.json`` / ``.av.pt`` / ``.handoff.json`` / ``.audio.pt``)
+      - "all" (default): both
+
+    Read/delete-only; never creates the cache dir, never raises.
+    Returns the number of files actually removed.
+    """
+    if not node_id:
+        return 0
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    if not root.is_dir():
+        return 0
+    removed = 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+    for path in entries:
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        is_pre = ".pre." in path.name
+        if kind == "first_pass" and not is_pre:
+            continue
+        if kind == "final" and is_pre:
+            continue
+        if _safe_unlink(path):
+            removed += 1
+    return removed
+
+
 def prune_segment_cache(node_id: str | None, valid_indices) -> None:
     """Remove ``seg_XXXX.*`` files whose index is no longer on the timeline.
 
@@ -851,6 +921,11 @@ def inspect_first_pass_cache(
         if getattr(plan, "sample_sigmas_linked", False) and isinstance(stored, dict):
             stored_cmp = {k: v for k, v in stored.items() if k != "sigmas"}
             expected_cmp = {k: v for k, v in expected.items() if k != "sigmas"}
+        if getattr(plan, "_status_seed_external_skip", False):
+            # Seed wired from an external source whose value can't be read at
+            # check time — exclude it instead of false-mismatching.
+            stored_cmp = {k: v for k, v in stored_cmp.items() if k != "seed"}
+            expected_cmp = {k: v for k, v in expected_cmp.items() if k != "seed"}
         matches = bool(cache_exists and isinstance(stored, dict) and stored_cmp == expected_cmp)
         diff = (
             _fingerprint_diff_keys(stored_cmp, expected_cmp)
@@ -886,6 +961,128 @@ def inspect_first_pass_cache(
             "cached_seeds": sorted(cached_seeds),
             "cached_count": cached_count,
             "matched_count": matched_count,
+            "diff_keys": sorted(all_diffs),
+            "segments": rows,
+        }
+    )
+    return result
+
+
+def inspect_final_cache(
+    node_id: str | None,
+    plan: DirectorPlan,
+) -> dict[str, Any]:
+    """Inspect final (二采确认后) cache files without loading tensor payloads.
+
+    Mirrors :func:`inspect_first_pass_cache` but checks ``seg_XXXX.pt`` +
+    ``seg_XXXX.meta.json`` against :func:`segment_cache_fingerprint`
+    (identity + refine settings). No ``stale_prev`` concept here — the final
+    cache is only valid or parameter-changed.
+    """
+    current_seed = int(getattr(plan, "sample_seed", 0) or 0)
+    result: dict[str, Any] = {
+        "exists": False,
+        "matches": False,
+        "current_seed": current_seed,
+        "cached_seeds": [],
+        "segment_total": 0,
+        "cached_count": 0,
+        "matched_count": 0,
+        "stale_prev_count": 0,
+        "selected_total": 0,
+        "selected_cached": 0,
+        "selected_matched": 0,
+        "diff_keys": [],
+        "segments": [],
+    }
+    if not node_id:
+        return result
+
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    all_segments = list(getattr(plan, "segments", None) or [])
+    run_indices = getattr(plan, "run_indices", None)
+    selected_set = (
+        frozenset(run_indices) if run_indices is not None else None
+    )
+    result["segment_total"] = len(all_segments)
+
+    cached_seeds: set[int] = set()
+    all_diffs: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for seg in all_segments:
+        is_selected = selected_set is None or int(seg.index) in selected_set
+        idx = int(seg.index)
+        meta_path = root / f"seg_{idx:04d}.meta.json"
+        frames_path = root / f"seg_{idx:04d}.pt"
+        meta_exists = meta_path.is_file()
+        cache_exists = meta_exists and frames_path.is_file()
+        stored: Any = None
+        read_error = ""
+        if meta_exists:
+            try:
+                stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                read_error = str(exc)
+
+        expected = segment_cache_fingerprint(seg, plan)
+        if getattr(plan, "_status_refine_sigmas_wired", False) and isinstance(stored, dict):
+            # External SIGMAS wiring: the tensor values can't be read from the
+            # status payload, so exclude those keys from the comparison (same
+            # treatment the first-pass inspection gives linked sigmas).
+            strip = {"refine_sigmas", "refine_sigmas_wired"}
+            stored = {k: v for k, v in stored.items() if k not in strip}
+            expected = {k: v for k, v in expected.items() if k not in strip}
+        matches = bool(cache_exists and isinstance(stored, dict) and stored == expected)
+        diff = (
+            _fingerprint_diff_keys(stored, expected)
+            if isinstance(stored, dict)
+            else (["<invalid-meta>"] if meta_exists else ["<missing-cache>"])
+        )
+        if not cache_exists:
+            status = "missing"
+        elif matches:
+            status = "valid"
+        else:
+            status = "mismatch"
+        cached_seed = stored.get("seed") if isinstance(stored, dict) else None
+        try:
+            if cached_seed is not None:
+                cached_seed = int(cached_seed)
+                cached_seeds.add(cached_seed)
+        except (TypeError, ValueError):
+            cached_seed = None
+        all_diffs.update(diff)
+        rows.append(
+            {
+                "segment": idx + 1,
+                "exists": cache_exists,
+                "matches": matches,
+                "status": status,
+                "selected": is_selected,
+                "cached_seed": cached_seed,
+                "diff_keys": diff,
+                "error": read_error,
+            }
+        )
+
+    cached_count = sum(1 for row in rows if row["exists"])
+    matched_count = sum(1 for row in rows if row["matches"])
+    selected_rows = [row for row in rows if row["selected"]]
+    selected_total = len(selected_rows) if selected_set is not None else len(rows)
+    selected_cached = sum(1 for row in selected_rows if row["exists"])
+    selected_matched = sum(1 for row in selected_rows if row["matches"])
+    total = len(rows)
+    result.update(
+        {
+            "exists": cached_count > 0,
+            "matches": total > 0 and matched_count == total,
+            "cached_seeds": sorted(cached_seeds),
+            "cached_count": cached_count,
+            "matched_count": matched_count,
+            "stale_prev_count": 0,
+            "selected_total": selected_total,
+            "selected_cached": selected_cached,
+            "selected_matched": selected_matched,
             "diff_keys": sorted(all_diffs),
             "segments": rows,
         }

@@ -255,12 +255,45 @@ function directorHasSigmasLink(node) {
     return Array.isArray(inp.links) && inp.links.length > 0;
 }
 
+// Seed may be typed on the Director's own widget OR wired in from an external
+// node (PrimitiveNode / seed generator). The status payload must reflect the
+// value the run will actually use: resolve the input link's origin widget.
+// Unresolvable (e.g. random-at-runtime source) → null + external flag; the
+// backend then skips the seed comparison so the panel never shows a false ≠.
+function resolveDirectorSeed(director) {
+    const w = widgetByName(director, "seed");
+    const graph = director?.graph ?? app.graph ?? app.canvas?.graph;
+    const inp = (director?.inputs || []).find((i) => String(i.name) === "seed");
+    let link = null;
+    if (inp?.link != null) {
+        link = graph?.links?.[inp.link] ?? graph?._links?.[inp.link] ?? null;
+    }
+    if (!link) {
+        return { value: w ? Number(widgetValue(w)) : null, external: false };
+    }
+    const nodes = graph?._nodes ?? graph?.nodes ?? [];
+    const src = nodes.find((n) => String(n.id) === String(link.origin_id));
+    if (src) {
+        const candidates = [
+            widgetByName(src, "seed"),
+            widgetByName(src, "value"),
+            ...(src.widgets || []),
+        ].filter(Boolean);
+        for (const cand of candidates) {
+            const v = Number(widgetValue(cand));
+            if (Number.isFinite(v)) return { value: v, external: true };
+        }
+    }
+    return { value: null, external: true };
+}
+
 function cacheStatusPayload(director) {
     try {
         director?._minimaxEditor?._writeTimelineWidget?.();
     } catch {
         /* best effort */
     }
+    const seedInfo = resolveDirectorSeed(director);
     return {
         node_id: String(director.id),
         timeline_data: String(directorValue(director, "timeline_data", "")),
@@ -271,7 +304,8 @@ function cacheStatusPayload(director) {
         width: Number(directorValue(director, "width", 864)),
         height: Number(directorValue(director, "height", 480)),
         ref_max_size: Number(directorValue(director, "ref_max_size", 864)),
-        seed: Number(directorValue(director, "seed", 0)),
+        seed: Number.isFinite(seedInfo.value) ? seedInfo.value : null,
+        seed_external: seedInfo.external,
         cfg: Number(directorValue(director, "cfg", 1)),
         steps: Number(directorValue(director, "steps", 25)),
         sampler: String(directorValue(director, "sampler", "")),
@@ -280,6 +314,158 @@ function cacheStatusPayload(director) {
         shift_audio: Number(directorValue(director, "shift_audio", 3)),
         sigmas_linked: directorHasSigmasLink(director),
     };
+}
+
+function refineInputLinked(node, name) {
+    const inp = (node?.inputs || []).find((i) => String(i.name) === name);
+    if (!inp) return false;
+    if (inp.link != null) return true;
+    return Array.isArray(inp.links) && inp.links.length > 0;
+}
+
+// Refine widgets + input-link presence, so the backend can rebuild the SAME
+// refine fingerprint the executor wrote into seg_XXXX.meta.json. Without this
+// the 二采 status block compares real cached metas against a "refine off"
+// fingerprint and every segment shows ≠.
+function refineStatusPayload(refineNode) {
+    const payload = {
+        enabled: true,
+        mode: String(directorValue(refineNode, "mode", "refine")),
+        upscale_method: String(directorValue(refineNode, "upscale_method", "h3_latent")),
+        latent_upscale_model: String(directorValue(refineNode, "latent_upscale_model", "")),
+        sampler: String(directorValue(refineNode, "sampler", "")),
+        passes: Number(directorValue(refineNode, "passes", 1)),
+        seed_mode: String(directorValue(refineNode, "seed_mode", "inherit")),
+        aspect_ratio: String(directorValue(refineNode, "aspect_ratio", "")),
+        megapixels: Number(directorValue(refineNode, "megapixels", 0)),
+        sigmas: String(directorValue(refineNode, "sigmas", "")),
+        target_width: Number(directorValue(refineNode, "width", 0)),
+        target_height: Number(directorValue(refineNode, "height", 0)),
+        skip_fl2v: boolWidgetValue(refineNode, "skip_fl2v"),
+        has_sigmas_tensor: refineInputLinked(refineNode, "sigmas"),
+    };
+    // Only include model keys when actually wired: the backend treats any
+    // non-None value (even false) as "model present", which would flip
+    // refine_sample_model / refine_upscale_model in the fingerprint.
+    if (refineInputLinked(refineNode, "refine_model")) payload.sample_model = true;
+    if (refineInputLinked(refineNode, "upscale_model")) payload.upscale_model = true;
+    return payload;
+}
+
+const CACHE_DIFF_LABELS = {
+    seed: "seed",
+    prev_chain: "本段沿用旧一采（未在选择范围内）",
+    start: "片段起点",
+    end: "片段终点（时间范围变化）",
+    prompt: "提示词",
+    negative: "反向提示词",
+    task_key: "生成模式",
+    width: "宽度",
+    height: "高度",
+    frame_rate: "帧率",
+    output_mode: "输出模式",
+    refs: "参考图片",
+    ref_audios: "参考音频",
+    ref_videos: "参考视频",
+    ref_video: "参考视频",
+    ref_video_start: "参考视频起点",
+    source_video: "源视频",
+    continuity: "段间连续性",
+    continuity_overlap: "上下文帧数",
+    cfg: "CFG",
+    steps: "一采步数",
+    sampler: "一采采样器",
+    scheduler: "调度器",
+    sigmas: "一采噪声表",
+    sigmas_source: "一采 SIGMAS 接线",
+    shift_video: "视频 shift",
+    shift_audio: "音频 shift",
+    refine: "二采开关",
+    refine_mode: "二采模式",
+    refine_passes: "二采次数",
+    refine_seed_mode: "二采 seed 模式",
+    refine_target: "二采目标尺寸",
+    refine_aspect: "二采长宽比",
+    refine_megapixels: "二采百万像素",
+    refine_upscale_method: "二采放大方式",
+    refine_upscale_model: "二采放大模型接线",
+    refine_latent_upscale_model: "latent 放大模型",
+    refine_sampler: "二采采样器",
+    refine_sigmas: "二采噪声表",
+    refine_sigmas_wired: "二采 SIGMAS 接线",
+    refine_sample_model: "二采模型接线",
+    refine_skip_fl2v: "二采跳过FL2V",
+    "<invalid-meta>": "缓存信息损坏",
+};
+
+function cacheStatusLine(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div;
+}
+
+function buildCacheSection(data, label, clearButton, showSelection = true) {
+    const frag = document.createDocumentFragment();
+    const total = Number(data?.segment_total || 0);
+    const cached = Number(data?.cached_count || 0);
+    const matched = Number(data?.matched_count || 0);
+    const seeds = Array.isArray(data?.cached_seeds) && data.cached_seeds.length
+        ? data.cached_seeds.join(", ")
+        : "—";
+    const diffs = Array.isArray(data?.diff_keys)
+        ? data.diff_keys
+            .filter((key) => key !== "<missing-cache>")
+            .slice(0, 8)
+            .map((key) => CACHE_DIFF_LABELS[key] || key)
+        : [];
+    const stalePrev = Number(data?.stale_prev_count || 0);
+    const selTotal = data?.selected_total;
+    const selMatched = data?.selected_matched;
+    const selActive = Number.isFinite(selTotal) && Number(selTotal) !== total;
+    frag.append(cacheStatusLine(
+        `${label}缓存：${data?.exists ? `存在（${cached}/${total} 段）` : "不存在"}`,
+    ));
+    frag.append(cacheStatusLine(
+        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`
+            + (selActive ? ` · 选中 ${selMatched ?? 0}/${selTotal ?? 0}` : ""),
+    ));
+    if (stalePrev > 0) {
+        frag.append(cacheStatusLine(`仅运行选择片段：其余 ${stalePrev}/${total} 段沿用旧一采，拼接处可能不衔接`));
+    }
+    const segs = Array.isArray(data?.segments) ? data.segments : [];
+    if (segs.length) {
+        const marks = segs
+            .map((s) => (
+                (showSelection && s.selected === false ? "○" : "")
+                    + (s.status === "valid" ? "✓"
+                        : s.status === "stale_prev" ? "△"
+                            : s.status === "missing" ? "✕"
+                                : "≠")
+            ))
+            .join(" ");
+        const legend = showSelection
+            ? "✓有效 △沿用旧缓存 ✕缺失 ≠参数已变 ○未选择"
+            : "✓有效 ✕缺失 ≠参数已变";
+        frag.append(cacheStatusLine(`逐段：${marks}（${legend}）`));
+    }
+    frag.append(cacheStatusLine(`缓存 seed：${seeds}`));
+    const seedRow = document.createElement("div");
+    seedRow.style.cssText = "display:flex;align-items:center;gap:8px";
+    const seedText = document.createElement("span");
+    // Resolved (widget or external source) → plain number, no origin label.
+    // Only the unresolvable-runtime-source case gets a marker to explain "—".
+    const extNote = data?.current_seed == null && data?.current_seed_external
+        ? "（外部输入）"
+        : "";
+    seedText.textContent = `当前 seed：${data?.current_seed ?? "—"}${extNote}`;
+    seedRow.append(seedText);
+    if (clearButton) {
+        clearButton.style.marginLeft = "auto";
+        seedRow.append(clearButton);
+    }
+    frag.append(seedRow);
+    if (diffs.length) frag.append(cacheStatusLine(`差异：${diffs.join(", ")}`));
+    return frag;
 }
 
 function renderCacheStatus(node, data, kind = "normal") {
@@ -293,59 +479,18 @@ function renderCacheStatus(node, data, kind = "normal") {
         muted: "#aaa",
     };
     ui.body.style.color = colors[kind] || colors.normal;
+    ui.body.replaceChildren();
     if (typeof data === "string") {
-        ui.body.textContent = data;
+        ui.body.append(cacheStatusLine(data));
         return;
     }
-    const total = Number(data?.segment_total || 0);
-    const cached = Number(data?.cached_count || 0);
-    const matched = Number(data?.matched_count || 0);
-    const seeds = Array.isArray(data?.cached_seeds) && data.cached_seeds.length
-        ? data.cached_seeds.join(", ")
-        : "—";
-    const diffLabels = {
-        seed: "seed",
-        start: "片段起点",
-        end: "片段终点（时间范围变化）",
-        prompt: "提示词",
-        negative: "反向提示词",
-        task_key: "生成模式",
-        width: "宽度",
-        height: "高度",
-        frame_rate: "帧率",
-        output_mode: "输出模式",
-        refs: "参考图片",
-        ref_audios: "参考音频",
-        ref_videos: "参考视频",
-        ref_video: "参考视频",
-        ref_video_start: "参考视频起点",
-        source_video: "源视频",
-        continuity: "段间连续性",
-        continuity_overlap: "上下文帧数",
-        cfg: "CFG",
-        steps: "一采步数",
-        sampler: "一采采样器",
-        scheduler: "调度器",
-        sigmas: "一采噪声表",
-        sigmas_source: "一采 SIGMAS 接线",
-        shift_video: "视频 shift",
-        shift_audio: "音频 shift",
-        "<invalid-meta>": "缓存信息损坏",
-    };
-    const diffs = Array.isArray(data?.diff_keys)
-        ? data.diff_keys
-            .filter((key) => key !== "<missing-cache>")
-            .slice(0, 8)
-            .map((key) => diffLabels[key] || key)
-        : [];
-    const lines = [
-        `一采缓存：${data?.exists ? `存在（${cached}/${total} 段）` : "不存在"}`,
-        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`,
-        `缓存 seed：${seeds}`,
-        `当前 seed：${data?.current_seed ?? "—"}`,
-    ];
-    if (diffs.length) lines.push(`差异：${diffs.join(", ")}`);
-    ui.body.textContent = lines.join("\n");
+    const spacer = document.createElement("div");
+    spacer.textContent = "\u00A0"; // empty divs collapse to 0 height
+    ui.body.append(
+        buildCacheSection(data, "一采", ui.clearFirstPassBtn),
+        spacer,
+        buildCacheSection(data?.final, "二采", ui.clearFinalBtn, false),
+    );
 }
 
 async function refreshFirstPassCacheStatus(node) {
@@ -363,7 +508,10 @@ async function refreshFirstPassCacheStatus(node) {
         const response = await api.fetchApi("/minimax/director/first_pass_cache_status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(cacheStatusPayload(director)),
+            body: JSON.stringify({
+                ...cacheStatusPayload(director),
+                refine: refineStatusPayload(node),
+            }),
         });
         const data = await response.json();
         if (seq !== node._mmxCacheStatusSeq) return;
@@ -374,6 +522,38 @@ async function refreshFirstPassCacheStatus(node) {
     } catch (error) {
         if (seq !== node._mmxCacheStatusSeq) return;
         renderCacheStatus(node, `缓存检查失败：${error?.message || error}`, "error");
+    }
+}
+
+async function clearSegmentCache(node, kind) {
+    const director = connectedDirector(node);
+    if (!director) {
+        renderCacheStatus(node, "未找到相连的 MiniMax H3 Director。", "warn");
+        return;
+    }
+    const labels = {
+        first_pass: "一采缓存",
+        final: "二采缓存",
+    };
+    const label = labels[kind] || "缓存";
+    if (!window.confirm(`确定要清空这个节点的${label}吗？清空后对应内容需要重新生成。`)) {
+        return;
+    }
+    renderCacheStatus(node, `正在清空${label}…`, "muted");
+    try {
+        const response = await api.fetchApi("/minimax/director/clear_segment_cache", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ node_id: String(director.id), kind }),
+        });
+        const data = await response.json();
+        if (!response.ok || data?.error) {
+            throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+        renderCacheStatus(node, `${label}已清空（删除 ${data.removed} 个文件）。`, "ok");
+        scheduleCacheStatusRefresh(node, 200);
+    } catch (error) {
+        renderCacheStatus(node, `清空${label}失败：${error?.message || error}`, "error");
     }
 }
 
@@ -409,7 +589,7 @@ function ensureFirstPassCacheUI(node) {
     const header = document.createElement("div");
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:5px";
     const title = document.createElement("strong");
-    title.textContent = "一采缓存状态";
+    title.textContent = "分段缓存状态";
     const refresh = document.createElement("button");
     refresh.type = "button";
     refresh.textContent = "重新检查";
@@ -425,19 +605,35 @@ function ensureFirstPassCacheUI(node) {
     for (const eventName of ["pointerdown", "mousedown", "click"]) {
         body.addEventListener(eventName, (event) => event.stopPropagation());
     }
+    const makeClearButton = (text, kind) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = text;
+        btn.style.cssText = "padding:1px 8px;cursor:pointer;font:11px/1.3 sans-serif";
+        btn.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            clearSegmentCache(node, kind);
+        });
+        return btn;
+    };
+    const clearFirstPassBtn = makeClearButton("清理一采缓存", "first_pass");
+    const clearFinalBtn = makeClearButton("清理二采缓存", "final");
     header.append(title, refresh);
     root.append(header, body);
     const widget = node.addDOMWidget(CACHE_STATUS_WIDGET, "cache_status", root, {
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => 104,
+        getMinHeight: () => 210,
         hideOnZoom: false,
     });
     // Status is derived UI, not a positional backend widget value.
     widget.serialize = false;
     if (!widget.options) widget.options = {};
     widget.options.serialize = false;
-    node._mmxFirstPassCacheUI = { root, body, refresh, widget };
+    node._mmxFirstPassCacheUI = {
+        root, body, refresh, widget, clearFirstPassBtn, clearFinalBtn,
+    };
 }
 function syncRefineWidgetVisibility(node) {
     const mode = readMode(node);

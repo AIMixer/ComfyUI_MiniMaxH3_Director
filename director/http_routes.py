@@ -551,13 +551,69 @@ async def minimax_first_pass_cache_status(request):
         plan.sample_sigmas_linked = bool(body.get("sigmas_linked"))
         plan.sample_shift_video = float(body.get("shift_video") or 12.0)
         plan.sample_shift_audio = float(body.get("shift_audio") or 3.0)
-        return web.json_response(inspect_first_pass_cache(node_id, plan))
+        # Seed may be wired into the Director from an external node. When the
+        # frontend cannot resolve a concrete value, skip the seed comparison
+        # instead of comparing against a stale widget number.
+        seed_external = bool(body.get("seed_external"))
+        seed_display: int | None
+        if "seed" in body and body.get("seed") is None and seed_external:
+            plan.sample_seed = 0
+            plan._status_seed_external_skip = True
+            seed_display = None
+        else:
+            plan.sample_seed = int(body.get("seed") or 0)
+            seed_display = int(body.get("seed") or 0)
+        refine_raw = body.get("refine")
+        if isinstance(refine_raw, dict) and refine_raw:
+            # Rebuild the same refine pack the executor attached when the
+            # final cache was written, so inspect_final_cache compares
+            # against the real refine fingerprint instead of "refine off".
+            from .refine_pack import normalize_refine_pack
+
+            plan.refine = normalize_refine_pack(
+                {**refine_raw, "enabled": True},
+                base_width=int(body.get("width") or 864),
+                base_height=int(body.get("height") or 480),
+            )
+            plan._status_refine_sigmas_wired = bool(refine_raw.get("has_sigmas_tensor"))
+        from .segment_cache import inspect_final_cache
+
+        payload = inspect_first_pass_cache(node_id, plan)
+        payload["current_seed"] = seed_display
+        payload["current_seed_external"] = seed_external
+        payload["final"] = inspect_final_cache(node_id, plan)
+        return web.json_response(payload)
     except Exception as exc:
         log.warning("MiniMax H3 Director first-pass cache inspection failed: %s", exc)
         return web.json_response(
             {"exists": False, "matches": False, "error": str(exc)},
             status=400,
         )
+
+
+async def minimax_clear_segment_cache(request):
+    """Delete cached segment files for a Director node (一采 / 二采 / all)."""
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return web.Response(status=400, text=f"Invalid JSON: {exc}")
+
+    node_id = str(body.get("node_id") or "").strip()
+    if not re.fullmatch(r"\d+", node_id):
+        return web.Response(status=400, text="Invalid Director node id.")
+
+    kind = str(body.get("kind") or "all").strip().lower()
+    if kind not in {"first_pass", "final", "all"}:
+        return web.Response(status=400, text="kind must be first_pass, final or all.")
+
+    try:
+        from .segment_cache import clear_segment_cache
+
+        removed = clear_segment_cache(node_id, kind=kind)
+        return web.json_response({"removed": removed, "kind": kind})
+    except Exception as exc:
+        log.warning("MiniMax H3 Director clear segment cache failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
 
 
 def _register_route(routes, method: str, path: str, handler) -> None:
@@ -605,6 +661,12 @@ def register_routes() -> bool:
         "POST",
         "/minimax/director/first_pass_cache_status",
         minimax_first_pass_cache_status,
+    )
+    _register_route(
+        routes,
+        "POST",
+        "/minimax/director/clear_segment_cache",
+        minimax_clear_segment_cache,
     )
     from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
 
