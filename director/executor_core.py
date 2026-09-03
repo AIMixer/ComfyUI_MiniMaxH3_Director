@@ -464,6 +464,12 @@ def execute_director_plan_core(
     completed_pre_refine: dict[int, torch.Tensor] = {}
     completed_refine_passes: dict[int, list[tuple[str, torch.Tensor]]] = {}
     completed_av_latents: dict[int, dict] = {}
+    # Segments actually executed by _run_one_segment in THIS execution.
+    # Unlike completed_outputs / completed_av_latents (which the export fill
+    # branch also writes with cached — possibly stale — material), this set
+    # only grows on real sampling execution, so the continuity warning can
+    # distinguish "fresh this run" from "hydrated from an older cache".
+    resampled_this_run: set[int] = set()
     completed_av_handoff: dict[int, dict] = {}
     completed_audios: dict[int, dict] = {}
     held_for_confirmation = False
@@ -546,26 +552,20 @@ def execute_director_plan_core(
                     "请先运行该段，或将其纳入「选择运行」。"
                 )
             prev_seg = all_segments[prev_idx] if prev_idx >= 0 else None
-            # ── Era guard for continuity pins ────────────────────────────
-            # Pin material may only come from (a) this run's fresh output, or
-            # (b) a disk cache whose fingerprint matches the CURRENT plan.
-            # A stale-era predecessor tail must never be pinned into a fresh
-            # sample — its audio/video would leak across eras (「音频/引导
-            # 素材卡在旧时代」bug family). Export fill is NOT affected: cached
-            # segments keep their own (old) frames + audio in the timeline.
-            prev_fresh = (
-                prev_idx in completed_av_latents
-                or prev_idx in completed_outputs
-            )
-            prev_era_ok = prev_fresh or (
-                prev_seg is not None
-                and segment_cache_is_current(node_id, prev_seg, plan)
-            )
+            # ── Continuity pin sourcing ──────────────────────────────────
+            # Pin material comes from this run's freshly executed prev
+            # (``resampled_this_run``), or — when prev was not executed this
+            # run — from its disk cache. Pinning that cached prev is
+            # INTENTIONAL: the merged timeline shows exactly that cached prev,
+            # so the seam stays consistent (「选择运行」partial re-roll keeps
+            # its continuity preview). We only WARN when the cached prev's
+            # fingerprint no longer matches the current plan, so the user
+            # knows the guidance is from an older parameter era.
+            prev_resampled = prev_idx in resampled_this_run
             try:
                 prev_tail = resolve_prev_segment_output(
                     plan, all_segments, seg.index, completed_outputs, node_id
                 )
-                prev_missing = False
             except ValueError as exc:
                 # No usable prev material at all (e.g. partial re-run where the
                 # upstream segment has never been rendered): degrade to
@@ -581,26 +581,11 @@ def execute_director_plan_core(
                     "（重跑上一段或将其纳入「选择运行」可恢复衔接）"
                 )
                 prev_tail = None
-                prev_missing = True
             # Hydrate prev into completed_* so phase-align trim can rewrite
             # in-memory exports + disk cache even on「分段导出」/ partial re-run
             # (resolve_prev may return a cache tensor without storing it).
             if prev_idx >= 0 and prev_tail is not None and prev_idx not in completed_outputs:
                 completed_outputs[prev_idx] = prev_tail
-            if not prev_era_ok and prev_seg is not None and not prev_missing:
-                log.warning(
-                    "Segment %d: upstream segment %d cache is from an older "
-                    "era; skipping motion-context pin (re-run the upstream "
-                    "segment or include it in「选择运行」to restore continuity).",
-                    seg.index + 1, prev_idx + 1,
-                )
-                reports.append(
-                    f"Segment {seg.index + 1}/{timeline_seg_total}: "
-                    f"上一段 #{prev_idx + 1} 缓存已过期（与当前参数不符），"
-                    "已跳过段间引导（重跑上一段或将其纳入「选择运行」可恢复衔接）"
-                )
-                # Pin skips stale material; export hydration below stays.
-                prev_tail = None
             prev_handoff = completed_av_handoff.get(prev_idx)
             if prev_handoff is None and prev_seg is not None:
                 prev_handoff = load_segment_handoff_meta(
@@ -608,17 +593,13 @@ def execute_director_plan_core(
                 )
                 if prev_handoff is not None:
                     completed_av_handoff[prev_idx] = prev_handoff
-            if prev_era_ok:
-                prev_av = completed_av_latents.get(prev_idx)
-                if prev_av is None and prev_seg is not None:
-                    prev_av = load_segment_av_latent(
-                        node_id, prev_seg, plan, allow_stale=True
-                    )
-                    if prev_av is not None:
-                        completed_av_latents[prev_idx] = prev_av
-            # Audio hydrates for EXPORT regardless of era (cached segments
-            # keep their own old audio in the merged timeline); the PIN
-            # below only consumes it when the era check passed.
+            prev_av = completed_av_latents.get(prev_idx)
+            if prev_av is None and prev_seg is not None:
+                prev_av = load_segment_av_latent(
+                    node_id, prev_seg, plan, allow_stale=True
+                )
+                if prev_av is not None:
+                    completed_av_latents[prev_idx] = prev_av
             prev_audio = completed_audios.get(prev_idx)
             if prev_audio is None and prev_seg is not None:
                 prev_audio = load_segment_audio(
@@ -626,8 +607,23 @@ def execute_director_plan_core(
                 )
                 if prev_audio is not None:
                     completed_audios[prev_idx] = prev_audio
-            if not prev_era_ok:
-                prev_audio = None  # export keeps completed_audios; pin must not
+            if (
+                prev_seg is not None
+                and not prev_resampled
+                and (prev_av is not None or prev_tail is not None)
+                and not segment_cache_is_current(node_id, prev_seg, plan)
+            ):
+                log.info(
+                    "Segment %d: motion-context pin comes from upstream "
+                    "segment %d's cached render, whose fingerprint no longer "
+                    "matches the current plan.",
+                    seg.index + 1, prev_idx + 1,
+                )
+                reports.append(
+                    f"Segment {seg.index + 1}/{timeline_seg_total}: "
+                    f"引导来自上一段 #{prev_idx + 1} 的旧缓存"
+                    "（与当前参数不符；重跑上一段可获得一致衔接）"
+                )
             if prev_handoff:
                 prev_end_frame = handoff_end_frame(
                     trim_frames=int(prev_handoff.get("trim_frames") or 0),
@@ -1320,6 +1316,7 @@ def execute_director_plan_core(
             segment_outputs.append(chunk)
             segment_pre_refine.append(pre_chunk)
             segment_audios.append(audio_dict or {})
+            resampled_this_run.add(seg.index)
             if plan.export_mode == "all":
                 output_chunks.append(chunk)
                 output_pre_chunks.append(pre_chunk)
