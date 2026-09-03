@@ -305,7 +305,7 @@ function renderCacheStatus(node, data, kind = "normal") {
         : "—";
     const diffLabels = {
         seed: "seed",
-        prev_chain: "上游段已重抽（本段沿用旧一采）",
+        prev_chain: "前序段已更新（本段沿用旧一采）",
         start: "片段起点",
         end: "片段终点（时间范围变化）",
         prompt: "提示词",
@@ -345,7 +345,7 @@ function renderCacheStatus(node, data, kind = "normal") {
         `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`,
     ];
     if (stalePrev > 0) {
-        lines.push(`沿用旧缓存：${stalePrev}/${total} 段（上游已重抽，拼接处可能不衔接）`);
+        lines.push(`沿用旧缓存：${stalePrev}/${total} 段（前序段已更新，拼接处可能不衔接）`);
     }
     const segs = Array.isArray(data?.segments) ? data.segments : [];
     if (segs.length) {
