@@ -551,6 +551,18 @@ async def minimax_first_pass_cache_status(request):
         plan.sample_sigmas_linked = bool(body.get("sigmas_linked"))
         plan.sample_shift_video = float(body.get("shift_video") or 12.0)
         plan.sample_shift_audio = float(body.get("shift_audio") or 3.0)
+        # Seed may be wired into the Director from an external node. When the
+        # frontend cannot resolve a concrete value, skip the seed comparison
+        # instead of comparing against a stale widget number.
+        seed_external = bool(body.get("seed_external"))
+        seed_display: int | None
+        if "seed" in body and body.get("seed") is None and seed_external:
+            plan.sample_seed = 0
+            plan._status_seed_external_skip = True
+            seed_display = None
+        else:
+            plan.sample_seed = int(body.get("seed") or 0)
+            seed_display = int(body.get("seed") or 0)
         refine_raw = body.get("refine")
         if isinstance(refine_raw, dict) and refine_raw:
             # Rebuild the same refine pack the executor attached when the
@@ -567,6 +579,8 @@ async def minimax_first_pass_cache_status(request):
         from .segment_cache import inspect_final_cache
 
         payload = inspect_first_pass_cache(node_id, plan)
+        payload["current_seed"] = seed_display
+        payload["current_seed_external"] = seed_external
         payload["final"] = inspect_final_cache(node_id, plan)
         return web.json_response(payload)
     except Exception as exc:

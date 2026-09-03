@@ -255,12 +255,45 @@ function directorHasSigmasLink(node) {
     return Array.isArray(inp.links) && inp.links.length > 0;
 }
 
+// Seed may be typed on the Director's own widget OR wired in from an external
+// node (PrimitiveNode / seed generator). The status payload must reflect the
+// value the run will actually use: resolve the input link's origin widget.
+// Unresolvable (e.g. random-at-runtime source) → null + external flag; the
+// backend then skips the seed comparison so the panel never shows a false ≠.
+function resolveDirectorSeed(director) {
+    const w = widgetByName(director, "seed");
+    const graph = director?.graph ?? app.graph ?? app.canvas?.graph;
+    const inp = (director?.inputs || []).find((i) => String(i.name) === "seed");
+    let link = null;
+    if (inp?.link != null) {
+        link = graph?.links?.[inp.link] ?? graph?._links?.[inp.link] ?? null;
+    }
+    if (!link) {
+        return { value: w ? Number(widgetValue(w)) : null, external: false };
+    }
+    const nodes = graph?._nodes ?? graph?.nodes ?? [];
+    const src = nodes.find((n) => String(n.id) === String(link.origin_id));
+    if (src) {
+        const candidates = [
+            widgetByName(src, "seed"),
+            widgetByName(src, "value"),
+            ...(src.widgets || []),
+        ].filter(Boolean);
+        for (const cand of candidates) {
+            const v = Number(widgetValue(cand));
+            if (Number.isFinite(v)) return { value: v, external: true };
+        }
+    }
+    return { value: null, external: true };
+}
+
 function cacheStatusPayload(director) {
     try {
         director?._minimaxEditor?._writeTimelineWidget?.();
     } catch {
         /* best effort */
     }
+    const seedInfo = resolveDirectorSeed(director);
     return {
         node_id: String(director.id),
         timeline_data: String(directorValue(director, "timeline_data", "")),
@@ -271,7 +304,8 @@ function cacheStatusPayload(director) {
         width: Number(directorValue(director, "width", 864)),
         height: Number(directorValue(director, "height", 480)),
         ref_max_size: Number(directorValue(director, "ref_max_size", 864)),
-        seed: Number(directorValue(director, "seed", 0)),
+        seed: Number.isFinite(seedInfo.value) ? seedInfo.value : null,
+        seed_external: seedInfo.external,
         cfg: Number(directorValue(director, "cfg", 1)),
         steps: Number(directorValue(director, "steps", 25)),
         sampler: String(directorValue(director, "sampler", "")),
@@ -418,7 +452,8 @@ function buildCacheSection(data, label, clearButton, showSelection = true) {
     const seedRow = document.createElement("div");
     seedRow.style.cssText = "display:flex;align-items:center;gap:8px";
     const seedText = document.createElement("span");
-    seedText.textContent = `当前 seed：${data?.current_seed ?? "—"}`;
+    const seedExt = data?.current_seed_external ? "（外部输入）" : "";
+    seedText.textContent = `当前 seed：${data?.current_seed ?? "—"}${seedExt}`;
     seedRow.append(seedText);
     if (clearButton) {
         clearButton.style.marginLeft = "auto";

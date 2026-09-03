@@ -921,6 +921,11 @@ def inspect_first_pass_cache(
         if getattr(plan, "sample_sigmas_linked", False) and isinstance(stored, dict):
             stored_cmp = {k: v for k, v in stored.items() if k != "sigmas"}
             expected_cmp = {k: v for k, v in expected.items() if k != "sigmas"}
+        if getattr(plan, "_status_seed_external_skip", False):
+            # Seed wired from an external source whose value can't be read at
+            # check time — exclude it instead of false-mismatching.
+            stored_cmp = {k: v for k, v in stored_cmp.items() if k != "seed"}
+            expected_cmp = {k: v for k, v in expected_cmp.items() if k != "seed"}
         matches = bool(cache_exists and isinstance(stored, dict) and stored_cmp == expected_cmp)
         diff = (
             _fingerprint_diff_keys(stored_cmp, expected_cmp)
