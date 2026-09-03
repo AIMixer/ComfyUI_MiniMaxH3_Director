@@ -282,6 +282,99 @@ function cacheStatusPayload(director) {
     };
 }
 
+const CACHE_DIFF_LABELS = {
+    seed: "seed",
+    prev_chain: "本段沿用旧一采（未在选择范围内）",
+    start: "片段起点",
+    end: "片段终点（时间范围变化）",
+    prompt: "提示词",
+    negative: "反向提示词",
+    task_key: "生成模式",
+    width: "宽度",
+    height: "高度",
+    frame_rate: "帧率",
+    output_mode: "输出模式",
+    refs: "参考图片",
+    ref_audios: "参考音频",
+    ref_videos: "参考视频",
+    ref_video: "参考视频",
+    ref_video_start: "参考视频起点",
+    source_video: "源视频",
+    continuity: "段间连续性",
+    continuity_overlap: "上下文帧数",
+    cfg: "CFG",
+    steps: "一采步数",
+    sampler: "一采采样器",
+    scheduler: "调度器",
+    sigmas: "一采噪声表",
+    sigmas_source: "一采 SIGMAS 接线",
+    shift_video: "视频 shift",
+    shift_audio: "音频 shift",
+    "<invalid-meta>": "缓存信息损坏",
+};
+
+function cacheStatusLine(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div;
+}
+
+function buildCacheSection(data, label, clearButton) {
+    const frag = document.createDocumentFragment();
+    const total = Number(data?.segment_total || 0);
+    const cached = Number(data?.cached_count || 0);
+    const matched = Number(data?.matched_count || 0);
+    const seeds = Array.isArray(data?.cached_seeds) && data.cached_seeds.length
+        ? data.cached_seeds.join(", ")
+        : "—";
+    const diffs = Array.isArray(data?.diff_keys)
+        ? data.diff_keys
+            .filter((key) => key !== "<missing-cache>")
+            .slice(0, 8)
+            .map((key) => CACHE_DIFF_LABELS[key] || key)
+        : [];
+    const stalePrev = Number(data?.stale_prev_count || 0);
+    const selTotal = data?.selected_total;
+    const selMatched = data?.selected_matched;
+    const selActive = Number.isFinite(selTotal) && Number(selTotal) !== total;
+    frag.append(cacheStatusLine(
+        `${label}缓存：${data?.exists ? `存在（${cached}/${total} 段）` : "不存在"}`,
+    ));
+    frag.append(cacheStatusLine(
+        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`
+            + (selActive ? ` · 选中 ${selMatched ?? 0}/${selTotal ?? 0}` : ""),
+    ));
+    if (stalePrev > 0) {
+        frag.append(cacheStatusLine(`仅运行选择片段：其余 ${stalePrev}/${total} 段沿用旧一采，拼接处可能不衔接`));
+    }
+    const segs = Array.isArray(data?.segments) ? data.segments : [];
+    if (segs.length) {
+        const marks = segs
+            .map((s) => (
+                (s.selected === false ? "○" : "")
+                    + (s.status === "valid" ? "✓"
+                        : s.status === "stale_prev" ? "△"
+                            : s.status === "missing" ? "✕"
+                                : "≠")
+            ))
+            .join(" ");
+        frag.append(cacheStatusLine(`逐段：${marks}（✓有效 △沿用旧缓存 ✕缺失 ≠参数已变 ○未选择）`));
+    }
+    frag.append(cacheStatusLine(`缓存 seed：${seeds}`));
+    const seedRow = document.createElement("div");
+    seedRow.style.cssText = "display:flex;align-items:center;gap:8px";
+    const seedText = document.createElement("span");
+    seedText.textContent = `当前 seed：${data?.current_seed ?? "—"}`;
+    seedRow.append(seedText);
+    if (clearButton) {
+        clearButton.style.marginLeft = "auto";
+        seedRow.append(clearButton);
+    }
+    frag.append(seedRow);
+    if (diffs.length) frag.append(cacheStatusLine(`差异：${diffs.join(", ")}`));
+    return frag;
+}
+
 function renderCacheStatus(node, data, kind = "normal") {
     const ui = node._mmxFirstPassCacheUI;
     if (!ui) return;
@@ -293,59 +386,16 @@ function renderCacheStatus(node, data, kind = "normal") {
         muted: "#aaa",
     };
     ui.body.style.color = colors[kind] || colors.normal;
+    ui.body.replaceChildren();
     if (typeof data === "string") {
-        ui.body.textContent = data;
+        ui.body.append(cacheStatusLine(data));
         return;
     }
-    const total = Number(data?.segment_total || 0);
-    const cached = Number(data?.cached_count || 0);
-    const matched = Number(data?.matched_count || 0);
-    const seeds = Array.isArray(data?.cached_seeds) && data.cached_seeds.length
-        ? data.cached_seeds.join(", ")
-        : "—";
-    const diffLabels = {
-        seed: "seed",
-        start: "片段起点",
-        end: "片段终点（时间范围变化）",
-        prompt: "提示词",
-        negative: "反向提示词",
-        task_key: "生成模式",
-        width: "宽度",
-        height: "高度",
-        frame_rate: "帧率",
-        output_mode: "输出模式",
-        refs: "参考图片",
-        ref_audios: "参考音频",
-        ref_videos: "参考视频",
-        ref_video: "参考视频",
-        ref_video_start: "参考视频起点",
-        source_video: "源视频",
-        continuity: "段间连续性",
-        continuity_overlap: "上下文帧数",
-        cfg: "CFG",
-        steps: "一采步数",
-        sampler: "一采采样器",
-        scheduler: "调度器",
-        sigmas: "一采噪声表",
-        sigmas_source: "一采 SIGMAS 接线",
-        shift_video: "视频 shift",
-        shift_audio: "音频 shift",
-        "<invalid-meta>": "缓存信息损坏",
-    };
-    const diffs = Array.isArray(data?.diff_keys)
-        ? data.diff_keys
-            .filter((key) => key !== "<missing-cache>")
-            .slice(0, 8)
-            .map((key) => diffLabels[key] || key)
-        : [];
-    const lines = [
-        `一采缓存：${data?.exists ? `存在（${cached}/${total} 段）` : "不存在"}`,
-        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`,
-        `缓存 seed：${seeds}`,
-        `当前 seed：${data?.current_seed ?? "—"}`,
-    ];
-    if (diffs.length) lines.push(`差异：${diffs.join(", ")}`);
-    ui.body.textContent = lines.join("\n");
+    ui.body.append(
+        buildCacheSection(data, "一采", ui.clearFirstPassBtn),
+        cacheStatusLine(""),
+        buildCacheSection(data?.final, "二采", ui.clearFinalBtn),
+    );
 }
 
 async function refreshFirstPassCacheStatus(node) {
@@ -386,7 +436,6 @@ async function clearSegmentCache(node, kind) {
     const labels = {
         first_pass: "一采缓存",
         final: "二采缓存",
-        all: "全部缓存（一采+二采）",
     };
     const label = labels[kind] || "缓存";
     if (!window.confirm(`确定要清空这个节点的${label}吗？清空后对应内容需要重新生成。`)) {
@@ -442,7 +491,7 @@ function ensureFirstPassCacheUI(node) {
     const header = document.createElement("div");
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:5px";
     const title = document.createElement("strong");
-    title.textContent = "一采缓存状态";
+    title.textContent = "分段缓存状态";
     const refresh = document.createElement("button");
     refresh.type = "button";
     refresh.textContent = "重新检查";
@@ -458,13 +507,11 @@ function ensureFirstPassCacheUI(node) {
     for (const eventName of ["pointerdown", "mousedown", "click"]) {
         body.addEventListener(eventName, (event) => event.stopPropagation());
     }
-    const clearRow = document.createElement("div");
-    clearRow.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:6px";
     const makeClearButton = (text, kind) => {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.textContent = text;
-        btn.style.cssText = "padding:2px 8px;cursor:pointer";
+        btn.style.cssText = "padding:1px 8px;cursor:pointer;font:11px/1.3 sans-serif";
         btn.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -472,24 +519,23 @@ function ensureFirstPassCacheUI(node) {
         });
         return btn;
     };
-    clearRow.append(
-        makeClearButton("清理一采缓存", "first_pass"),
-        makeClearButton("清理二采缓存", "final"),
-        makeClearButton("清理全部缓存", "all"),
-    );
+    const clearFirstPassBtn = makeClearButton("清理一采缓存", "first_pass");
+    const clearFinalBtn = makeClearButton("清理二采缓存", "final");
     header.append(title, refresh);
-    root.append(header, body, clearRow);
+    root.append(header, body);
     const widget = node.addDOMWidget(CACHE_STATUS_WIDGET, "cache_status", root, {
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => 128,
+        getMinHeight: () => 210,
         hideOnZoom: false,
     });
     // Status is derived UI, not a positional backend widget value.
     widget.serialize = false;
     if (!widget.options) widget.options = {};
     widget.options.serialize = false;
-    node._mmxFirstPassCacheUI = { root, body, refresh, clearRow, widget };
+    node._mmxFirstPassCacheUI = {
+        root, body, refresh, widget, clearFirstPassBtn, clearFinalBtn,
+    };
 }
 function syncRefineWidgetVisibility(node) {
     const mode = readMode(node);

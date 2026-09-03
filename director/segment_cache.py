@@ -961,3 +961,118 @@ def inspect_first_pass_cache(
         }
     )
     return result
+
+
+def inspect_final_cache(
+    node_id: str | None,
+    plan: DirectorPlan,
+) -> dict[str, Any]:
+    """Inspect final (二采确认后) cache files without loading tensor payloads.
+
+    Mirrors :func:`inspect_first_pass_cache` but checks ``seg_XXXX.pt`` +
+    ``seg_XXXX.meta.json`` against :func:`segment_cache_fingerprint`
+    (identity + refine settings). No ``stale_prev`` concept here — the final
+    cache is only valid or parameter-changed.
+    """
+    current_seed = int(getattr(plan, "sample_seed", 0) or 0)
+    result: dict[str, Any] = {
+        "exists": False,
+        "matches": False,
+        "current_seed": current_seed,
+        "cached_seeds": [],
+        "segment_total": 0,
+        "cached_count": 0,
+        "matched_count": 0,
+        "stale_prev_count": 0,
+        "selected_total": 0,
+        "selected_cached": 0,
+        "selected_matched": 0,
+        "diff_keys": [],
+        "segments": [],
+    }
+    if not node_id:
+        return result
+
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    all_segments = list(getattr(plan, "segments", None) or [])
+    run_indices = getattr(plan, "run_indices", None)
+    selected_set = (
+        frozenset(run_indices) if run_indices is not None else None
+    )
+    result["segment_total"] = len(all_segments)
+
+    cached_seeds: set[int] = set()
+    all_diffs: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for seg in all_segments:
+        is_selected = selected_set is None or int(seg.index) in selected_set
+        idx = int(seg.index)
+        meta_path = root / f"seg_{idx:04d}.meta.json"
+        frames_path = root / f"seg_{idx:04d}.pt"
+        meta_exists = meta_path.is_file()
+        cache_exists = meta_exists and frames_path.is_file()
+        stored: Any = None
+        read_error = ""
+        if meta_exists:
+            try:
+                stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                read_error = str(exc)
+
+        expected = segment_cache_fingerprint(seg, plan)
+        matches = bool(cache_exists and isinstance(stored, dict) and stored == expected)
+        diff = (
+            _fingerprint_diff_keys(stored, expected)
+            if isinstance(stored, dict)
+            else (["<invalid-meta>"] if meta_exists else ["<missing-cache>"])
+        )
+        if not cache_exists:
+            status = "missing"
+        elif matches:
+            status = "valid"
+        else:
+            status = "mismatch"
+        cached_seed = stored.get("seed") if isinstance(stored, dict) else None
+        try:
+            if cached_seed is not None:
+                cached_seed = int(cached_seed)
+                cached_seeds.add(cached_seed)
+        except (TypeError, ValueError):
+            cached_seed = None
+        all_diffs.update(diff)
+        rows.append(
+            {
+                "segment": idx + 1,
+                "exists": cache_exists,
+                "matches": matches,
+                "status": status,
+                "selected": is_selected,
+                "cached_seed": cached_seed,
+                "diff_keys": diff,
+                "error": read_error,
+            }
+        )
+
+    cached_count = sum(1 for row in rows if row["exists"])
+    matched_count = sum(1 for row in rows if row["matches"])
+    selected_rows = [row for row in rows if row["selected"]]
+    selected_total = len(selected_rows) if selected_set is not None else len(rows)
+    selected_cached = sum(1 for row in selected_rows if row["exists"])
+    selected_matched = sum(1 for row in selected_rows if row["matches"])
+    total = len(rows)
+    result.update(
+        {
+            "exists": cached_count > 0,
+            "matches": total > 0 and matched_count == total,
+            "cached_seeds": sorted(cached_seeds),
+            "cached_count": cached_count,
+            "matched_count": matched_count,
+            "stale_prev_count": 0,
+            "selected_total": selected_total,
+            "selected_cached": selected_cached,
+            "selected_matched": selected_matched,
+            "diff_keys": sorted(all_diffs),
+            "segments": rows,
+        }
+    )
+    return result
