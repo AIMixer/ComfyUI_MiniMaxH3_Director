@@ -771,6 +771,44 @@ def segment_cache_is_current(
         return False
 
 
+def clear_segment_cache(node_id: str | None, kind: str = "all") -> int:
+    """Delete cached segment files for this Director node.
+
+    ``kind``:
+      - "first_pass": only ``seg_XXXX.pre.*`` files (一采 cache)
+      - "final": everything except ``.pre.*`` (二采/最终渲染 cache:
+        ``.pt`` / ``.meta.json`` / ``.av.pt`` / ``.handoff.json`` / ``.audio.pt``)
+      - "all" (default): both
+
+    Read/delete-only; never creates the cache dir, never raises.
+    Returns the number of files actually removed.
+    """
+    if not node_id:
+        return 0
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    if not root.is_dir():
+        return 0
+    removed = 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+    for path in entries:
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        is_pre = ".pre." in path.name
+        if kind == "first_pass" and not is_pre:
+            continue
+        if kind == "final" and is_pre:
+            continue
+        if _safe_unlink(path):
+            removed += 1
+    return removed
+
+
 def prune_segment_cache(node_id: str | None, valid_indices) -> None:
     """Remove ``seg_XXXX.*`` files whose index is no longer on the timeline.
 

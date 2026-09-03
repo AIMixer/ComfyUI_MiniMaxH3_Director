@@ -377,6 +377,39 @@ async function refreshFirstPassCacheStatus(node) {
     }
 }
 
+async function clearSegmentCache(node, kind) {
+    const director = connectedDirector(node);
+    if (!director) {
+        renderCacheStatus(node, "未找到相连的 MiniMax H3 Director。", "warn");
+        return;
+    }
+    const labels = {
+        first_pass: "一采缓存",
+        final: "二采缓存",
+        all: "全部缓存（一采+二采）",
+    };
+    const label = labels[kind] || "缓存";
+    if (!window.confirm(`确定要清空这个节点的${label}吗？清空后对应内容需要重新生成。`)) {
+        return;
+    }
+    renderCacheStatus(node, `正在清空${label}…`, "muted");
+    try {
+        const response = await api.fetchApi("/minimax/director/clear_segment_cache", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ node_id: String(director.id), kind }),
+        });
+        const data = await response.json();
+        if (!response.ok || data?.error) {
+            throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+        renderCacheStatus(node, `${label}已清空（删除 ${data.removed} 个文件）。`, "ok");
+        scheduleCacheStatusRefresh(node, 200);
+    } catch (error) {
+        renderCacheStatus(node, `清空${label}失败：${error?.message || error}`, "error");
+    }
+}
+
 function scheduleCacheStatusRefresh(node, delay = 120) {
     clearTimeout(node._mmxCacheStatusTimer);
     node._mmxCacheStatusTimer = setTimeout(() => refreshFirstPassCacheStatus(node), delay);
@@ -425,19 +458,38 @@ function ensureFirstPassCacheUI(node) {
     for (const eventName of ["pointerdown", "mousedown", "click"]) {
         body.addEventListener(eventName, (event) => event.stopPropagation());
     }
+    const clearRow = document.createElement("div");
+    clearRow.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:6px";
+    const makeClearButton = (text, kind) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = text;
+        btn.style.cssText = "padding:2px 8px;cursor:pointer";
+        btn.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            clearSegmentCache(node, kind);
+        });
+        return btn;
+    };
+    clearRow.append(
+        makeClearButton("清理一采缓存", "first_pass"),
+        makeClearButton("清理二采缓存", "final"),
+        makeClearButton("清理全部缓存", "all"),
+    );
     header.append(title, refresh);
-    root.append(header, body);
+    root.append(header, body, clearRow);
     const widget = node.addDOMWidget(CACHE_STATUS_WIDGET, "cache_status", root, {
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => 104,
+        getMinHeight: () => 128,
         hideOnZoom: false,
     });
     // Status is derived UI, not a positional backend widget value.
     widget.serialize = false;
     if (!widget.options) widget.options = {};
     widget.options.serialize = false;
-    node._mmxFirstPassCacheUI = { root, body, refresh, widget };
+    node._mmxFirstPassCacheUI = { root, body, refresh, clearRow, widget };
 }
 function syncRefineWidgetVisibility(node) {
     const mode = readMode(node);
