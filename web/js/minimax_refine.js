@@ -305,6 +305,7 @@ function renderCacheStatus(node, data, kind = "normal") {
         : "—";
     const diffLabels = {
         seed: "seed",
+        prev_chain: "上游段已重抽（本段沿用旧一采）",
         start: "片段起点",
         end: "片段终点（时间范围变化）",
         prompt: "提示词",
@@ -338,12 +339,28 @@ function renderCacheStatus(node, data, kind = "normal") {
             .slice(0, 8)
             .map((key) => diffLabels[key] || key)
         : [];
+    const stalePrev = Number(data?.stale_prev_count || 0);
     const lines = [
         `一采缓存：${data?.exists ? `存在（${cached}/${total} 段）` : "不存在"}`,
         `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`,
-        `缓存 seed：${seeds}`,
-        `当前 seed：${data?.current_seed ?? "—"}`,
     ];
+    if (stalePrev > 0) {
+        lines.push(`沿用旧缓存：${stalePrev}/${total} 段（上游已重抽，拼接处可能不衔接）`);
+    }
+    const segs = Array.isArray(data?.segments) ? data.segments : [];
+    if (segs.length) {
+        const marks = segs
+            .map((s) => (
+                s.status === "valid" ? "✓"
+                    : s.status === "stale_prev" ? "△"
+                        : s.status === "missing" ? "✕"
+                            : "≠"
+            ))
+            .join(" ");
+        lines.push(`逐段：${marks}（✓有效 △沿用旧缓存 ✕缺失 ≠参数已变）`);
+    }
+    lines.push(`缓存 seed：${seeds}`);
+    lines.push(`当前 seed：${data?.current_seed ?? "—"}`);
     if (diffs.length) lines.push(`差异：${diffs.join(", ")}`);
     ui.body.textContent = lines.join("\n");
 }
