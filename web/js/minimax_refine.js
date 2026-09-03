@@ -452,8 +452,12 @@ function buildCacheSection(data, label, clearButton, showSelection = true) {
     const seedRow = document.createElement("div");
     seedRow.style.cssText = "display:flex;align-items:center;gap:8px";
     const seedText = document.createElement("span");
-    const seedExt = data?.current_seed_external ? "（外部输入）" : "";
-    seedText.textContent = `当前 seed：${data?.current_seed ?? "—"}${seedExt}`;
+    // Resolved (widget or external source) → plain number, no origin label.
+    // Only the unresolvable-runtime-source case gets a marker to explain "—".
+    const extNote = data?.current_seed == null && data?.current_seed_external
+        ? "（外部输入）"
+        : "";
+    seedText.textContent = `当前 seed：${data?.current_seed ?? "—"}${extNote}`;
     seedRow.append(seedText);
     if (clearButton) {
         clearButton.style.marginLeft = "auto";
