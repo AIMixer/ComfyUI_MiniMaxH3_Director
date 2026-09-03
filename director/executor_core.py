@@ -928,7 +928,7 @@ def execute_director_plan_core(
             if cached_sample > 0:
                 sample_len = cached_sample
             stale_prev_note = (
-                "（前序段已更新，沿用旧一采，拼接处可能不衔接）"
+                "；本段沿用旧一采（未在选择范围内），拼接处可能不衔接"
                 if pre_cache.get("stale_prev")
                 else ""
             )
