@@ -578,8 +578,8 @@ def execute_director_plan_core(
                 )
                 reports.append(
                     f"Segment {seg.index + 1}/{timeline_seg_total}: "
-                    f"上游段 #{prev_idx + 1} 缓存为旧时代素材，已跳过段间引导"
-                    "（重跑上游或将其纳入「选择运行」可恢复衔接）"
+                    f"上一段 #{prev_idx + 1} 缓存已过期（与当前参数不符），"
+                    "已跳过段间引导（重跑上一段或将其纳入「选择运行」可恢复衔接）"
                 )
                 # Pin skips stale material; export hydration below stays.
                 prev_tail = None
