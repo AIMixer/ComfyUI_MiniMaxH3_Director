@@ -338,18 +338,24 @@ function renderCacheStatus(node, data, kind = "normal") {
             .slice(0, 8)
             .map((key) => diffLabels[key] || key)
         : [];
+    const selTotal = data?.selected_total;
+    const selMatched = data?.selected_matched;
+    const selActive = Number.isFinite(selTotal) && Number(selTotal) !== total;
     const lines = [
         `一采缓存：${data?.exists ? `存在（${cached}/${total} 段）` : "不存在"}`,
-        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`,
-        `缓存 seed：${seeds}`,
-        `当前 seed：${data?.current_seed ?? "—"}`,
+        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`
+            + (selActive ? ` · 选中 ${selMatched ?? 0}/${selTotal ?? 0}` : ""),
     ];
+    lines.push(`缓存 seed：${seeds}`);
+    lines.push(`当前 seed：${data?.current_seed ?? "—"}`);
+    const finalCached = Number(data?.final_cached_count || 0);
+    lines.push(`成片缓存：${finalCached}/${total} 段（含音频；部分重跑会接这里）`);
     if (diffs.length) lines.push(`差异：${diffs.join(", ")}`);
     ui.body.textContent = lines.join("\n");
 }
 
 async function refreshFirstPassCacheStatus(node) {
-    if (!isRefineNode(node) || !boolWidgetValue(node, "confirm_first_pass")) return;
+    if (!isRefineNode(node)) return;
     ensureFirstPassCacheUI(node);
     const director = connectedDirector(node);
     if (!director) {
@@ -358,7 +364,7 @@ async function refreshFirstPassCacheStatus(node) {
     }
     const seq = (node._mmxCacheStatusSeq || 0) + 1;
     node._mmxCacheStatusSeq = seq;
-    renderCacheStatus(node, "正在检查一采缓存…", "muted");
+    renderCacheStatus(node, "正在检查分段缓存…", "muted");
     try {
         const response = await api.fetchApi("/minimax/director/first_pass_cache_status", {
             method: "POST",
@@ -386,7 +392,6 @@ function refreshCacheStatusForDirector(director, delay = 120) {
     for (const node of graphNodes()) {
         if (
             isRefineNode(node)
-            && boolWidgetValue(node, "confirm_first_pass")
             && connectedDirector(node) === director
         ) {
             scheduleCacheStatusRefresh(node, delay);
@@ -409,28 +414,36 @@ function ensureFirstPassCacheUI(node) {
     const header = document.createElement("div");
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:5px";
     const title = document.createElement("strong");
-    title.textContent = "一采缓存状态";
-    const refresh = document.createElement("button");
-    refresh.type = "button";
-    refresh.textContent = "重新检查";
-    refresh.style.cssText = "padding:2px 8px;cursor:pointer";
-    refresh.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        refreshFirstPassCacheStatus(node);
-    });
+    title.textContent = "分段缓存状态";
+    const makeHeaderButton = (text, onClick) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = text;
+        btn.style.cssText = "padding:2px 8px;cursor:pointer";
+        btn.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onClick();
+        });
+        return btn;
+    };
+    const buttons = document.createElement("div");
+    buttons.style.cssText = "display:flex;align-items:center;gap:6px";
+    const clearBtn = makeHeaderButton("清理缓存", () => clearSegmentCache(node));
+    const refresh = makeHeaderButton("重新检查", () => refreshFirstPassCacheStatus(node));
+    buttons.append(clearBtn, refresh);
     const body = document.createElement("div");
     body.style.cssText = "white-space:pre-wrap;word-break:break-word;user-select:text;cursor:text";
     body.textContent = "等待检查…";
     for (const eventName of ["pointerdown", "mousedown", "click"]) {
         body.addEventListener(eventName, (event) => event.stopPropagation());
     }
-    header.append(title, refresh);
+    header.append(title, buttons);
     root.append(header, body);
     const widget = node.addDOMWidget(CACHE_STATUS_WIDGET, "cache_status", root, {
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => 104,
+        getMinHeight: () => 148,
         hideOnZoom: false,
     });
     // Status is derived UI, not a positional backend widget value.
@@ -439,6 +452,34 @@ function ensureFirstPassCacheUI(node) {
     widget.options.serialize = false;
     node._mmxFirstPassCacheUI = { root, body, refresh, widget };
 }
+
+async function clearSegmentCache(node) {
+    const director = connectedDirector(node);
+    if (!director) {
+        renderCacheStatus(node, "未找到相连的 MiniMax H3 Director。", "warn");
+        return;
+    }
+    if (!window.confirm("确定清空这个节点的分段缓存吗？一采和成片都会删除，需要重新生成。")) {
+        return;
+    }
+    renderCacheStatus(node, "正在清空缓存…", "muted");
+    try {
+        const response = await api.fetchApi("/minimax/director/clear_segment_cache", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ node_id: String(director.id), kind: "all" }),
+        });
+        const data = await response.json();
+        if (!response.ok || data?.error) {
+            throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+        renderCacheStatus(node, `缓存已清空（删除 ${data.removed} 个文件）。`, "ok");
+        scheduleCacheStatusRefresh(node, 200);
+    } catch (error) {
+        renderCacheStatus(node, `清空缓存失败：${error?.message || error}`, "error");
+    }
+}
+
 function syncRefineWidgetVisibility(node) {
     const mode = readMode(node);
     const upscale = mode === "upscale";
@@ -467,9 +508,8 @@ function syncRefineWidgetVisibility(node) {
     setWidgetVisible(node, "seed_mode", !latentOnly);
     setWidgetVisible(node, "target_width", false);
     setWidgetVisible(node, "target_height", false);
-    const confirm = boolWidgetValue(node, "confirm_first_pass");
-    if (confirm) ensureFirstPassCacheUI(node);
-    setWidgetVisible(node, CACHE_STATUS_WIDGET, confirm);
+    ensureFirstPassCacheUI(node);
+    setWidgetVisible(node, CACHE_STATUS_WIDGET, true);
     if (needsCanvas && !follow && !custom) syncRefineComputedSize(node);
     try {
         const size = node.computeSize?.();
@@ -521,9 +561,7 @@ function installRefineResolutionUI(node) {
     });
     hookWidget(node, "confirm_first_pass", () => {
         syncRefineWidgetVisibility(node);
-        if (boolWidgetValue(node, "confirm_first_pass")) {
-            scheduleCacheStatusRefresh(node, 0);
-        }
+        scheduleCacheStatusRefresh(node, 0);
     });
     if (!node._mmxRefineOnWidgetChanged) {
         node._mmxRefineOnWidgetChanged = true;
@@ -544,7 +582,7 @@ function refreshRefineNode(node) {
     installRefineResolutionUI(node);
     migrateRefineWidgets(node);
     syncRefineWidgetVisibility(node);
-    if (boolWidgetValue(node, "confirm_first_pass")) scheduleCacheStatusRefresh(node);
+    scheduleCacheStatusRefresh(node);
 }
 
 function refreshAllRefineNodes() {
@@ -622,7 +660,7 @@ app.registerExtension({
 
 api.addEventListener?.("executed", () => {
     for (const node of graphNodes()) {
-        if (isRefineNode(node) && boolWidgetValue(node, "confirm_first_pass")) {
+        if (isRefineNode(node)) {
             scheduleCacheStatusRefresh(node, 250);
         }
     }

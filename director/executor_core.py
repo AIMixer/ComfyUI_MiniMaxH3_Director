@@ -465,6 +465,9 @@ def execute_director_plan_core(
     completed_av_latents: dict[int, dict] = {}
     completed_av_handoff: dict[int, dict] = {}
     completed_audios: dict[int, dict] = {}
+    # Segments actually executed by _run_one_segment in THIS run.
+    # completed_* also get export-fill hydrations from disk; this set does not.
+    resampled_this_run: set[int] = set()
     held_for_confirmation = False
 
     def _run_one_segment(
@@ -544,15 +547,28 @@ def execute_director_plan_core(
                     "是源视频透传（未采样/无有效缓存），不能作为 motion context。"
                     "请先运行该段，或将其纳入「选择运行」。"
                 )
-            prev_tail = resolve_prev_segment_output(
-                plan, all_segments, seg.index, completed_outputs, node_id
-            )
+            prev_seg = all_segments[prev_idx] if prev_idx >= 0 else None
+            prev_from_this_run = prev_idx in resampled_this_run
+            try:
+                prev_tail = resolve_prev_segment_output(
+                    plan, all_segments, seg.index, completed_outputs, node_id
+                )
+            except ValueError as exc:
+                # No frame cache for prev (partial re-run, never rendered):
+                # continue; AV latent on disk may still pin. If neither
+                # exists, skip motion context instead of aborting the queue.
+                log.info(
+                    "Segment %d continuity resolve failed (%s); "
+                    "will pin from AV cache if present.",
+                    seg.index + 1,
+                    exc,
+                )
+                prev_tail = None
             # Hydrate prev into completed_* so phase-align trim can rewrite
             # in-memory exports + disk cache even on「分段导出」/ partial re-run
             # (resolve_prev may return a cache tensor without storing it).
             if prev_idx >= 0 and prev_tail is not None and prev_idx not in completed_outputs:
                 completed_outputs[prev_idx] = prev_tail
-            prev_seg = all_segments[prev_idx] if prev_idx >= 0 else None
             prev_av = completed_av_latents.get(prev_idx)
             if prev_av is None and prev_seg is not None:
                 prev_av = load_segment_av_latent(
@@ -574,6 +590,18 @@ def execute_director_plan_core(
                 )
                 if prev_audio is not None:
                     completed_audios[prev_idx] = prev_audio
+            if prev_av is None and prev_tail is None:
+                reports.append(
+                    f"Segment {seg.index + 1}/{timeline_seg_total}: "
+                    "上一段无有效缓存，已跳过段间引导"
+                    "（重跑上一段或将其纳入「选择运行」可恢复衔接）"
+                )
+            elif not prev_from_this_run:
+                reports.append(
+                    f"Segment {seg.index + 1}/{timeline_seg_total}: "
+                    f"引导接自上一段 #{prev_idx + 1} 的磁盘缓存"
+                    "（该段本轮未重跑；接缝对齐成片中的旧结果）"
+                )
             if prev_handoff:
                 prev_end_frame = handoff_end_frame(
                     trim_frames=int(prev_handoff.get("trim_frames") or 0),
@@ -1266,6 +1294,7 @@ def execute_director_plan_core(
             segment_outputs.append(chunk)
             segment_pre_refine.append(pre_chunk)
             segment_audios.append(audio_dict or {})
+            resampled_this_run.add(seg.index)
             if plan.export_mode == "all":
                 output_chunks.append(chunk)
                 output_pre_chunks.append(pre_chunk)
