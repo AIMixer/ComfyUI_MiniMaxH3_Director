@@ -1382,7 +1382,18 @@ def execute_director_plan_core(
                         segment_pre_refine=segment_pre_refine,
                         progress_pos=progress_pos,
                     )
-        if seg.index in run_indices and not review_halt:
+        run_this_seg = seg.index in run_indices and not review_halt
+        resume_cached = None
+        if run_this_seg and review_each_segment:
+            #「逐组审核」续跑: 精确指纹命中磁盘缓存 = 该组已生成并审核过,
+            # 跳过采样, 走下面的缓存填充路径(含 audio / AV latent 衔接).
+            resume_cached = load_segment_cache(node_id, seg, plan)
+            if resume_cached is not None:
+                run_this_seg = False
+                reports.append(
+                    f"Segment {seg.index + 1}/{timeline_seg_total}: 命中缓存（已审核过），跳过采样"
+                )
+        if run_this_seg:
             if clear_vram_between_segments and segment_outputs:
                 cleanup_segment_vram(enabled=True)
             try:
@@ -1428,7 +1439,8 @@ def execute_director_plan_core(
 
         # Prefer exact cache; pipeline-stale disk render is ok. A different
         # source video is rejected so v2v/rv2v can passthrough the new clip.
-        cached = load_segment_cache(node_id, seg, plan)
+        # resume_cached: 逐组审核续跑时已加载的精确缓存, 避免重复读盘.
+        cached = resume_cached if resume_cached is not None else load_segment_cache(node_id, seg, plan)
         used_stale = False
         if cached is None:
             cached = load_segment_cache(node_id, seg, plan, allow_stale=True)
