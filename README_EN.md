@@ -103,6 +103,8 @@ Open any `MiniMaxH3Director` node and click **Check update** on the right side o
 
 In-app updates require an independent Git checkout, a branch that tracks a same-named remote branch, a clean worktree, and an empty generation queue. The completion dialog calls out dependency-file changes. Non-Git installs, diverged history, and local changes are never forcibly overwritten; use ComfyUI Manager or update manually instead.
 
+The updater never restarts ComfyUI automatically. Save the current workflow, then restart manually when the completion dialog asks you to.
+
 ## Models & workflow downloads
 
 Full pack (**MiniMax H3 weights** + **example JSON workflows**):

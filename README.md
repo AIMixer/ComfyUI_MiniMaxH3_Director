@@ -102,6 +102,8 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 
 自动更新要求插件通过 Git 独立安装、当前分支跟踪同名远程分支、工作区无本地修改且生成队列为空。若依赖文件发生变化，完成提示会要求重新安装依赖；非 Git 安装、分叉历史或含本地修改的工作区不会被强制覆盖，请改用 ComfyUI Manager 或手动更新。
 
+更新不会自动重启 ComfyUI；请先保存当前工作流，再按完成提示手动重启。
+
 ## 模型与工作流下载
 
 完整资源包（**MiniMax H3 模型权重** + **示例 JSON 工作流**）见：
