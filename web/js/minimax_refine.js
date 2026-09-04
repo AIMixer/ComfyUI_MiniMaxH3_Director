@@ -388,6 +388,297 @@ function scheduleCacheStatusRefresh(node, delay = 120) {
     node._mmxCacheStatusTimer = setTimeout(() => refreshFirstPassCacheStatus(node), delay);
 }
 
+function formatBytes(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function resizeCacheWidget(node) {
+    try {
+        const size = node.computeSize?.();
+        if (Array.isArray(size) && size.length >= 2) {
+            node.setSize?.([node.size?.[0] || size[0], size[1]]);
+        }
+        node.setDirtyCanvas?.(true, true);
+    } catch {
+        /* ignore */
+    }
+}
+
+function makeSmallButton(text, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = text;
+    btn.style.cssText = "padding:1px 7px;cursor:pointer;font-size:11px";
+    btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+    });
+    return btn;
+}
+
+async function toggleCacheManager(node) {
+    ensureFirstPassCacheUI(node);
+    const ui = node._mmxFirstPassCacheUI;
+    if (!ui) return;
+    ui.managerOpen = !ui.managerOpen;
+    ui.manager.style.display = ui.managerOpen ? "" : "none";
+    if (ui.manageBtn) ui.manageBtn.textContent = ui.managerOpen ? "收起管理" : "缓存管理";
+    resizeCacheWidget(node);
+    if (ui.managerOpen) await refreshCacheManager(node);
+}
+
+async function refreshCacheManager(node) {
+    const ui = node._mmxFirstPassCacheUI;
+    if (!ui?.managerOpen) return;
+    const director = connectedDirector(node);
+    if (!director) {
+        ui.managerSummary.textContent = "未找到相连的 MiniMax H3 Director。";
+        resizeCacheWidget(node);
+        return;
+    }
+    ui.managerSummary.textContent = "正在读取缓存明细…";
+    try {
+        const response = await api.fetchApi("/minimax/director/segment_cache_detail", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ node_id: String(director.id) }),
+        });
+        const data = await response.json();
+        if (!response.ok || data?.error) {
+            throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+        renderCacheManager(node, data);
+    } catch (error) {
+        ui.managerSummary.textContent = `读取缓存失败：${error?.message || error}`;
+    }
+    refreshCacheOverview(node);
+    resizeCacheWidget(node);
+}
+
+function cacheBadge(text, active) {
+    const badge = document.createElement("span");
+    badge.textContent = text;
+    badge.style.cssText = [
+        "padding:0 5px",
+        "border-radius:3px",
+        "font-size:11px",
+        `color:${active ? "#65d68a" : "#777"}`,
+        `border:1px solid ${active ? "#3d7a52" : "#555"}`,
+    ].join(";");
+    return badge;
+}
+
+function renderCacheManager(node, data) {
+    const ui = node._mmxFirstPassCacheUI;
+    if (!ui) return;
+    const list = ui.managerList;
+    list.textContent = "";
+    ui._mmxCacheChecked = new Set();
+    const segments = Array.isArray(data?.segments) ? data.segments : [];
+    const others = Array.isArray(data?.other_files) ? data.other_files : [];
+    if (!segments.length && !others.length) {
+        ui.managerSummary.textContent = "本节点暂无缓存文件。";
+        const empty = document.createElement("div");
+        empty.style.cssText = "color:#999;padding:4px 2px";
+        empty.textContent = "（运行一次生成后会在这里按素材组列出缓存）";
+        list.appendChild(empty);
+        return;
+    }
+    ui.managerSummary.textContent =
+        `共 ${segments.length} 个素材组 · ${data.file_count} 个文件 · ${formatBytes(data.total_size)}`;
+    for (const seg of segments) {
+        const row = document.createElement("div");
+        row.style.cssText = [
+            "display:flex",
+            "align-items:center",
+            "gap:6px",
+            "padding:3px 6px",
+            "border:1px solid var(--border-color, #444)",
+            "border-radius:4px",
+            "background:rgba(255,255,255,.03)",
+        ].join(";");
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.style.cssText = "margin:0;flex:none";
+        checkbox.addEventListener("change", () => {
+            if (checkbox.checked) ui._mmxCacheChecked.add(seg.segment_index);
+            else ui._mmxCacheChecked.delete(seg.segment_index);
+        });
+
+        const title = document.createElement("span");
+        title.textContent = `第${seg.segment}组`;
+        title.style.cssText = "min-width:52px;flex:none;font-weight:600;color:var(--input-text,#ddd)";
+
+        const promptText = String(seg.meta?.prompt || seg.pre_meta?.prompt || "").trim();
+        const info = document.createElement("span");
+        info.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#bbb";
+        info.textContent = promptText || "（无提示词记录）";
+        info.title = promptText;
+
+        const badges = document.createElement("span");
+        badges.style.cssText = "display:flex;gap:4px;flex:none";
+        badges.append(
+            cacheBadge("一采", seg.has_first_pass),
+            cacheBadge("成片", seg.has_final),
+            cacheBadge("音频", seg.has_audio),
+        );
+
+        const size = document.createElement("span");
+        size.textContent = formatBytes(seg.total_size);
+        size.style.cssText = "flex:none;min-width:64px;text-align:right;color:#bbb";
+        size.title = (Array.isArray(seg.files) ? seg.files : [])
+            .map((f) => `${f.name}  ${formatBytes(f.size)}`)
+            .join("\n");
+
+        const time = document.createElement("span");
+        time.textContent = seg.mtime ? new Date(seg.mtime * 1000).toLocaleString() : "";
+        time.style.cssText = "flex:none;color:#888;font-size:11px";
+
+        row.append(
+            checkbox,
+            title,
+            badges,
+            info,
+            size,
+            time,
+            makeSmallButton("删除", () => deleteSegmentCacheEntries(node, [seg.segment_index])),
+        );
+        list.appendChild(row);
+    }
+    if (others.length) {
+        const note = document.createElement("div");
+        note.style.cssText = "color:#999;padding:2px 2px 0";
+        note.textContent = `另有 ${others.length} 个未命名临时/残留文件（下次写入缓存会自动清理）。`;
+        list.appendChild(note);
+    }
+}
+
+async function deleteSegmentCacheEntries(node, indices) {
+    const director = connectedDirector(node);
+    if (!director) return;
+    const list = [...new Set(indices.map((i) => Number(i)).filter((i) => Number.isFinite(i) && i >= 0))];
+    if (!list.length) return;
+    const label = list.length === 1 ? `第${list[0] + 1}组` : `选中的 ${list.length} 个素材组`;
+    if (!window.confirm(`确定删除${label}的缓存吗？一采和成片都会删除，需要重新生成。`)) {
+        return;
+    }
+    const ui = node._mmxFirstPassCacheUI;
+    if (ui) ui.managerSummary.textContent = "正在删除缓存…";
+    try {
+        let removed = 0;
+        for (const idx of list) {
+            const response = await api.fetchApi("/minimax/director/clear_segment_cache", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    node_id: String(director.id),
+                    kind: "all",
+                    segment_index: idx,
+                }),
+            });
+            const data = await response.json();
+            if (!response.ok || data?.error) {
+                throw new Error(data?.error || `HTTP ${response.status}`);
+            }
+            removed += Number(data.removed || 0);
+        }
+        if (ui) ui.managerSummary.textContent = `已删除${label}的缓存（${removed} 个文件）。`;
+    } catch (error) {
+        if (ui) ui.managerSummary.textContent = `删除缓存失败：${error?.message || error}`;
+    }
+    await refreshCacheManager(node);
+    scheduleCacheStatusRefresh(node, 200);
+}
+
+async function refreshCacheOverview(node) {
+    const ui = node._mmxFirstPassCacheUI;
+    if (!ui?.managerOpen) return;
+    try {
+        const response = await api.fetchApi("/minimax/director/cache_overview");
+        const data = await response.json();
+        if (!response.ok || data?.error) {
+            throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+        renderCacheOverview(node, data);
+    } catch (error) {
+        ui.overviewList.textContent = `读取全局缓存失败：${error?.message || error}`;
+    }
+    resizeCacheWidget(node);
+}
+
+function renderCacheOverview(node, data) {
+    const ui = node._mmxFirstPassCacheUI;
+    if (!ui) return;
+    const list = ui.overviewList;
+    list.textContent = "";
+    const director = connectedDirector(node);
+    const currentId = director ? String(director.id) : "";
+    const groups = (Array.isArray(data?.groups) ? data.groups : []).filter(
+        (g) => String(g.node_id) !== currentId && Number(g.file_count) > 0,
+    );
+    if (!groups.length) {
+        list.textContent = "";
+        const empty = document.createElement("div");
+        empty.style.cssText = "color:#999";
+        empty.textContent = "没有其他节点的缓存。";
+        list.appendChild(empty);
+        return;
+    }
+    for (const group of groups) {
+        const row = document.createElement("div");
+        row.style.cssText = [
+            "display:flex",
+            "align-items:center",
+            "gap:6px",
+            "padding:2px 6px",
+            "border:1px solid var(--border-color, #444)",
+            "border-radius:4px",
+        ].join(";");
+        const name = document.createElement("span");
+        name.textContent = `节点 #${group.node_id}`;
+        name.style.cssText = "flex:1;min-width:0;color:#bbb";
+        name.title = "该节点可能已从工作流删除；删除后缓存不可恢复";
+        const size = document.createElement("span");
+        size.textContent = `${group.file_count} 个文件 · ${formatBytes(group.total_size)}`;
+        size.style.cssText = "flex:none;color:#888;font-size:11px";
+        row.append(
+            name,
+            size,
+            makeSmallButton("删除", () => deleteNodeCacheGroup(node, group.node_id)),
+        );
+        list.appendChild(row);
+    }
+}
+
+async function deleteNodeCacheGroup(node, nodeId) {
+    if (!window.confirm(`确定删除节点 #${nodeId} 的全部缓存吗？需要重新生成才能恢复。`)) {
+        return;
+    }
+    const ui = node._mmxFirstPassCacheUI;
+    try {
+        const response = await api.fetchApi("/minimax/director/clear_segment_cache", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ node_id: String(nodeId), kind: "all" }),
+        });
+        const data = await response.json();
+        if (!response.ok || data?.error) {
+            throw new Error(data?.error || `HTTP ${response.status}`);
+        }
+        if (ui) ui.managerSummary.textContent = `已删除节点 #${nodeId} 的缓存（${data.removed} 个文件）。`;
+    } catch (error) {
+        if (ui) ui.managerSummary.textContent = `删除缓存失败：${error?.message || error}`;
+    }
+    await refreshCacheManager(node);
+    scheduleCacheStatusRefresh(node, 200);
+}
+
 function refreshCacheStatusForDirector(director, delay = 120) {
     for (const node of graphNodes()) {
         if (
@@ -429,28 +720,68 @@ function ensureFirstPassCacheUI(node) {
     };
     const buttons = document.createElement("div");
     buttons.style.cssText = "display:flex;align-items:center;gap:6px";
+    const manageBtn = makeHeaderButton("缓存管理", () => toggleCacheManager(node));
     const clearBtn = makeHeaderButton("清理缓存", () => clearSegmentCache(node));
     const refresh = makeHeaderButton("重新检查", () => refreshFirstPassCacheStatus(node));
-    buttons.append(clearBtn, refresh);
+    buttons.append(manageBtn, clearBtn, refresh);
     const body = document.createElement("div");
     body.style.cssText = "white-space:pre-wrap;word-break:break-word;user-select:text;cursor:text";
     body.textContent = "等待检查…";
+
+    const manager = document.createElement("div");
+    manager.style.cssText = "display:none;margin-top:6px;border-top:1px solid var(--border-color, #555);padding-top:6px";
+    const managerHead = document.createElement("div");
+    managerHead.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px";
+    const managerSummary = document.createElement("span");
+    managerSummary.style.cssText = "color:var(--input-text, #ddd);font-size:11px";
+    const managerActions = document.createElement("div");
+    managerActions.style.cssText = "display:flex;gap:6px;flex:none";
+    const deleteSelectedBtn = makeSmallButton("删除选中", () => {
+        const ui = node._mmxFirstPassCacheUI;
+        deleteSegmentCacheEntries(node, [...(ui?._mmxCacheChecked || [])]);
+    });
+    managerActions.append(
+        deleteSelectedBtn,
+        makeSmallButton("刷新", () => refreshCacheManager(node)),
+    );
+    managerHead.append(managerSummary, managerActions);
+    const managerList = document.createElement("div");
+    managerList.style.cssText = "max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px";
+    const overviewTitle = document.createElement("div");
+    overviewTitle.style.cssText = "margin-top:8px;color:#999;font-size:11px";
+    overviewTitle.textContent = "其他节点的缓存（含已从工作流删除的节点）：";
+    const overviewList = document.createElement("div");
+    overviewList.style.cssText = "display:flex;flex-direction:column;gap:4px;margin-top:3px";
+    manager.append(managerHead, managerList, overviewTitle, overviewList);
+
     for (const eventName of ["pointerdown", "mousedown", "click"]) {
         body.addEventListener(eventName, (event) => event.stopPropagation());
+        manager.addEventListener(eventName, (event) => event.stopPropagation());
     }
     header.append(title, buttons);
-    root.append(header, body);
+    root.append(header, body, manager);
     const widget = node.addDOMWidget(CACHE_STATUS_WIDGET, "cache_status", root, {
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => 148,
+        getMinHeight: () => Math.max(148, root.scrollHeight + 20),
         hideOnZoom: false,
     });
     // Status is derived UI, not a positional backend widget value.
     widget.serialize = false;
     if (!widget.options) widget.options = {};
     widget.options.serialize = false;
-    node._mmxFirstPassCacheUI = { root, body, refresh, widget };
+    node._mmxFirstPassCacheUI = {
+        root,
+        body,
+        refresh,
+        widget,
+        manageBtn,
+        manager,
+        managerSummary,
+        managerList,
+        overviewList,
+        managerOpen: false,
+    };
 }
 
 async function clearSegmentCache(node) {
@@ -475,6 +806,9 @@ async function clearSegmentCache(node) {
         }
         renderCacheStatus(node, `缓存已清空（删除 ${data.removed} 个文件）。`, "ok");
         scheduleCacheStatusRefresh(node, 200);
+        if (node._mmxFirstPassCacheUI?.managerOpen) {
+            refreshCacheManager(node);
+        }
     } catch (error) {
         renderCacheStatus(node, `清空缓存失败：${error?.message || error}`, "error");
     }
@@ -662,6 +996,9 @@ api.addEventListener?.("executed", () => {
     for (const node of graphNodes()) {
         if (isRefineNode(node)) {
             scheduleCacheStatusRefresh(node, 250);
+            if (node._mmxFirstPassCacheUI?.managerOpen) {
+                setTimeout(() => refreshCacheManager(node), 400);
+            }
         }
     }
 });

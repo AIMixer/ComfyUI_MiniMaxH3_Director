@@ -739,6 +739,156 @@ def load_first_pass_cache(
 _SEG_CACHE_FILE_RE = re.compile(r"^seg_(\d+)\.")
 
 
+def _meta_summary(path: Path) -> dict[str, Any]:
+    """Small display-oriented excerpt of a segment cache meta file. Never raises."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    prompt = str(data.get("prompt") or "").strip()
+    if prompt:
+        summary["prompt"] = prompt[:120]
+    for key in ("seed", "start", "end", "task_key"):
+        if key in data:
+            summary[key] = data.get(key)
+    return summary
+
+
+def describe_segment_cache(node_id: str | None) -> dict[str, Any]:
+    """Per-segment cache inventory for the frontend cache manager.
+
+    Groups every file under ``minimax_seg_cache/<node_id>/`` by segment index,
+    reporting file names, sizes, mtimes, which payload kinds exist
+    (first-pass / final frames / audio), and a short prompt/seed excerpt from
+    the meta files. Does not create the cache dir. Never raises.
+    """
+    result: dict[str, Any] = {
+        "node_id": str(node_id or ""),
+        "exists": False,
+        "file_count": 0,
+        "total_size": 0,
+        "segments": [],
+        "other_files": [],
+    }
+    if not node_id:
+        return result
+    try:
+        root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+        if not root.is_dir():
+            return result
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            return result
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        others: list[dict[str, Any]] = []
+        for path in entries:
+            try:
+                if not path.is_file():
+                    continue
+                st = path.stat()
+            except OSError:
+                continue
+            info = {
+                "name": path.name,
+                "size": int(st.st_size),
+                "mtime": float(st.st_mtime),
+            }
+            m = _SEG_CACHE_FILE_RE.match(path.name)
+            if m:
+                grouped.setdefault(int(m.group(1)), []).append(info)
+            else:
+                others.append(info)
+        segments: list[dict[str, Any]] = []
+        for idx in sorted(grouped):
+            files = sorted(grouped[idx], key=lambda f: f["name"])
+            names = [f["name"] for f in files]
+            prefix = f"seg_{idx:04d}"
+            segments.append(
+                {
+                    "segment_index": idx,
+                    "segment": idx + 1,
+                    "file_count": len(files),
+                    "total_size": sum(f["size"] for f in files),
+                    "mtime": max(f["mtime"] for f in files),
+                    "has_first_pass": any(".pre." in n for n in names),
+                    "has_final": f"{prefix}.pt" in names,
+                    "has_audio": f"{prefix}.audio.pt" in names,
+                    "files": files,
+                    "meta": _meta_summary(root / f"{prefix}.meta.json"),
+                    "pre_meta": _meta_summary(root / f"{prefix}.pre.meta.json"),
+                }
+            )
+        result.update(
+            {
+                "exists": bool(segments or others),
+                "file_count": sum(s["file_count"] for s in segments) + len(others),
+                "total_size": sum(s["total_size"] for s in segments)
+                + sum(f["size"] for f in others),
+                "segments": segments,
+                "other_files": others,
+            }
+        )
+    except Exception as exc:
+        log.debug("Segment cache describe failed for node %s (%s).", node_id, exc)
+    return result
+
+
+def list_cache_group_overview() -> dict[str, Any]:
+    """Overview of every node cache dir under ``minimax_seg_cache/``.
+
+    Lets the cache manager show (and clean) cache groups whose Director node
+    was deleted from the workflow. Does not create any directory. Never raises.
+    """
+    result: dict[str, Any] = {"root": "", "exists": False, "total_size": 0, "groups": []}
+    try:
+        base = Path(folder_paths.get_output_directory()) / "minimax_seg_cache"
+        result["root"] = str(base)
+        if not base.is_dir():
+            return result
+        groups: list[dict[str, Any]] = []
+        for child in sorted(base.iterdir(), key=lambda p: p.name):
+            try:
+                if not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            file_count = 0
+            total_size = 0
+            latest = 0.0
+            try:
+                entries = list(child.iterdir())
+            except OSError:
+                entries = []
+            for path in entries:
+                try:
+                    if not path.is_file():
+                        continue
+                    st = path.stat()
+                except OSError:
+                    continue
+                file_count += 1
+                total_size += int(st.st_size)
+                latest = max(latest, float(st.st_mtime))
+            groups.append(
+                {
+                    "node_id": child.name,
+                    "file_count": file_count,
+                    "total_size": total_size,
+                    "mtime": latest,
+                }
+            )
+        result["exists"] = bool(groups)
+        result["groups"] = groups
+        result["total_size"] = sum(g["total_size"] for g in groups)
+    except Exception as exc:
+        log.debug("Segment cache overview failed (%s).", exc)
+    return result
+
+
 def prune_segment_cache(node_id: str | None, valid_indices) -> None:
     """Remove ``seg_XXXX.*`` files whose index is no longer on the timeline.
 
@@ -950,6 +1100,11 @@ def clear_segment_cache(node_id: str | None, kind: str = "final") -> int:
             removed += 1
     if removed:
         log.info("Cleared %s cache for node %s (%d file(s)).", kind, node_id, removed)
+        if kind == "all":
+            try:
+                root.rmdir()  # only succeeds when already empty
+            except OSError:
+                pass
     return removed
 
 
