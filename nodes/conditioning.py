@@ -132,28 +132,34 @@ def run_minimax_conditioning(
     if use_reference:
         if audio_vae is None:
             raise ValueError("MiniMax H3 r2v/v2v/rv2v / reference conditioning requires audio_vae.")
+        # Keyword args only: official execute() has reordered vae/audio_vae to
+        # trailing optional params across ComfyUI versions before (e.g. moving
+        # them after ref_image_size). Positional args silently misalign and
+        # send strings into int slots (`TypeError: ... for //: 'str' and 'int'`
+        # inside _empty_av_latent) instead of raising a clear error.
         out = MiniMaxH3ReferenceToVideo.execute(
-            clip,
-            vae,
-            audio_vae,
-            prompt,
-            width,
-            height,
-            length,
-            ref_image_size,
+            clip=clip,
+            prompt=prompt,
+            width=width,
+            height=height,
+            length=length,
+            ref_image_size=ref_image_size,
+            vae=vae,
+            audio_vae=audio_vae,
             ref_images=ref_images,
             ref_videos=ref_videos,
             ref_video_audios=ref_video_audios,
             ref_audios=ref_audios,
         )
     else:
+        # Keyword args for the same reason as MiniMaxH3ReferenceToVideo above.
         out = MiniMaxH3ImageToVideo.execute(
-            clip,
-            vae,
-            prompt,
-            width,
-            height,
-            length,
+            clip=clip,
+            vae=vae,
+            prompt=prompt,
+            width=width,
+            height=height,
+            length=length,
             first_frame=first_frame,
             last_frame=last_frame,
         )
