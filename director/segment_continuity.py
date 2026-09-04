@@ -106,6 +106,32 @@ CONTINUITY_SPIKE_LAND_WEIGHT = 0.0
 CONTINUITY_SPIKE_SCAN = 5
 CONTINUITY_HOLD_POP_ON_TAIL = False
 
+# Exposure anchoring (open-loop, pixel only). Under segment continuity every
+# exported frame is model-generated; the free region's exposure drifts toward the
+# model's preference, and the native latent pin chain carries that drift so it
+# accumulates segment over segment (later segments look progressively brighter /
+# darker). We flatten each exported free region back to an ABSOLUTE anchor (the
+# first segment's exposure) with a per-frame per-channel GAMMA (gray-point) curve,
+# out = x**gamma. The power map pins 0→0 and 1→1, so it levels midtone exposure
+# while NEVER creating new clipped whites or crushed blacks — brightening eases
+# off near white and cannot blow highlights the way a linear x*gain clamp does.
+# This never touches latents or audio, so the v9 native latent pin / motion handoff
+# is fully preserved — unlike the reverted video_from_frames feedback loop, which
+# forced a VAE re-encode of corrected pixels as the video pin and broke continuity.
+# Per-frame exposure is measured on the MIDTONE pixels only (in LOG space, i.e. the
+# geometric level): clipped highlights (near-white backgrounds / skies) and crushed
+# shadows (near-black) are excluded. An all-pixel mean is dominated by large
+# saturated regions at the 0/1 ceiling that cannot represent exposure, so a bright
+# clipping background would hide a real subject-exposure drift; frames with too few
+# midtone pixels fall back to the full-frame mean-log.
+EXPOSURE_MID_LOW = 0.05    # luma below = crushed shadow, ignored
+EXPOSURE_MID_HIGH = 0.95   # luma above = clipped highlight, ignored
+EXPOSURE_MID_MIN_FRAC = 0.02  # need >=2% midtone pixels else use full-frame mean
+EXPOSURE_ANCHOR_DEFAULT_STRENGTH = 0.40  # gamma clamp to [1/1.4, 1.4] (~±40%)
+EXPOSURE_ANCHOR_MAX_STRENGTH = 0.60      # hard gamma cap (~±60%)
+EXPOSURE_ANCHOR_SMOOTH_WINDOW = 9  # frames, centered moving average
+EXPOSURE_ANCHOR_EPSILON = 1e-3
+
 
 def _truthy_continuity_flag(value) -> bool:
     """Accept bool/int/common string forms from UI or reloaded workflows."""
@@ -134,6 +160,38 @@ def resolve_continuity_settings(timeline: dict, *, segment_count: int) -> tuple[
     return True, snap_context_frames(raw)
 
 
+def resolve_exposure_anchor_enabled(timeline: dict) -> bool:
+    """Read the「曝光锚定 / exposure anchor」companion toggle (output block).
+
+    Defaults to ON; only an explicit false disables it. The correction is a no-op
+    unless segment continuity is actually stitching ≥2 segments (gated at run).
+    """
+    output = (timeline or {}).get("output") or {}
+    if "exposureAnchorEnabled" in output:
+        return _truthy_continuity_flag(output.get("exposureAnchorEnabled"))
+    if "exposure_anchor_enabled" in output:
+        return _truthy_continuity_flag(output.get("exposure_anchor_enabled"))
+    return True
+
+
+def resolve_exposure_anchor_strength(timeline: dict) -> float:
+    """Per-frame gain clamp as a fraction (0.15 = ±15%). 0 disables correction.
+
+    Accepts a fraction (0.15) or a UI percentage (15); missing / invalid falls
+    back to the default.
+    """
+    output = (timeline or {}).get("output") or {}
+    raw = output.get("exposureAnchorStrength", output.get("exposure_anchor_strength"))
+    if raw is None:
+        return EXPOSURE_ANCHOR_DEFAULT_STRENGTH
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return EXPOSURE_ANCHOR_DEFAULT_STRENGTH
+    strength = value if 0.0 < value < 1.0 else value / 100.0
+    return max(0.0, min(EXPOSURE_ANCHOR_MAX_STRENGTH, strength))
+
+
 def resolve_segment_continuity_from_prev(
     seg_data: dict | None,
     *,
@@ -156,6 +214,144 @@ def resolve_segment_continuity_from_prev(
     else:
         return True
     return _truthy_continuity_flag(raw)
+
+
+def _frame_midtone_log_exposure(frames: torch.Tensor) -> torch.Tensor:
+    """Per-frame per-channel exposure of ``[T,H,W,3]`` (or ``[H,W,3]``) as the
+    MEAN LOG value over MIDTONE pixels → ``[T,3]`` (negative; ``exp()`` recovers
+    the geometric-mean level).
+
+    Only pixels with luma in ``(EXPOSURE_MID_LOW, EXPOSURE_MID_HIGH)`` contribute,
+    so clipped highlights / crushed shadows (e.g. a near-white background) cannot
+    mask a real subject-exposure drift. Frames with too few midtone pixels fall
+    back to the full-frame mean-log.
+
+    Working in log space lets the correction below be a pure GAMMA (``x**gamma``),
+    whose endpoints are pinned (0→0, 1→1) — it can never create new clipped
+    whites or crushed blacks, unlike a linear ``x*gain`` clamp.
+    """
+    f = frames.float()
+    if f.dim() == 3:
+        f = f.unsqueeze(0)
+    t = int(f.shape[0])
+    vals = f[..., :3].reshape(t, -1, 3)                 # [T, P, 3]
+    luma = vals.mean(dim=-1, keepdim=True)              # [T, P, 1]
+    mask = ((luma > EXPOSURE_MID_LOW) & (luma < EXPOSURE_MID_HIGH)).to(vals.dtype)
+    count = mask.sum(dim=1)                             # [T, 1]
+    logv = torch.log(vals.clamp_min(EXPOSURE_ANCHOR_EPSILON))
+    robust = (logv * mask).sum(dim=1) / count.clamp_min(1.0)
+    full = logv.mean(dim=1)                             # [T, 3]
+    usable = count >= (vals.shape[1] * EXPOSURE_MID_MIN_FRAC)  # [T, 1]
+    return torch.where(usable, robust, full)
+
+
+def _temporal_smooth(means: torch.Tensor, window: int) -> torch.Tensor:
+    """Centered moving average over the time axis of ``[T,3]``, edge-replicated."""
+    t = int(means.shape[0])
+    if t <= 1 or window <= 1:
+        return means
+    w = int(min(window, t if t % 2 == 1 else t - 1))
+    if w % 2 == 0:
+        w -= 1
+    if w < 3:
+        return means
+    pad = w // 2
+    first = means[:1].expand(pad, -1)
+    last = means[-1:].expand(pad, -1)
+    padded = torch.cat([first, means, last], dim=0)          # [T+2pad, 3]
+    # Shared 1-D kernel across channels: fold channels into the batch dim.
+    x = padded.t().unsqueeze(1)                             # [3, 1, T+2pad]
+    kernel = torch.full((1, 1, w), 1.0 / w, device=means.device, dtype=means.dtype)
+    smoothed = torch.nn.functional.conv1d(x, kernel)        # [3, 1, T]
+    return smoothed.squeeze(1).t()[:t]
+
+
+def exposure_anchor_mean(decoded: torch.Tensor) -> torch.Tensor | None:
+    """Absolute anchor (geometric midtone level) for a finished chunk.
+
+    Used to seed the shared anchor from an already-completed (e.g. cached) segment
+    so a partial re-run flattens to the same reference as the full run.
+    """
+    if decoded is None or getattr(decoded, "dim", lambda: 0)() != 4:
+        return None
+    if int(decoded.shape[-1]) < 3 or int(decoded.shape[0]) < 1:
+        return None
+    smoothed = _temporal_smooth(
+        _frame_midtone_log_exposure(decoded), EXPOSURE_ANCHOR_SMOOTH_WINDOW
+    )
+    return torch.exp(smoothed.mean(dim=0)).clamp_min(EXPOSURE_ANCHOR_EPSILON)
+
+
+def flatten_segment_exposure(
+    decoded: torch.Tensor,
+    *,
+    anchor_rgb: torch.Tensor | None,
+    strength: float,
+    seg_index: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Pull an exported free region to an ABSOLUTE exposure anchor (open loop)
+    with a per-frame per-channel GAMMA (gray-point / levels) adjustment.
+
+    Returns ``(corrected_decoded, anchor_rgb)``. The first video segment passes
+    ``anchor_rgb=None``: its own geometric midtone level becomes the shared anchor
+    and it barely moves. Later segments pass that anchor and each frame/channel is
+    mapped by ``out = x ** gamma`` with ``gamma`` solved so the frame's geometric
+    midtone level meets the anchor.
+
+    The power map PINS THE ENDPOINTS (0→0, 1→1): it is monotonic over [0,1] and
+    therefore CANNOT create new clipped-highlight or crushed-shadow pixels —
+    brightening eases off as values approach white, darkening eases off near black.
+    This avoids the highlight blow-out a linear ``x*gain`` (then clamp) inflicts on
+    already-bright frames. ``strength`` clamps gamma to ``[1/(1+s), 1+s]``.
+
+    Pixel side only: latents / audio are untouched, so the native v9 latent pin
+    and audio handoff are fully preserved (unlike the reverted video_from_frames
+    feedback loop, which re-encoded corrected pixels as the video pin).
+    """
+    if decoded is None or getattr(decoded, "dim", lambda: 0)() != 4:
+        return decoded, anchor_rgb
+    if int(decoded.shape[-1]) < 3 or int(decoded.shape[0]) < 1:
+        return decoded, anchor_rgb
+    if float(strength) <= 0.0:
+        return decoded, anchor_rgb
+
+    f = decoded.float()
+    t = int(f.shape[0])
+    # Geometric midtone exposure per frame/channel (mean log; < 0 for x<1).
+    log_exp = _temporal_smooth(
+        _frame_midtone_log_exposure(f), EXPOSURE_ANCHOR_SMOOTH_WINDOW
+    ).clamp_max(-EXPOSURE_ANCHOR_EPSILON)                    # [T,3]
+
+    established = False
+    if anchor_rgb is None:
+        anchor_rgb = torch.exp(log_exp.mean(dim=0)).clamp_min(EXPOSURE_ANCHOR_EPSILON)
+        established = True
+    log_anchor = torch.log(
+        anchor_rgb.to(device=log_exp.device, dtype=log_exp.dtype)
+        .clamp_min(EXPOSURE_ANCHOR_EPSILON)
+    )                                                        # [3]
+
+    gamma = log_anchor.view(1, 3) / log_exp                  # [T,3]
+    lo, hi = 1.0 / (1.0 + float(strength)), 1.0 + float(strength)
+    gamma = gamma.clamp(min=lo, max=hi)
+    if not established and float((gamma - 1.0).abs().max().item()) < EXPOSURE_ANCHOR_EPSILON:
+        return decoded, anchor_rgb
+
+    log_pix = torch.log(f[..., :3].clamp_min(EXPOSURE_ANCHOR_EPSILON))
+    out = f.clone()
+    out[..., :3] = torch.exp(gamma.view(t, 1, 1, 3) * log_pix).clamp(0.0, 1.0)
+
+    mid_before = torch.exp(log_exp.mean(dim=0))
+    log.info(
+        "Exposure anchor seg#%d strength=±%.0f%% anchor(%.3f,%.3f,%.3f) "
+        "mid(%.3f,%.3f,%.3f) gamma[%.3f..%.3f]",
+        int(seg_index) + 1,
+        float(strength) * 100.0,
+        float(anchor_rgb[0]), float(anchor_rgb[1]), float(anchor_rgb[2]),
+        float(mid_before[0]), float(mid_before[1]), float(mid_before[2]),
+        float(gamma.min()), float(gamma.max()),
+    )
+    return out.to(dtype=decoded.dtype), anchor_rgb
 
 
 def timeline_row_for_index(timeline: dict | None, index: int) -> dict:

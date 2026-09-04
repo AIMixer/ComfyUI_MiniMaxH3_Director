@@ -222,6 +222,11 @@ class DirectorPlan:
     run_indices: frozenset[int] | None = None  # None = run all segments
     continuity_enabled: bool = False
     continuity_overlap_frames: int = 0
+    # Segment-continuity companion: open-loop pixel-only exposure anchor that
+    # flattens per-segment brightness drift back to the first segment's exposure.
+    # Never feeds latents/audio, so the native latent pin is unaffected.
+    exposure_anchor_enabled: bool = True
+    exposure_anchor_strength: float = 0.40  # gamma range cap [1/1+s, 1+s]; 0 = off
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
     # Full source-video PCM reused only during this Director execution.
     audio_decode_cache: dict = field(default_factory=dict, repr=False)
@@ -811,12 +816,16 @@ def build_director_plan(
 
     from .segment_continuity import (
         resolve_continuity_settings,
+        resolve_exposure_anchor_enabled,
+        resolve_exposure_anchor_strength,
         resolve_segment_continuity_from_prev,
     )
 
     continuity_enabled, continuity_overlap = resolve_continuity_settings(
         timeline, segment_count=len(segments)
     )
+    exposure_anchor_enabled = resolve_exposure_anchor_enabled(timeline)
+    exposure_anchor_strength = resolve_exposure_anchor_strength(timeline)
     for seg, (_start, _end, seg_data) in zip(segments, segment_ranges):
         seg.continuity_from_prev = resolve_segment_continuity_from_prev(
             seg_data if isinstance(seg_data, dict) else {},
@@ -850,6 +859,8 @@ def build_director_plan(
         run_indices=_parse_run_selection(timeline, len(segments)),
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        exposure_anchor_enabled=exposure_anchor_enabled,
+        exposure_anchor_strength=exposure_anchor_strength,
         global_ref_audios=global_ref_audios,
     )
 

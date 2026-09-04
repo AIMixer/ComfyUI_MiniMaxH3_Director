@@ -650,11 +650,17 @@ def build_gen_director_plan(
     raw["timelineMode"] = timeline_mode
     src_w, src_h = _resolve_gen_image_source_dims(segment_ranges, global_block, output_block)
 
-    from .segment_continuity import resolve_continuity_settings
+    from .segment_continuity import (
+        resolve_continuity_settings,
+        resolve_exposure_anchor_enabled,
+        resolve_exposure_anchor_strength,
+    )
 
     continuity_enabled, continuity_overlap = resolve_continuity_settings(
         timeline, segment_count=len(segments)
     )
+    exposure_anchor_enabled = resolve_exposure_anchor_enabled(timeline)
+    exposure_anchor_strength = resolve_exposure_anchor_strength(timeline)
 
     return DirectorPlan(
         frame_rate=float(timeline.get("frameRate") or frame_rate or 24),
@@ -677,5 +683,7 @@ def build_gen_director_plan(
         run_indices=_parse_run_selection(timeline, len(segments)),
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        exposure_anchor_enabled=exposure_anchor_enabled,
+        exposure_anchor_strength=exposure_anchor_strength,
         global_ref_audios=shared_ref_audios,
     )
