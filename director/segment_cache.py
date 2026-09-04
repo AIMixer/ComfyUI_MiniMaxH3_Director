@@ -951,3 +951,42 @@ def clear_segment_cache(node_id: str | None, kind: str = "final") -> int:
     if removed:
         log.info("Cleared %s cache for node %s (%d file(s)).", kind, node_id, removed)
     return removed
+
+
+def clear_segment_cache_for(node_id: str | None, seg_index: int, kind: str = "all") -> int:
+    """Delete cached files for ONE segment (``seg_XXXX.*``), e.g.「重跑本组」.
+
+    ``kind`` mirrors :func:`clear_segment_cache`. Never creates the cache dir.
+    Returns the number of files removed.
+    """
+    if not node_id:
+        return 0
+    if kind not in {"first_pass", "final", "all"}:
+        raise ValueError("kind must be first_pass, final or all")
+    idx = int(seg_index)
+    if idx < 0:
+        raise ValueError("segment_index must be >= 0")
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    if not root.is_dir():
+        return 0
+    removed = 0
+    for pattern in (f"seg_{idx:04d}.*", f".seg_{idx:04d}.*"):
+        for path in root.glob(pattern):
+            try:
+                if not path.is_file():
+                    continue
+            except OSError:
+                continue
+            is_pre = ".pre." in path.name
+            if kind == "first_pass" and not is_pre:
+                continue
+            if kind == "final" and is_pre:
+                continue
+            if _safe_unlink(path):
+                removed += 1
+    if removed:
+        log.info(
+            "Cleared %s cache for node %s segment #%d (%d file(s)).",
+            kind, node_id, idx + 1, removed,
+        )
+    return removed

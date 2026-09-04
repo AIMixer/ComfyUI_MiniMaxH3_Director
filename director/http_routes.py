@@ -575,11 +575,16 @@ async def minimax_clear_segment_cache(request):
     if kind not in {"first_pass", "final", "all"}:
         return web.Response(status=400, text="kind must be first_pass, final or all.")
 
-    try:
-        from .segment_cache import clear_segment_cache
+    segment_index = body.get("segment_index", None)
 
-        removed = clear_segment_cache(node_id, kind=kind)
-        return web.json_response({"removed": removed, "kind": kind})
+    try:
+        from .segment_cache import clear_segment_cache, clear_segment_cache_for
+
+        if segment_index is None or segment_index == "":
+            removed = clear_segment_cache(node_id, kind=kind)
+        else:
+            removed = clear_segment_cache_for(node_id, int(segment_index), kind=kind)
+        return web.json_response({"removed": removed, "kind": kind, "segment_index": segment_index})
     except Exception as exc:
         log.warning("MiniMax H3 Director clear segment cache failed: %s", exc)
         return web.Response(status=500, text=str(exc))

@@ -1025,6 +1025,8 @@ const STYLES = `
 .bd-output .bd-btn-live-preview{margin-left:auto;background:#222;border-color:#333;color:#aaa;white-space:nowrap;height:29px;min-height:29px;padding:4px 12px}
 .bd-output .bd-btn-live-preview:hover{background:#2a2a2a;border-color:#555;color:#ddd}
 .bd-output .bd-btn-live-preview.active{background:#1a3a2a;color:#4fff8f;border-color:#4fff8f;box-shadow:0 0 0 1px rgba(79,255,143,.35)}
+.bd-output .bd-btn-review-each{background:#222;border-color:#333;color:#aaa;white-space:nowrap;height:29px;min-height:29px;padding:4px 12px}
+.bd-output .bd-btn-review-each:hover{background:#2a2a2a;border-color:#555;color:#ddd}
 .bd-live-sample{width:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:linear-gradient(165deg,#1a1a1a 0%,#121212 100%);border:1px solid #333;border-radius:10px;flex-shrink:0}
 .bd-live-sample.hidden{display:none!important}
 .bd-live-sample.receiving{border-color:#4fff8f;box-shadow:0 0 0 1px rgba(79,255,143,.35)}
@@ -1144,6 +1146,13 @@ const STYLES = `
 .bd-run-status.done .bd-run-title{color:#7a9cff}
 .bd-run-status.error .bd-run-title{color:#f88}
 .bd-run-status.stopped .bd-run-title{color:#ffb74d}
+.bd-run-status.review .bd-run-title{color:#6ab0ff}
+.bd-run-review{display:flex;gap:10px;align-items:flex-start;margin-top:2px;flex-wrap:wrap}
+.bd-run-review-video{max-width:280px;max-height:190px;border-radius:6px;background:#000;border:1px solid #2a2a2a;flex-shrink:0}
+.bd-run-review-actions{display:flex;gap:6px;flex-wrap:wrap;padding-top:2px;align-items:center}
+.bd-btn-review-rerun{background:#2a2415;border:1px solid #6a5a2a;color:#ffcf7a;border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer}
+.bd-btn-review-rerun:hover{background:#3a3015}
+.bd-btn-review-each.active{background:#1a2a3a;color:#6ab0ff;border-color:#6ab0ff;box-shadow:0 0 0 1px rgba(106,176,255,.35)}
 .bd-run-status.active .bd-run-title{padding-right:64px}
 .bd-run-stop{position:absolute;top:6px;right:8px;background:#2a1515;border:1px solid #7a3a3a;color:#ff9a9a;border-radius:5px;padding:3px 10px;font-size:10px;font-weight:600;cursor:pointer;line-height:1.4}
 .bd-run-stop:hover{background:#3a1515;border-color:#a55}
@@ -1859,6 +1868,7 @@ function parseTimeline(raw, totalFrames, fps) {
         runSelectEnabled: false,
         runSelection: [],
         liveTaePreview: false,
+        reviewEachSegment: false,
         batchDetailMode: "solo",
         segments: [{ id: uid(), start: 0, length: total, prompt: "", taskType: "", refs: [], refAudios: [], referenceVideo: {} }],
     };
@@ -1963,6 +1973,8 @@ function parseTimeline(raw, totalFrames, fps) {
         data.runSelection = Array.isArray(data.runSelection) ? data.runSelection.map((i) => parseInt(i, 10)).filter((i) => i >= 0) : [];
         // Default off when missing. Explicit true keeps in-node TAE + segment playback.
         data.liveTaePreview = data.liveTaePreview === true || data.live_tae_preview === true;
+        //「逐组审核」: halt after each sampled group, wait for 继续 / 重跑本组.
+        data.reviewEachSegment = data.reviewEachSegment === true || data.review_each_segment === true;
         const detailMode = data.batchDetailMode ?? data.batch_detail_mode;
         data.batchDetailMode = detailMode === "all" ? "all" : "solo";
         if (data.timelineMode === "fl2v" || resolveTaskKey(data.global?.taskType || "") === "fl2v") {
@@ -2883,7 +2895,8 @@ class MiniMaxH3DirectorEditor {
                     <option value="56">56</option>
                 </select>
             </span>
-            <button type="button" class="bd-btn bd-btn-live-preview" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>`;
+            <button type="button" class="bd-btn bd-btn-live-preview" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>
+            <button type="button" class="bd-btn bd-btn-review-each" data-a="review-each-toggle" data-i18n="toolbar.reviewEach" data-i18n-title="tooltip.reviewEach">逐组审核</button>`;
         this.mainBody.appendChild(outputBar);
         this.outputBarEl = outputBar;
 
@@ -3064,6 +3077,13 @@ class MiniMaxH3DirectorEditor {
             <div class="bd-run-select-bar hidden" data-r="run-select-bar">
                 <span data-r="run-select-summary" data-i18n="run.summaryAllSegments">将运行全部片段</span>
             </div>
+            <div class="bd-run-review hidden" data-r="run-review">
+                <video class="bd-run-review-video hidden" data-r="run-review-video" controls loop muted autoplay playsinline></video>
+                <div class="bd-run-review-actions">
+                    <button type="button" class="bd-btn bd-btn-primary" data-r="run-review-continue" data-i18n="run.reviewContinue" data-i18n-title="run.reviewContinueTooltip">▶ 继续</button>
+                    <button type="button" class="bd-btn bd-btn-review-rerun" data-r="run-review-rerun" data-i18n="run.reviewRerun" data-i18n-title="run.reviewRerunTooltip">⟳ 重跑本组</button>
+                </div>
+            </div>
             <div class="bd-run-bars">
                 <div class="bd-run-bar" data-i18n-title="run.bar.overall"><div class="bd-run-bar-fill" data-r="run-overall" style="width:0%"></div></div>
                 <div class="bd-run-bar bd-run-bar-sub" data-i18n-title="run.bar.phase"><div class="bd-run-bar-fill" data-r="run-phase" style="width:0%"></div></div>
@@ -3199,6 +3219,22 @@ class MiniMaxH3DirectorEditor {
                 this.stopActiveRun();
             };
         }
+        this.runReviewEl = this.root.querySelector('[data-r="run-review"]');
+        this.runReviewVideo = this.root.querySelector('[data-r="run-review-video"]');
+        this.runReviewContinueBtn = this.root.querySelector('[data-r="run-review-continue"]');
+        this.runReviewRerunBtn = this.root.querySelector('[data-r="run-review-rerun"]');
+        if (this.runReviewContinueBtn) {
+            this.runReviewContinueBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.continueAfterReview();
+            };
+        }
+        if (this.runReviewRerunBtn) {
+            this.runReviewRerunBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.rerunReviewedGroup();
+            };
+        }
         this.runOverallEl = this.root.querySelector('[data-r="run-overall"]');
         this.runPhaseEl = this.root.querySelector('[data-r="run-phase"]');
         this.runSelectBar = this.root.querySelector('[data-r="run-select-bar"]');
@@ -3252,9 +3288,11 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="play"]', () => this.togglePlay());
         bind('[data-a="loop"]', () => this.toggleLoop());
         bind('[data-a="live-tae-preview"]', () => this.toggleLiveTaePreview());
+        bind('[data-a="review-each-toggle"]', () => this.toggleReviewEachSegment());
         bind('[data-a="frame-prev"]', () => this.stepFrame(-1));
         bind('[data-a="frame-next"]', () => this.stepFrame(1));
         this.refreshLiveTaePreviewButton();
+        this.refreshReviewEachButton();
         this.updateLiveSamplePanel();
 
         this.seekBar.oninput = () => {
@@ -5951,6 +5989,7 @@ class MiniMaxH3DirectorEditor {
         this.updateSelectionUI?.();
         this.refreshLoopButtonTitle?.();
         this.refreshLiveTaePreviewButton?.();
+        this.refreshReviewEachButton?.();
         this.updateLiveSamplePanel?.();
         this.syncTimelineZoomUI?.();
         this.syncExternalGroupsTimeline?.();
@@ -11361,6 +11400,27 @@ class MiniMaxH3DirectorEditor {
         btn.removeAttribute("data-i18n-title");
     }
 
+    isReviewEachSegmentEnabled() {
+        return this.timeline?.reviewEachSegment === true;
+    }
+
+    toggleReviewEachSegment() {
+        this.timeline.reviewEachSegment = !this.isReviewEachSegmentEnabled();
+        this.refreshReviewEachButton();
+        this.scheduleTimelineSync();
+    }
+
+    refreshReviewEachButton() {
+        const btn = this.root?.querySelector('[data-a="review-each-toggle"]');
+        if (!btn) return;
+        const on = this.isReviewEachSegmentEnabled();
+        btn.classList.toggle("active", on);
+        btn.textContent = t("toolbar.reviewEach");
+        btn.title = on ? t("tooltip.reviewEachOn") : t("tooltip.reviewEachOff");
+        btn.setAttribute("data-i18n", "toolbar.reviewEach");
+        btn.removeAttribute("data-i18n-title");
+    }
+
     _clearEmbeddedLiveLayoutClasses() {
         this.globalPromptLayout?.classList.remove("bd-v2v-with-live", "bd-rv2v-with-live");
         this.segPromptLayout?.classList.remove("bd-v2v-with-live", "bd-rv2v-with-live");
@@ -11566,8 +11626,35 @@ class MiniMaxH3DirectorEditor {
             : 0;
         const remain = Math.max(0, runTotal - runSeg);
 
+        if (detail.phase === "review") {
+            //「逐组审核」halt: show merged preview + 继续 / 重跑本组 actions.
+            this.runStatusEl.className = "bd-run-status review";
+            this._syncRunStopButton();
+            const doneSeg = Math.max(1, detail.timeline_segment ?? detail.segment ?? 1);
+            this._reviewHaltSeg = doneSeg - 1;
+            this.runTitleEl.textContent = t("run.titleReview");
+            this.runDetailEl.textContent = t("run.detailReview", { n: doneSeg });
+            this.runOverallEl.style.width = `${overallPct}%`;
+            this.runPhaseEl.style.width = "100%";
+            this._runHighlightSeg = -1;
+            this._runProgressSegKey = null;
+            this.liveSampleEl?.classList.remove("receiving");
+            this._stopLiveFrameCycler?.();
+            this._setReviewUI(true, detail.review_video || "");
+            this._followRunSelection(doneSeg);
+            this.updateRunSelectUI();
+            if (this.isImageBatch()) {
+                this._syncBatchRunHighlight();
+                this.renderImageBatchGroups();
+            } else {
+                this.scheduleRender();
+            }
+            return;
+        }
+
         if (detail.phase === "finish") {
             this.runStatusEl.className = "bd-run-status done";
+            this._setReviewUI(false);
             this._syncRunStopButton();
             this.runTitleEl.textContent = t("run.titleDone");
             this.runDetailEl.textContent = runTotal
@@ -11591,6 +11678,7 @@ class MiniMaxH3DirectorEditor {
         }
 
         this.runStatusEl.className = "bd-run-status active";
+        this._setReviewUI(false);
         this._syncRunStopButton();
         // Hide the pre-run "将运行 N 段" chip while progress is live — it sits
         // under the title in the same green accent and reads as a layout glitch.
@@ -11649,6 +11737,7 @@ class MiniMaxH3DirectorEditor {
     clearRunProgress(title, detail) {
         if (!this.runStatusEl) return;
         this.runStatusEl.className = "bd-run-status idle";
+        this._setReviewUI(false);
         this._syncRunStopButton();
         this.runTitleEl.textContent = title || t("run.titleIdle");
         this.runDetailEl.textContent = detail || t("run.detailIdle");
@@ -11664,6 +11753,7 @@ class MiniMaxH3DirectorEditor {
     setRunError(message) {
         if (!this.runStatusEl) return;
         this.runStatusEl.className = "bd-run-status error";
+        this._setReviewUI(false);
         this._syncRunStopButton();
         this.runTitleEl.textContent = t("run.titleError");
         this.runDetailEl.textContent = message || t("run.detailError");
@@ -11706,6 +11796,7 @@ class MiniMaxH3DirectorEditor {
     setRunStopped() {
         if (!this.runStatusEl) return;
         this.runStatusEl.className = "bd-run-status stopped";
+        this._setReviewUI(false);
         this.runTitleEl.textContent = t("run.titleStopped");
         this.runDetailEl.textContent = t("run.detailStopped");
         if (this.runOverallEl) this.runOverallEl.style.width = "0%";
@@ -11722,6 +11813,71 @@ class MiniMaxH3DirectorEditor {
         } else {
             this.scheduleRender();
         }
+    }
+
+    /** Show/hide the「逐组审核」waiting UI (merged video + 继续/重跑 buttons). */
+    _setReviewUI(show, reviewVideo = "") {
+        if (!this.runReviewEl) return;
+        this.runReviewEl.classList.toggle("hidden", !show);
+        if (show && reviewVideo && this.runReviewVideo) {
+            const src = `/view?filename=${encodeURIComponent(reviewVideo)}&subfolder=minimax_review&type=output&_=${Date.now()}`;
+            if (this.runReviewVideo.dataset.src !== src) {
+                this.runReviewVideo.dataset.src = src;
+                this.runReviewVideo.src = src;
+                this.runReviewVideo.classList.remove("hidden");
+                try { this.runReviewVideo.play()?.catch?.(() => {}); } catch (_) { /* ignore */ }
+            }
+        } else if (!show && this.runReviewVideo) {
+            try { this.runReviewVideo.pause?.(); } catch (_) { /* ignore */ }
+            this.runReviewVideo.removeAttribute("src");
+            delete this.runReviewVideo.dataset.src;
+            this.runReviewVideo.classList.add("hidden");
+        }
+        this.updateDomWidgetHeight?.();
+    }
+
+    /**「继续」: re-queue; finished groups hit the disk cache, next group samples. */
+    continueAfterReview() {
+        if (this.runReviewContinueBtn) this.runReviewContinueBtn.disabled = true;
+        try {
+            app.queuePrompt?.();
+        } finally {
+            setTimeout(() => {
+                if (this.runReviewContinueBtn) this.runReviewContinueBtn.disabled = false;
+            }, 1500);
+        }
+    }
+
+    /**「重跑本组」: clear the reviewed group's cache, then re-queue to re-sample it. */
+    async rerunReviewedGroup() {
+        const idx = this._reviewHaltSeg;
+        if (idx == null || idx < 0) return;
+        if (this.runReviewRerunBtn) this.runReviewRerunBtn.disabled = true;
+        try {
+            await api.fetchApi("/minimax/director/clear_segment_cache", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    node_id: String(this.node?.id ?? ""),
+                    kind: "all",
+                    segment_index: idx,
+                }),
+            });
+        } catch (err) {
+            console.warn("MiniMax Director: clear segment cache failed", err);
+        }
+        // Drop the local preview so the card shows「生成中」instead of the old clip.
+        const seg = this.timeline?.segments?.[idx];
+        if (seg) {
+            seg.previewB64 = "";
+            seg.previewFrames = [];
+            seg.previewLiveFrames = [];
+            seg.previewLive = false;
+        }
+        if (this.isImageBatch?.()) this.renderImageBatchGroups?.();
+        else this.scheduleRender?.();
+        if (this.runReviewRerunBtn) this.runReviewRerunBtn.disabled = false;
+        this.continueAfterReview();
     }
 
     _stopPlay() {

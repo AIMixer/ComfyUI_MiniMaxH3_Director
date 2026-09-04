@@ -405,6 +405,11 @@ def execute_director_plan_core(
     # When off: skip step TAE and the post-sample full-segment JPEG playback encode.
     raw_live = (plan.raw or {}).get("liveTaePreview", (plan.raw or {}).get("live_tae_preview", False))
     live_tae_preview = raw_live in (True, 1, "1", "true", "True", "on")
+    # UI toggle「逐组审核」(timeline.reviewEachSegment); default off.
+    # When on: stop sampling after each newly sampled segment so the user can
+    # review the clip, then re-queue to continue (or edit its prompt to re-roll).
+    raw_review = (plan.raw or {}).get("reviewEachSegment", (plan.raw or {}).get("review_each_segment", False))
+    review_each_segment = raw_review in (True, 1, "1", "true", "True", "on")
 
     all_segments = plan.segments
     # Drop caches for deleted/shortened timelines. Use every segment index (not
@@ -458,6 +463,11 @@ def execute_director_plan_core(
         reports.append("Live preview: ON — 采样 TAE + 成片后整段 JPEG 播放。")
     else:
         reports.append("Live preview: OFF — 跳过 TAE 与成片 JPEG（节点内不播放）。")
+    if review_each_segment:
+        reports.append(
+            "逐组审核: ON — 每采样完成一组即暂停；审核后点「继续」跑下一组，"
+            "改提示词或点「重跑本组」可重新生成该组。"
+        )
     if clear_vram_between_segments:
         reports.append("VRAM: 段间清理显存已开启（最后一段不清理）。")
     if audio_mode == AUDIO_MODE_MUTE:
@@ -1336,6 +1346,9 @@ def execute_director_plan_core(
         )
         return chunk, audio_dict, pre_chunk
 
+    review_halt = False
+    review_halted_seg: int | None = None
+
     for seg in all_segments:
         # The whole multi-group run is ONE node execution — ComfyUI's interrupt
         # is only raised inside the sampler. Check at each segment boundary so
@@ -1369,7 +1382,7 @@ def execute_director_plan_core(
                         segment_pre_refine=segment_pre_refine,
                         progress_pos=progress_pos,
                     )
-        if seg.index in run_indices:
+        if seg.index in run_indices and not review_halt:
             if clear_vram_between_segments and segment_outputs:
                 cleanup_segment_vram(enabled=True)
             try:
@@ -1383,6 +1396,16 @@ def execute_director_plan_core(
             segment_audios.append(audio_dict or {})
             segment_export_lengths[seg.index] = int(chunk.shape[0])
             resampled_this_run.add(seg.index)
+            if review_each_segment:
+                #「逐组审核」: this group is already cached to disk — stop
+                # sampling; remaining selected groups fall through to the
+                # cache-fill path, so a re-queue resumes after this one.
+                review_halt = True
+                review_halted_seg = seg.index
+                reports.append(
+                    f"Segment {seg.index + 1}/{timeline_seg_total}: 已生成，等待审核 — 点「继续」跑下一组；"
+                    "改提示词或点「重跑本组」可重新采样该组。"
+                )
             if export_segments_mode and seg.index > 0:
                 # Next pin + phase-trim already happened inside _run_one_segment.
                 _release_segment_pixels(
@@ -1487,7 +1510,6 @@ def execute_director_plan_core(
     if not output_chunks and not segment_outputs:
         raise ValueError("Director plan produced no segments.")
 
-    report_director_finish(node_id, seg_total)
     export_chunks = output_chunks if output_chunks else segment_outputs
     export_pre_chunks = output_pre_chunks if output_pre_chunks else segment_pre_refine
     export_segments = (
@@ -1564,6 +1586,47 @@ def execute_director_plan_core(
             if same_as_final
             else concat_continuous_chunks(pre_source, export_segments, plan)
         )
+
+    #「逐组审核」halt: write a merged mp4 of all completed groups so the UI
+    # can play「前面+当前组」的连贯视频 while waiting for the review action.
+    review_video = ""
+    if review_halted_seg is not None:
+        try:
+            import folder_paths as _fp
+            from pathlib import Path as _Path
+
+            from ..lib.video_export import write_frames_to_mp4 as _write_mp4
+
+            if (
+                plan.export_mode == "all"
+                and isinstance(combined, torch.Tensor)
+                and int(combined.shape[0]) > 1
+            ):
+                _dir = _Path(_fp.get_output_directory()) / "minimax_review"
+                _name = f"review_node_{node_id}.mp4"
+                _write_mp4(_dir / _name, combined, fps=float(plan.frame_rate or 24))
+                review_video = _name
+                reports.append(
+                    f"Review preview: {int(combined.shape[0])} 帧合成视频已写入 "
+                    f"output/minimax_review/{_name}（视频轨，供审核播放）。"
+                )
+        except Exception as exc:
+            log.warning("Review merged preview export skipped: %s", exc)
+
+    if review_halted_seg is not None:
+        from .progress import report_director_review
+
+        report_director_review(
+            node_id,
+            run_position=progress_pos.get(review_halted_seg, 0),
+            run_total=seg_total,
+            timeline_segment_index=review_halted_seg,
+            timeline_segment_total=timeline_seg_total,
+            review_video=review_video,
+        )
+    else:
+        report_director_finish(node_id, seg_total)
+
     return (
         combined,
         segment_outputs,
