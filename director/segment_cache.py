@@ -20,6 +20,7 @@ import folder_paths
 
 from .h3_motion_context import CONTINUITY_PIPELINE_ID, trim_context_prefix, trim_export_tail
 from .plan import DirectorPlan, SegmentPlan, resolve_ref_image_size
+from .timed_guides import timed_guides_fingerprint
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.cache")
 
@@ -108,6 +109,9 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         or seg.reference_video_meta.get("fileName")
         or ""
     ).strip()
+    timed_guides = timed_guides_fingerprint(
+        list(getattr(seg, "timed_guides", None) or [])
+    )
     return {
         "index": seg.index,
         "start": seg.start_frame,
@@ -126,6 +130,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         "ref_videos": ref_video_files,
         "ref_video": ref_video_file,
         "ref_video_start": seg.reference_video_start_frame,
+        "timed_guides": timed_guides,
         SOURCE_VIDEO_FP_KEY: source_video_identity(plan),
         "continuity": plan.continuity_enabled,
         "continuity_overlap": plan.continuity_overlap_frames if plan.continuity_enabled else 0,
