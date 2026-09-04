@@ -267,6 +267,8 @@ function sanitizeSegmentForPayload(seg) {
     const {
         previewB64,
         previewFrames,
+        previewLiveFrames,
+        previewLiveFps,
         imageB64,
         ...rest
     } = seg;
@@ -1136,11 +1138,18 @@ const STYLES = `
 .bd-output .bd-out-fixed{display:flex;gap:4px;align-items:center}
 .bd-output .bd-out-fixed.hidden{display:none}
 /* Do not use margin-top:auto — with an oversized min-height it creates a huge empty gap above the status bar. */
-.bd-run-status{width:100%;box-sizing:border-box;padding:8px 10px;background:#151515;border:1px solid #333;border-radius:6px;display:flex;flex-direction:column;gap:5px;margin-top:6px;margin-bottom:0;flex-shrink:0}
+.bd-run-status{width:100%;box-sizing:border-box;padding:8px 10px;background:#151515;border:1px solid #333;border-radius:6px;display:flex;flex-direction:column;gap:5px;margin-top:6px;margin-bottom:0;flex-shrink:0;position:relative}
 .bd-run-status.idle .bd-run-title{color:#888}
 .bd-run-status.active .bd-run-title{color:#4fff8f}
 .bd-run-status.done .bd-run-title{color:#7a9cff}
 .bd-run-status.error .bd-run-title{color:#f88}
+.bd-run-status.stopped .bd-run-title{color:#ffb74d}
+.bd-run-status.active .bd-run-title{padding-right:64px}
+.bd-run-stop{position:absolute;top:6px;right:8px;background:#2a1515;border:1px solid #7a3a3a;color:#ff9a9a;border-radius:5px;padding:3px 10px;font-size:10px;font-weight:600;cursor:pointer;line-height:1.4}
+.bd-run-stop:hover{background:#3a1515;border-color:#a55}
+.bd-run-stop:disabled{opacity:.5;cursor:wait}
+.bd-batch-stop{background:#2a1515;border:1px solid #7a3a3a;color:#ff9a9a;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;line-height:1.3;flex-shrink:0}
+.bd-batch-stop:hover{background:#3a1515;border-color:#a55}
 .bd-run-title{font-size:11px;font-weight:600;line-height:1.35}
 .bd-run-detail{color:#999;font-size:10px;line-height:1.4}
 .bd-run-bars{display:flex;flex-direction:column;gap:3px}
@@ -2444,9 +2453,32 @@ class MiniMaxH3DirectorEditor {
     _syncBatchRunHighlight() {
         if (!this.isImageBatch?.() || !this.batchList) return;
         const runningIdx = this._runHighlightSeg;
+        const runActive = !!this.runStatusEl?.classList?.contains("active");
         this.batchList.querySelectorAll(".bd-batch-card").forEach((card) => {
             const i = parseInt(card.dataset.batchIndex, 10);
+            const isRunning = Number.isFinite(i) && i === runningIdx && runActive;
             card.classList.toggle("running", Number.isFinite(i) && i === runningIdx);
+            // Inject a「停止」button on the currently running group card so the
+            // user can halt it, edit the prompt, and re-run (cache keeps the rest).
+            let stopBtn = card.querySelector(":scope > .bd-batch-head .bd-batch-stop");
+            if (isRunning) {
+                if (!stopBtn) {
+                    stopBtn = document.createElement("button");
+                    stopBtn.type = "button";
+                    stopBtn.className = "bd-batch-stop";
+                    stopBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        this.stopActiveRun();
+                    };
+                    const headMeta = card.querySelector(":scope > .bd-batch-head .bd-batch-head-meta");
+                    const head = card.querySelector(":scope > .bd-batch-head");
+                    (headMeta || head)?.prepend(stopBtn);
+                }
+                stopBtn.textContent = t("batch.stopGroup");
+                stopBtn.title = t("batch.stopGroupTooltip");
+            } else if (stopBtn) {
+                stopBtn.remove();
+            }
         });
         this.batchPicker?.querySelectorAll?.(".bd-batch-pick").forEach((chip) => {
             const i = parseInt(chip.dataset.batchIndex, 10);
@@ -3027,6 +3059,7 @@ class MiniMaxH3DirectorEditor {
         runStatus.dataset.r = "run-status";
         runStatus.innerHTML = `
             <div class="bd-run-title" data-r="run-title" data-i18n="run.titleIdle">运行状态：待命</div>
+            <button type="button" class="bd-run-stop hidden" data-r="run-stop" data-i18n="run.stop" data-i18n-title="run.stopTooltip">■ 停止</button>
             <div class="bd-run-detail" data-r="run-detail" data-i18n="run.detailIdle">队列执行时将显示当前片段与阶段进度</div>
             <div class="bd-run-select-bar hidden" data-r="run-select-bar">
                 <span data-r="run-select-summary" data-i18n="run.summaryAllSegments">将运行全部片段</span>
@@ -3159,6 +3192,13 @@ class MiniMaxH3DirectorEditor {
         this.runStatusEl = this.root.querySelector('[data-r="run-status"]');
         this.runTitleEl = this.root.querySelector('[data-r="run-title"]');
         this.runDetailEl = this.root.querySelector('[data-r="run-detail"]');
+        this.runStopBtn = this.root.querySelector('[data-r="run-stop"]');
+        if (this.runStopBtn) {
+            this.runStopBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.stopActiveRun();
+            };
+        }
         this.runOverallEl = this.root.querySelector('[data-r="run-overall"]');
         this.runPhaseEl = this.root.querySelector('[data-r="run-phase"]');
         this.runSelectBar = this.root.querySelector('[data-r="run-select-bar"]');
@@ -11400,6 +11440,7 @@ class MiniMaxH3DirectorEditor {
         this._liveSampleStep = null;
         this._liveSampleTotal = null;
         this._liveSampleSeg = null;
+        this._stopLiveFrameCycler();
         this.liveSampleEl?.classList.remove("receiving");
         if (this.liveSampleImg) {
             this.liveSampleImg.removeAttribute("src");
@@ -11408,6 +11449,39 @@ class MiniMaxH3DirectorEditor {
         this.liveSampleEmpty?.classList.remove("hidden");
         this.liveSampleBadge?.classList.add("hidden");
         if (this.liveSampleMeta) this.liveSampleMeta.textContent = t("liveSample.idleHint");
+    }
+
+    /** Cycle live preview frames so the panel plays a looping clip, not a still. */
+    _startLiveFrameCycler(frames, fps) {
+        this._stopLiveFrameCycler();
+        const urls = (frames || [])
+            .filter((f) => typeof f === "string" && f)
+            .map((f) => (f.startsWith("data:") ? f : `data:image/jpeg;base64,${f}`));
+        if (urls.length < 2) return;
+        // Preload so src swaps don't flicker.
+        this._liveCycleImages = urls.map((u) => {
+            const im = new Image();
+            im.src = u;
+            return im;
+        });
+        this._liveCycleIdx = 0;
+        const interval = Math.max(120, 1000 / Math.min(Math.max(Number(fps) || 4, 1), 8));
+        this._liveFrameTimer = setInterval(() => {
+            const img = this.liveSampleImg;
+            const imgs = this._liveCycleImages;
+            if (!img || !imgs?.length || img.classList.contains("hidden")) return;
+            this._liveCycleIdx = (this._liveCycleIdx + 1) % imgs.length;
+            img.src = imgs[this._liveCycleIdx].src;
+        }, interval);
+    }
+
+    _stopLiveFrameCycler() {
+        if (this._liveFrameTimer) {
+            clearInterval(this._liveFrameTimer);
+            this._liveFrameTimer = null;
+        }
+        this._liveCycleImages = null;
+        this._liveCycleIdx = 0;
     }
 
     setLiveSamplePreview(detail = {}) {
@@ -11426,6 +11500,13 @@ class MiniMaxH3DirectorEditor {
             this.liveSampleImg.src = src;
             this.liveSampleImg.classList.remove("hidden");
         }
+        // Live sampling sends several temporal frames per step — play them as a
+        // looping clip so the preview reads as video, not a static image.
+        const liveFrames = detail.live && Array.isArray(detail.frames) && detail.frames.length > 1
+            ? detail.frames
+            : null;
+        if (liveFrames) this._startLiveFrameCycler(liveFrames, detail.fps);
+        else this._stopLiveFrameCycler();
         this.liveSampleEmpty?.classList.add("hidden");
         this.liveSampleEl?.classList.toggle("receiving", !!detail.live);
 
@@ -11487,6 +11568,7 @@ class MiniMaxH3DirectorEditor {
 
         if (detail.phase === "finish") {
             this.runStatusEl.className = "bd-run-status done";
+            this._syncRunStopButton();
             this.runTitleEl.textContent = t("run.titleDone");
             this.runDetailEl.textContent = runTotal
                 ? (this.isImageBatch()
@@ -11509,6 +11591,7 @@ class MiniMaxH3DirectorEditor {
         }
 
         this.runStatusEl.className = "bd-run-status active";
+        this._syncRunStopButton();
         // Hide the pre-run "将运行 N 段" chip while progress is live — it sits
         // under the title in the same green accent and reads as a layout glitch.
         this.runSelectBar?.classList.add("hidden");
@@ -11566,6 +11649,7 @@ class MiniMaxH3DirectorEditor {
     clearRunProgress(title, detail) {
         if (!this.runStatusEl) return;
         this.runStatusEl.className = "bd-run-status idle";
+        this._syncRunStopButton();
         this.runTitleEl.textContent = title || t("run.titleIdle");
         this.runDetailEl.textContent = detail || t("run.detailIdle");
         this.runOverallEl.style.width = "0%";
@@ -11580,6 +11664,7 @@ class MiniMaxH3DirectorEditor {
     setRunError(message) {
         if (!this.runStatusEl) return;
         this.runStatusEl.className = "bd-run-status error";
+        this._syncRunStopButton();
         this.runTitleEl.textContent = t("run.titleError");
         this.runDetailEl.textContent = message || t("run.detailError");
         if (this.runOverallEl) this.runOverallEl.style.width = "0%";
@@ -11588,6 +11673,55 @@ class MiniMaxH3DirectorEditor {
         this._runProgressSegKey = null;
         this.updateRunSelectUI();
         this.scheduleRender();
+    }
+
+    /**「停止」button follows the .active run state. */
+    _syncRunStopButton() {
+        const active = !!this.runStatusEl?.classList?.contains("active");
+        this.runStopBtn?.classList?.toggle("hidden", !active);
+        if (!active && this.runStopBtn) this.runStopBtn.disabled = false;
+    }
+
+    /** Interrupt the running prompt (stops the currently running group). */
+    stopActiveRun() {
+        if (!this.runStatusEl?.classList?.contains("active")) return;
+        if (this.runStopBtn) this.runStopBtn.disabled = true;
+        let sent = false;
+        try {
+            if (typeof api.interrupt === "function") {
+                const p = api.interrupt();
+                if (p?.catch) p.catch(() => {});
+                sent = true;
+            }
+        } catch (_) { /* fall through to raw POST */ }
+        if (!sent) {
+            try {
+                fetch("/interrupt", { method: "POST" }).catch(() => {});
+            } catch (_) { /* ignore */ }
+        }
+        this.runDetailEl && (this.runDetailEl.textContent = t("run.stopping"));
+    }
+
+    /** execution_interrupted: keep finished-group caches, allow prompt edits + re-run. */
+    setRunStopped() {
+        if (!this.runStatusEl) return;
+        this.runStatusEl.className = "bd-run-status stopped";
+        this.runTitleEl.textContent = t("run.titleStopped");
+        this.runDetailEl.textContent = t("run.detailStopped");
+        if (this.runOverallEl) this.runOverallEl.style.width = "0%";
+        if (this.runPhaseEl) this.runPhaseEl.style.width = "0%";
+        this._runHighlightSeg = -1;
+        this._runProgressSegKey = null;
+        this._syncRunStopButton();
+        this.liveSampleEl?.classList.remove("receiving");
+        this._stopLiveFrameCycler?.();
+        this.updateRunSelectUI();
+        if (this.isImageBatch()) {
+            this._syncBatchRunHighlight();
+            this.renderImageBatchGroups();
+        } else {
+            this.scheduleRender();
+        }
     }
 
     _stopPlay() {
@@ -12399,7 +12533,7 @@ app.registerExtension({
                     detail?.segment_index ?? 0,
                     detail?.image_b64 || "",
                     {
-                        frames: detail?.live ? undefined : detail?.frames,
+                        frames: detail?.frames,
                         fps: detail?.fps,
                         live: !!detail?.live,
                         step: detail?.step,
@@ -12422,6 +12556,7 @@ app.registerExtension({
                 for (const seg of editor.timeline.segments || []) {
                     seg.previewB64 = "";
                     seg.previewFrames = [];
+                    seg.previewLiveFrames = [];
                     seg.previewLive = false;
                     seg.previewStep = null;
                     seg.previewTotalSteps = null;
@@ -12452,6 +12587,20 @@ app.registerExtension({
             if (node?._minimaxEditor) {
                 node._minimaxEditor.setRunError(detail?.exception_message || t("executing.error"));
             }
+        });
+
+        api.addEventListener("execution_interrupted", ({ detail }) => {
+            //「停止」button / ComfyUI interrupt: mark every running Director as
+            // stopped so prompts can be edited and re-run (finished groups keep
+            // their on-disk cache). Falls back to all directors when no node id.
+            const node = findDirectorNode(detail?.node_id);
+            const graph = app.graph ?? app.canvas?.graph;
+            const editors = node
+                ? [node._minimaxEditor]
+                : (graph?._nodes ?? graph?.nodes ?? [])
+                    .map((n) => n?._minimaxEditor)
+                    .filter((ed) => ed?.runStatusEl?.classList?.contains("active"));
+            for (const ed of editors) ed?.setRunStopped?.();
         });
 
         patchDirectorDomWidgetLayout();

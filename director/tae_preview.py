@@ -85,6 +85,12 @@ class _TinyVAEDecoder:
         out = self.model(latent_bchw.to(device=self.device, dtype=self.dtype))
         return out[0].movedim(0, -1).float().clamp(0, 1).cpu()
 
+    @torch.inference_mode()
+    def decode_frames(self, latent_nchw: torch.Tensor) -> torch.Tensor:
+        """[N,C,H,W] -> [N,H',W',3] float in 0..1 (batched TinyVAE pass)."""
+        out = self.model(latent_nchw.to(device=self.device, dtype=self.dtype))
+        return out.movedim(1, -1).float().clamp(0, 1).cpu()
+
 
 def get_tae_decoder(name: str = _DEFAULT_TAE_NAME):
     global _decoder, _decoder_failed
@@ -139,7 +145,7 @@ def _video_latent_from_x0(x0: Any) -> torch.Tensor | None:
     return None
 
 
-def _latent2rgb_pil(video: torch.Tensor) -> Image.Image | None:
+def _latent2rgb_pil_at(video: torch.Tensor, t: int) -> Image.Image | None:
     try:
         from comfy.latent_formats import MiniMaxH3Video
         import latent_preview
@@ -149,15 +155,34 @@ def _latent2rgb_pil(video: torch.Tensor) -> Image.Image | None:
             fmt.latent_rgb_factors,
             fmt.latent_rgb_factors_bias,
         )
-        # Mid temporal frame for a quick look.
-        t = int(video.shape[2] // 2)
-        frame = video[:1, :, t]
+        frame = video[:1, :, int(t)]
         out = previewer.decode_latent_to_preview(frame)
         if isinstance(out, Image.Image):
             return out.convert("RGB")
     except Exception as exc:
         log.debug("Latent2RGB preview failed: %s", exc)
     return None
+
+
+def _latent2rgb_pil(video: torch.Tensor) -> Image.Image | None:
+    # Mid temporal frame for a quick look.
+    return _latent2rgb_pil_at(video, int(video.shape[2] // 2))
+
+
+def _finalize_preview_pil(pil: Image.Image, *, max_side: int) -> Image.Image:
+    # Latent2RGB frames are often tiny (latent spatial size); upscale so UI
+    # preview slots are not a speck in a large card.
+    min_side = 256
+    longest = max(int(pil.width), int(pil.height))
+    if longest > 0 and longest < min_side:
+        scale = min_side / float(longest)
+        pil = pil.resize(
+            (max(1, int(round(pil.width * scale))), max(1, int(round(pil.height * scale)))),
+            Image.Resampling.NEAREST if hasattr(Image, "Resampling") else Image.NEAREST,
+        )
+    if max_side and max_side > 0 and (pil.width > max_side or pil.height > max_side):
+        pil = ImageOps.contain(pil, (max_side, max_side), Image.LANCZOS)
+    return pil
 
 
 def x0_to_preview_pil(x0: Any, *, max_side: int = 512) -> Image.Image | None:
@@ -181,20 +206,50 @@ def x0_to_preview_pil(x0: Any, *, max_side: int = 512) -> Image.Image | None:
         pil = _latent2rgb_pil(video)
     if pil is None:
         return None
+    return _finalize_preview_pil(pil, max_side=max_side)
 
-    # Latent2RGB frames are often tiny (latent spatial size); upscale so UI
-    # preview slots are not a speck in a large card.
-    min_side = 256
-    longest = max(int(pil.width), int(pil.height))
-    if longest > 0 and longest < min_side:
-        scale = min_side / float(longest)
-        pil = pil.resize(
-            (max(1, int(round(pil.width * scale))), max(1, int(round(pil.height * scale)))),
-            Image.Resampling.NEAREST if hasattr(Image, "Resampling") else Image.NEAREST,
-        )
-    if max_side and max_side > 0 and (pil.width > max_side or pil.height > max_side):
-        pil = ImageOps.contain(pil, (max_side, max_side), Image.LANCZOS)
-    return pil
+
+def x0_to_preview_frames_pil(
+    x0: Any,
+    *,
+    max_frames: int = 6,
+    max_side: int = 320,
+) -> list[Image.Image]:
+    """Decode several evenly spaced temporal frames so the UI can play the
+    live preview as a short looping clip instead of a single static frame.
+
+    Falls back to the single mid-frame when the video stream has only one
+    temporal slice or decoding fails.
+    """
+    video = _video_latent_from_x0(x0)
+    if video is None or video.numel() == 0:
+        return []
+    t_total = int(video.shape[2])
+    if t_total <= 1:
+        single = x0_to_preview_pil(x0, max_side=max_side)
+        return [single] if single is not None else []
+
+    n = max(2, min(int(max_frames), t_total))
+    idxs = sorted({int(round(i * (t_total - 1) / (n - 1))) for i in range(n)})
+
+    pils: list[Image.Image] = []
+    dec = get_tae_decoder()
+    if dec is not None and int(video.shape[1]) == int(dec.latent_channels):
+        try:
+            rgb = dec.decode_frames(video[0, :, idxs])  # [N,H',W',3]
+            arr = (rgb.numpy() * 255.0).clip(0, 255).astype(np.uint8)
+            pils = [Image.fromarray(arr[i], mode="RGB") for i in range(arr.shape[0])]
+        except Exception as exc:
+            log.warning("TAE multi-frame decode failed, falling back to Latent2RGB: %s", exc)
+            pils = []
+
+    if not pils:
+        for t in idxs:
+            pil = _latent2rgb_pil_at(video, t)
+            if pil is not None:
+                pils.append(pil)
+
+    return [_finalize_preview_pil(p, max_side=max_side) for p in pils]
 
 
 def pil_to_jpeg_b64(pil: Image.Image, *, quality: int = 80) -> str:

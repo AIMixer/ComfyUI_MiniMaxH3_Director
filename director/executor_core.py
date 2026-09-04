@@ -984,19 +984,24 @@ def execute_director_plan_core(
             )
 
         def _report_step_preview(step: int, total_steps: int, x0) -> None:
-            # Live frame for the batch-card preview slot (「生成中…」 area).
+            # Live clip for the preview slot (「生成中…」 area): several temporal
+            # frames so the UI plays a looping preview instead of a static image.
             try:
-                from .tae_preview import pil_to_jpeg_b64, x0_to_preview_pil
+                from .tae_preview import pil_to_jpeg_b64, x0_to_preview_frames_pil
 
-                pil = x0_to_preview_pil(x0, max_side=512)
-                if pil is None:
+                pils = x0_to_preview_frames_pil(x0, max_frames=6, max_side=320)
+                if not pils:
                     return
+                frames_b64 = [pil_to_jpeg_b64(p, quality=60) for p in pils]
+                mid = pils[len(pils) // 2]
                 report_director_segment_preview(
                     node_id,
                     segment_index=ui_idx,
-                    image_b64=pil_to_jpeg_b64(pil),
-                    width=pil.width,
-                    height=pil.height,
+                    image_b64=pil_to_jpeg_b64(mid, quality=70),
+                    width=mid.width,
+                    height=mid.height,
+                    frames=frames_b64 if len(frames_b64) > 1 else None,
+                    fps=4.0,
                     live=True,
                     step=step + 1,
                     total_steps=total_steps,
@@ -1332,6 +1337,17 @@ def execute_director_plan_core(
         return chunk, audio_dict, pre_chunk
 
     for seg in all_segments:
+        # The whole multi-group run is ONE node execution — ComfyUI's interrupt
+        # is only raised inside the sampler. Check at each segment boundary so
+        #「停止」takes effect between groups even outside sampling phases;
+        # segments finished so far are already cached to disk, so a re-run
+        # resumes from cache and only re-samples the stopped/edited groups.
+        try:
+            import comfy.model_management as _mm
+
+            _mm.throw_exception_if_processing_interrupted()
+        except ImportError:
+            pass
         # AV latent and decoded refine-pass clips are a rolling continuity
         # working set, not final outputs. At the start of segment N, only N-1
         # can still be consumed; older entries have already been persisted.
