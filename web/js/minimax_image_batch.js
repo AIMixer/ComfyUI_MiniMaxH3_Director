@@ -40,6 +40,7 @@ import { t } from "./minimax_i18n.js";
 import { createFl2vSlotPair, normalizeImageRef } from "./minimax_fl2v.js";
 import {
     appendAddGuideEditor,
+    getAddGuidePromptMentions,
     normalizeAddGuideSegment,
 } from "./minimax_addguide.js";
 import {
@@ -2750,6 +2751,17 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                     secInput._t = null;
                     secFocused = false;
                     applySec();
+                    if (isAddGuide) editor.renderImageBatchGroups?.();
+                };
+                secInput.onkeydown = (event) => {
+                    event.stopPropagation();
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    clearTimeout(secInput._t);
+                    secInput._t = null;
+                    secFocused = false;
+                    applySec();
+                    if (isAddGuide) editor.renderImageBatchGroups?.();
                 };
             }
             meta.appendChild(secRow);
@@ -2896,18 +2908,32 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                         : (live.refVideos || []),
                 };
             });
+        } else if (isAddGuide) {
+            wirePromptImageMentions(editor, promptEl, () => {
+                const live = (editor.timeline.segments || []).find((s) => s?.id && s.id === segId)
+                    || editor.timeline.segments?.[segIndex]
+                    || seg;
+                return {
+                    mentions: getAddGuidePromptMentions(live),
+                    mentionTitle: t("addguide.mentionTitle"),
+                    mentionEmpty: t("addguide.mentionEmpty"),
+                };
+            });
         }
 
-        const preview = document.createElement("div");
-        preview.className = "bd-batch-preview";
-        renderPreview(preview, seg, index === runningIdx, isVideo, seg.previewFps || fps, editor);
+        let preview = null;
+        if (!isAddGuide) {
+            preview = document.createElement("div");
+            preview.className = "bd-batch-preview";
+            renderPreview(preview, seg, index === runningIdx, isVideo, seg.previewFps || fps, editor);
+        }
 
         if (isR2v && r2vMain) {
             r2vMain.appendChild(prompts);
-            r2vMain.appendChild(preview);
+            if (preview) r2vMain.appendChild(preview);
         } else {
             card.appendChild(prompts);
-            card.appendChild(preview);
+            if (preview) card.appendChild(preview);
         }
 
         list.appendChild(card);

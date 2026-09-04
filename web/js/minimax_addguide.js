@@ -168,6 +168,43 @@ function displayTime(frame) {
     return `${(Math.max(0, Number(frame) || 0) / H3_NATIVE_FPS).toFixed(3)}s`;
 }
 
+/** Prompt @ menu entries. Anchors are plain timing prose, not Picture tokens. */
+export function getAddGuidePromptMentions(seg) {
+    normalizeAddGuideSegment(seg);
+    const count = Math.max(1, Number.parseInt(seg?.frameCount ?? seg?.length, 10) || 1);
+    const last = count - 1;
+    const items = [];
+    const append = (name, frame, ref, tag) => {
+        const image = imageRef(ref);
+        if (!image) return;
+        items.push({
+            kind: "guide",
+            label: `${name} · F${frame} · ${displayTime(frame)}`,
+            tag,
+            thumb: viewUrl(image),
+        });
+    };
+    append(t("addguide.first"), 0, startRef(seg), "First Frame at 0.000s (F0)");
+    const guides = [...(seg.timedGuides || [])].sort((a, b) => Number(a.frameIndex) - Number(b.frameIndex));
+    guides.forEach((guide, index) => {
+        const frame = Number(guide.frameIndex);
+        if (!Number.isInteger(frame)) return;
+        append(
+            t("addguide.guide", { n: index + 1 }),
+            frame,
+            guide.image,
+            `Guide ${index + 1} at ${displayTime(frame)} (F${frame})`,
+        );
+    });
+    append(
+        t("addguide.last"),
+        last,
+        endRef(seg),
+        `Last Frame at ${displayTime(last)} (F${last})`,
+    );
+    return items;
+}
+
 function niceTickFrames(frameCount) {
     const duration = Math.max(0, (frameCount - 1) / H3_NATIVE_FPS);
     const target = Math.max(1, duration / 6);
@@ -183,12 +220,39 @@ function commitEditor(editor, render = true) {
     editor.updateDomWidgetHeight?.();
 }
 
-function renderSlot({ label, ref, optional = true, onUpload, onExisting, onClear, selected = false }) {
+function renderSlot({
+    label,
+    ref,
+    optional = true,
+    onUpload,
+    onExisting,
+    onClear,
+    onDelete,
+    selected = false,
+}) {
     const wrap = document.createElement("div");
     wrap.className = `bd-ag-slot${selected ? " selected" : ""}`;
+    const head = document.createElement("div");
+    head.className = "bd-ag-slot-head";
     const title = document.createElement("b");
     title.textContent = label;
-    wrap.appendChild(title);
+    head.appendChild(title);
+    if (onDelete) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "bd-ag-guide-delete x";
+        remove.textContent = "×";
+        remove.title = t("addguide.delete");
+        remove.setAttribute("aria-label", t("addguide.delete"));
+        remove.onclick = (event) => {
+            event.stopPropagation();
+            onDelete();
+        };
+        head.appendChild(remove);
+    }
+    wrap.appendChild(head);
+    const imageWrap = document.createElement("div");
+    imageWrap.className = `bd-ag-image-wrap${ref?.imageFile ? " has-img" : ""}`;
     const image = document.createElement("button");
     image.type = "button";
     image.className = "bd-ag-image";
@@ -201,21 +265,29 @@ function renderSlot({ label, ref, optional = true, onUpload, onExisting, onClear
         image.textContent = optional ? t("addguide.optional") : t("addguide.chooseImage");
     }
     image.onclick = (event) => { event.stopPropagation(); onUpload?.(); };
-    wrap.appendChild(image);
+    imageWrap.appendChild(image);
+    if (ref?.imageFile && onClear) {
+        const clear = document.createElement("button");
+        clear.type = "button";
+        clear.className = "x";
+        clear.textContent = "×";
+        clear.title = t("tooltip.fl2vClear");
+        clear.setAttribute("aria-label", t("tooltip.fl2vClear"));
+        clear.onclick = (event) => {
+            event.stopPropagation();
+            onClear();
+        };
+        imageWrap.appendChild(clear);
+    }
+    wrap.appendChild(imageWrap);
     const actions = document.createElement("div");
     actions.className = "bd-ag-actions";
     const existing = document.createElement("button");
     existing.type = "button";
+    existing.className = "bd-r2v-pick-existing";
     existing.textContent = t("mediaPicker.pickExisting");
     existing.onclick = (event) => { event.stopPropagation(); onExisting?.(); };
     actions.appendChild(existing);
-    if (ref?.imageFile && onClear) {
-        const clear = document.createElement("button");
-        clear.type = "button";
-        clear.textContent = t("tooltip.fl2vClear");
-        clear.onclick = (event) => { event.stopPropagation(); onClear(); };
-        actions.appendChild(clear);
-    }
     wrap.appendChild(actions);
     return wrap;
 }
@@ -346,6 +418,17 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
                 seg._selectedGuideId = guide.id;
                 handlers.pick?.("guide", guide.id);
             },
+            onClear: () => {
+                guide.image = null;
+                commitEditor(editor);
+            },
+            onDelete: () => {
+                seg.timedGuides = seg.timedGuides.filter((item) => item.id !== guide.id);
+                if (seg._selectedGuideId === guide.id) {
+                    seg._selectedGuideId = seg.timedGuides[0]?.id || "";
+                }
+                commitEditor(editor);
+            },
         });
         wrap.classList.add("bd-ag-guide-card");
         wrap.onclick = () => { seg._selectedGuideId = guide.id; editor.renderImageBatchGroups?.(); };
@@ -423,17 +506,6 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         errorEl.textContent = error;
         wrap.classList.toggle("invalid", !!error);
         wrap.appendChild(errorEl);
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "bd-ag-remove";
-        remove.textContent = t("addguide.delete");
-        remove.onclick = (event) => {
-            event.stopPropagation();
-            seg.timedGuides = seg.timedGuides.filter((item) => item.id !== guide.id);
-            if (seg._selectedGuideId === guide.id) seg._selectedGuideId = seg.timedGuides[0]?.id || "";
-            commitEditor(editor);
-        };
-        wrap.appendChild(remove);
         strip.appendChild(wrap);
     });
 
@@ -456,7 +528,6 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         seg._selectedGuideId = guide.id;
         sortTimedGuides(seg);
         commitEditor(editor);
-        queueMicrotask(() => handlers.upload?.("guide", guide.id));
     };
     strip.appendChild(add);
     strip.appendChild(renderSlot({
@@ -476,23 +547,36 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
 }
 
 export const ADDGUIDE_STYLES = `
-.bd-batch-card.bd-batch-addguide{display:flex;flex-direction:column;gap:10px;align-items:stretch}
-.bd-addguide{display:flex;flex-direction:column;gap:8px;min-width:0}
+.bd-batch-card.bd-batch-addguide{display:flex;flex-direction:column;gap:8px;align-items:stretch}
+.bd-batch-addguide .bd-batch-head{padding-bottom:2px;border-bottom:1px solid rgba(255,255,255,.06);margin-bottom:0}
+.bd-batch-addguide .bd-batch-prompts{background:#0c0c0c;border:1px solid #262626;border-radius:10px;padding:8px 10px;gap:5px}
+.bd-batch-addguide .bd-batch-prompts .bd-label{color:#eaeaea;font-size:11px;font-weight:700;letter-spacing:.02em}
+.bd-batch-addguide .bd-batch-prompts textarea,.bd-batch-addguide .bd-batch-prompts .bd-token-wrap{min-height:96px}
+.bd-batch-addguide .bd-batch-prompts textarea{background:#101010;border-color:#2e2e2e;border-radius:8px;padding:8px;font-size:12px;line-height:1.45}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-addguide{flex:0 0 auto!important;height:auto!important;min-height:0}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-addguide .bd-batch-prompts{flex:0 0 auto;min-height:0;max-height:none;overflow:visible}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-addguide .bd-token-wrap{flex:0 0 auto;min-height:96px;height:auto;overflow:visible}
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-addguide .bd-token-editor{flex:0 0 auto;min-height:96px;height:110px;max-height:none;overflow:auto;resize:vertical}
+.bd-addguide{display:flex;flex-direction:column;gap:6px;min-width:0}
 .bd-ag-hint,.bd-ag-warning{font-size:10px;color:#8d9aaa;line-height:1.45}
-.bd-ag-warning.invalid,.bd-ag-error{color:#ff7b7b}.bd-ag-error{font-size:9px;min-height:13px}
-.bd-ag-timeline{position:relative;height:72px;margin:0 12px 2px;border-radius:8px;background:#0d1118;border:1px solid #293243;overflow:visible}
+.bd-ag-warning.invalid,.bd-ag-error{color:#ff7b7b}.bd-ag-error{font-size:9px}.bd-ag-error:empty{display:none}
+.bd-ag-timeline{position:relative;height:66px;margin:0 12px 1px;border-radius:8px;background:#0d1118;border:1px solid #293243;overflow:visible}
 .bd-ag-rail{position:absolute;left:10px;right:10px;top:34px;height:3px;background:#46556d;border-radius:3px}
 .bd-ag-tick{position:absolute;top:4px;bottom:4px;transform:translateX(-50%);pointer-events:none;color:#aebbd0;font-size:9px;text-align:center}
 .bd-ag-tick:after{content:"";position:absolute;top:24px;left:50%;height:19px;border-left:1px solid #3c485c}
 .bd-ag-tick span,.bd-ag-tick i{display:block;font-style:normal;white-space:nowrap}.bd-ag-tick i{margin-top:27px;color:#718097}
 .bd-ag-marker{position:absolute;top:25px;z-index:3;transform:translateX(-50%);width:20px;height:20px;padding:0;border-radius:50%;border:1px solid #62a8ff;background:#163658;color:#8fc5ff;cursor:ew-resize}
 .bd-ag-marker.endpoint{cursor:default;border-radius:4px;border-color:#808b9b;background:#303844;color:#fff}.bd-ag-marker.selected{box-shadow:0 0 0 2px #ffcc66}.bd-ag-marker.invalid{border-color:#ff4f5f;background:#681f2a;color:#fff}
-.bd-ag-strip{display:flex;gap:8px;overflow-x:auto;padding:3px 2px 8px;align-items:stretch}
-.bd-ag-slot{position:relative;display:flex;flex:0 0 150px;flex-direction:column;gap:5px;padding:8px;border:1px solid #303846;border-radius:9px;background:#10151d;min-width:0}
+.bd-ag-strip{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 6px;align-items:stretch}
+.bd-ag-slot{position:relative;display:flex;flex:0 0 150px;flex-direction:column;gap:4px;padding:7px;border:1px solid #303846;border-radius:9px;background:#10151d;min-width:0}
 .bd-ag-slot.selected{border-color:#ffcc66;box-shadow:0 0 0 1px rgba(255,204,102,.3)}.bd-ag-slot.invalid{border-color:#ff5968}
-.bd-ag-slot>b{font-size:11px;color:#e7ecf5}.bd-ag-image{height:92px;border:1px dashed #3a4658;border-radius:7px;background:#0a0e14;color:#8290a4;overflow:hidden;padding:0}.bd-ag-image img{width:100%;height:100%;object-fit:contain}
-.bd-ag-actions{display:flex;gap:4px}.bd-ag-actions button,.bd-ag-remove{font-size:9px;padding:3px 5px;flex:1}
+.bd-ag-slot-head{display:flex;align-items:center;justify-content:space-between;gap:6px;min-height:20px}.bd-ag-slot-head>b{font-size:11px;color:#e7ecf5}
+.bd-ag-guide-delete{width:20px;height:20px;padding:0;border:0;border-radius:4px;background:rgba(0,0,0,.78);color:#ff8a8a;font-size:17px;font-weight:700;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}.bd-ag-guide-delete:hover{background:rgba(160,30,30,.95);color:#fff}
+.bd-ag-image-wrap{position:relative;min-width:0}.bd-ag-image{width:100%;height:84px;border:1px dashed #3a4658;border-radius:7px;background:#0a0e14;color:#8290a4;overflow:hidden;padding:0}.bd-ag-image img{width:100%;height:100%;object-fit:contain}
+.bd-ag-image-wrap .x{position:absolute;right:1px;top:1px;width:24px;height:24px;padding:0;margin:0;border:0;box-sizing:border-box;display:none;align-items:center;justify-content:center;border-radius:4px;background:rgba(0,0,0,.78);color:#ff8a8a;font-size:18px;font-weight:700;line-height:1;cursor:pointer;z-index:6;user-select:none;-webkit-user-select:none;font-family:inherit;appearance:none;-webkit-appearance:none}
+.bd-ag-image-wrap.has-img:hover .x,.bd-ag-image-wrap:focus-within .x{display:flex}@media (hover:none){.bd-ag-image-wrap.has-img .x{display:flex}}.bd-ag-image-wrap .x:hover{background:rgba(160,30,30,.95);color:#fff}
+.bd-ag-actions{display:flex}.bd-ag-actions button{font-size:9px;padding:3px 5px;flex:1}
 .bd-ag-frame-label{color:#8390a3;font-size:9px;text-align:center}
 .bd-ag-frame-controls{display:grid;grid-template-columns:26px 1fr 26px;gap:3px}.bd-ag-frame-controls input{width:100%;min-width:0;text-align:center}.bd-ag-frame-controls input.invalid{border-color:#ff5968;color:#ff8c96}.bd-ag-frame-controls button{padding:2px}
-.bd-ag-time{text-align:center;color:#a9bad0;font-size:10px}.bd-ag-add{flex:0 0 120px;border:1px dashed #4e6684;border-radius:9px;background:#101923;color:#9dc8ff;min-height:170px}.bd-ag-add:disabled{opacity:.4}
+.bd-ag-time{text-align:center;color:#a9bad0;font-size:10px}.bd-ag-add{flex:0 0 120px;border:1px dashed #4e6684;border-radius:9px;background:#101923;color:#9dc8ff;min-height:160px}.bd-ag-add:disabled{opacity:.4}
 `;
