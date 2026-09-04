@@ -359,10 +359,13 @@ def finalize_director_outputs(
         is_batch=is_batch,
         video_batch=video_batch,
     )
+    if segment_frame_counts:
+        frame_count = int(sum(int(n) for n in segment_frame_counts))
     if export_segments and len(segment_outputs) > 1:
         report = (
             report
-            + f"\n\nExport mode: segments — {len(segment_outputs)} clip(s) on images output."
+            + f"\n\nExport mode: segments — {len(segment_outputs)} clip(s) on images output "
+            "(full frames are in per-segment mp4; released clips keep a 1-frame poster)."
         )
     if plan.run_indices is not None and split_layout:
         report = (
