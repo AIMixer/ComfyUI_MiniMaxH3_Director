@@ -98,7 +98,7 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 
 ## 更新
 
-打开任一 `MiniMaxH3Director` 节点，点击工具栏右侧的 **检查更新**。发现新提交后会先显示当前版本、最新版本和最近提交；确认 **立即更新** 后只对本插件执行 fast-forward 更新，完成后重启 ComfyUI 即可生效。
+打开任一 `MiniMaxH3Director` 节点，点击工具栏右侧的 **检查更新**。发现新提交后会先显示当前版本、最新版本和最近提交；确认 **立即更新** 后只对本插件执行 fast-forward 更新，完成后重启 ComfyUI 即可生效。插件不会在后台自动检查或静默修改文件。
 
 自动更新要求插件通过 Git 独立安装、当前分支跟踪同名远程分支、工作区无本地修改且生成队列为空。若依赖文件发生变化，完成提示会要求重新安装依赖；非 Git 安装、分叉历史或含本地修改的工作区不会被强制覆盖，请改用 ComfyUI Manager 或手动更新。
 
