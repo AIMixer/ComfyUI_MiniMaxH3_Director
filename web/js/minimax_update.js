@@ -113,14 +113,17 @@ export function bindUpdateAction(editor) {
             setBusy(button, "update.checking");
             const status = await postJson("/minimax/director/update/status");
             if (!status.supported || !status.canUpdate) {
+                setBusy(button, "");
                 await showMessage(editor, reasonText(status.reason, status));
                 return;
             }
             if (status.queueRunning || status.queuePending) {
+                setBusy(button, "");
                 await showMessage(editor, reasonText("queue_busy", status));
                 return;
             }
             if (!status.updateAvailable) {
+                setBusy(button, "");
                 await showMessage(editor, t("update.current", { head: shortHash(status.localHead) }));
                 return;
             }
@@ -146,9 +149,11 @@ export function bindUpdateAction(editor) {
             if (result.dependencyFiles?.length) {
                 message += `\n\n${t("update.dependenciesAfter", { files: result.dependencyFiles.join(", ") })}`;
             }
+            setBusy(button, "");
             await showMessage(editor, message);
         } catch (error) {
             console.error("[MiniMax H3 Director] update:", error);
+            setBusy(button, "");
             await showMessage(editor, reasonText(error.reason, error.data || { message: error.message }));
         } finally {
             setBusy(button, "");
