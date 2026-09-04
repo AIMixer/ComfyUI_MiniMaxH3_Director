@@ -112,6 +112,20 @@ globalThis.document = {
 
 const addGuide = await loadAddGuideModule();
 
+{
+    const guide = { id: "stable-guide", frame_index: "48", image: { imageFile: "guide.png" } };
+    const segment = { frameCount: 243, timedGuides: [guide] };
+    addGuide.normalizeAddGuideSegment(segment);
+    addGuide.validateAddGuideSegment(segment);
+    addGuide.getAddGuidePromptMentions(segment);
+    assert.equal(
+        segment.timedGuides[0],
+        guide,
+        "normalization, validation, and prompt refresh must preserve Guide object identity",
+    );
+    assert.equal(guide.frameIndex, 48);
+}
+
 function makeEditor() {
     return {
         renderCount: 0,

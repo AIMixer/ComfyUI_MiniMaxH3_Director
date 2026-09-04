@@ -63,12 +63,13 @@ export function normalizeAddGuideSegment(seg) {
         const guide = raw && typeof raw === "object" ? raw : {};
         const rawFrame = guide.frameIndex ?? guide.frame_index;
         const numeric = Number(rawFrame);
-        return {
-            ...guide,
-            id: String(guide.id || guide.guideId || uid()),
-            frameIndex: Number.isInteger(numeric) ? numeric : rawFrame,
-            image: imageRef(guide.image) || imageRef(guide) || null,
-        };
+        // Preserve object identity. UI handlers close over each Guide object;
+        // replacing it during validation/prompt refresh makes those handlers
+        // write to an orphan while the live timeline keeps the old frame.
+        guide.id = String(guide.id || guide.guideId || uid());
+        guide.frameIndex = Number.isInteger(numeric) ? numeric : rawFrame;
+        guide.image = imageRef(guide.image) || imageRef(guide) || null;
+        return guide;
     });
     delete seg.timed_guides;
     seg.startImage = startRef(seg);
