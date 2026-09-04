@@ -111,10 +111,10 @@ async def inspect_update(*, fetch: bool) -> dict:
         return _unsupported("unsupported_upstream", upstream)
 
     try:
-        remote_url = await _git("remote", "get-url", remote)
         clean = not bool(await _git("status", "--porcelain"))
         if fetch:
-            await _git("fetch", "--quiet", "--no-tags", "--prune", remote)
+            refspec = f"+refs/heads/{remote_branch}:refs/remotes/{remote}/{remote_branch}"
+            await _git("fetch", "--quiet", "--no-tags", remote, refspec)
         local_head = await _git("rev-parse", "HEAD")
         remote_head = await _git("rev-parse", upstream)
         counts = await _git("rev-list", "--left-right", "--count", f"HEAD...{upstream}")
@@ -164,7 +164,6 @@ async def inspect_update(*, fetch: bool) -> dict:
         "branch": branch,
         "remote": remote,
         "upstream": upstream,
-        "remoteUrl": remote_url,
         "clean": clean,
         "localHead": local_head,
         "remoteHead": remote_head,
@@ -192,6 +191,8 @@ async def minimax_apply_update(request):
             {"reason": "invalid_request", "message": str(exc)},
             status=400,
         )
+    if not isinstance(body, dict):
+        return web.json_response({"reason": "invalid_request"}, status=400)
 
     expected_head = str(body.get("expectedHead") or "").strip()
     expected_remote_head = str(body.get("expectedRemoteHead") or "").strip()
