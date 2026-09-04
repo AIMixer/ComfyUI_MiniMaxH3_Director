@@ -18,6 +18,20 @@ function isRefineNode(node) {
     return cls === REFINE_CLASS;
 }
 
+function isDirectorNode(node) {
+    const cls = node?.comfyClass || node?.type || "";
+    return DIRECTOR_CLASSES.has(cls);
+}
+
+/** Cache UI lives on Refine (status+manager) or directly on the Director. */
+function cacheUI(node) {
+    return node?._mmxFirstPassCacheUI || node?._mmxDirectorCacheUI || null;
+}
+
+function directorForCacheNode(node) {
+    return isRefineNode(node) ? connectedDirector(node) : (isDirectorNode(node) ? node : null);
+}
+
 function widgetByName(node, name) {
     return node.widgets?.find((w) => w.name === name);
 }
@@ -422,8 +436,9 @@ function makeSmallButton(text, onClick) {
 }
 
 async function toggleCacheManager(node) {
-    ensureFirstPassCacheUI(node);
-    const ui = node._mmxFirstPassCacheUI;
+    if (isRefineNode(node)) ensureFirstPassCacheUI(node);
+    else ensureDirectorCacheManagerUI(node);
+    const ui = cacheUI(node);
     if (!ui) return;
     ui.managerOpen = !ui.managerOpen;
     ui.manager.style.display = ui.managerOpen ? "" : "none";
@@ -433,11 +448,11 @@ async function toggleCacheManager(node) {
 }
 
 async function refreshCacheManager(node) {
-    const ui = node._mmxFirstPassCacheUI;
+    const ui = cacheUI(node);
     if (!ui?.managerOpen) return;
-    const director = connectedDirector(node);
+    const director = directorForCacheNode(node);
     if (!director) {
-        ui.managerSummary.textContent = "未找到相连的 MiniMax H3 Director。";
+        ui.managerSummary.textContent = "未找到关联的 MiniMax H3 Director。";
         resizeCacheWidget(node);
         return;
     }
@@ -474,7 +489,7 @@ function cacheBadge(text, active) {
 }
 
 function renderCacheManager(node, data) {
-    const ui = node._mmxFirstPassCacheUI;
+    const ui = cacheUI(node);
     if (!ui) return;
     const list = ui.managerList;
     list.textContent = "";
@@ -560,7 +575,7 @@ function renderCacheManager(node, data) {
 }
 
 async function deleteSegmentCacheEntries(node, indices) {
-    const director = connectedDirector(node);
+    const director = directorForCacheNode(node);
     if (!director) return;
     const list = [...new Set(indices.map((i) => Number(i)).filter((i) => Number.isFinite(i) && i >= 0))];
     if (!list.length) return;
@@ -568,7 +583,7 @@ async function deleteSegmentCacheEntries(node, indices) {
     if (!window.confirm(`确定删除${label}的缓存吗？一采和成片都会删除，需要重新生成。`)) {
         return;
     }
-    const ui = node._mmxFirstPassCacheUI;
+    const ui = cacheUI(node);
     if (ui) ui.managerSummary.textContent = "正在删除缓存…";
     try {
         let removed = 0;
@@ -597,7 +612,7 @@ async function deleteSegmentCacheEntries(node, indices) {
 }
 
 async function refreshCacheOverview(node) {
-    const ui = node._mmxFirstPassCacheUI;
+    const ui = cacheUI(node);
     if (!ui?.managerOpen) return;
     try {
         const response = await api.fetchApi("/minimax/director/cache_overview");
@@ -613,11 +628,11 @@ async function refreshCacheOverview(node) {
 }
 
 function renderCacheOverview(node, data) {
-    const ui = node._mmxFirstPassCacheUI;
+    const ui = cacheUI(node);
     if (!ui) return;
     const list = ui.overviewList;
     list.textContent = "";
-    const director = connectedDirector(node);
+    const director = directorForCacheNode(node);
     const currentId = director ? String(director.id) : "";
     const groups = (Array.isArray(data?.groups) ? data.groups : []).filter(
         (g) => String(g.node_id) !== currentId && Number(g.file_count) > 0,
@@ -660,7 +675,7 @@ async function deleteNodeCacheGroup(node, nodeId) {
     if (!window.confirm(`确定删除节点 #${nodeId} 的全部缓存吗？需要重新生成才能恢复。`)) {
         return;
     }
-    const ui = node._mmxFirstPassCacheUI;
+    const ui = cacheUI(node);
     try {
         const response = await api.fetchApi("/minimax/director/clear_segment_cache", {
             method: "POST",
@@ -754,7 +769,7 @@ function ensureFirstPassCacheUI(node) {
     overviewList.style.cssText = "display:flex;flex-direction:column;gap:4px;margin-top:3px";
     manager.append(managerHead, managerList, overviewTitle, overviewList);
 
-    for (const eventName of ["pointerdown", "mousedown", "click"]) {
+    for (const eventName of ["pointerdown", "mousedown", "click", "wheel"]) {
         body.addEventListener(eventName, (event) => event.stopPropagation());
         manager.addEventListener(eventName, (event) => event.stopPropagation());
     }
@@ -781,6 +796,86 @@ function ensureFirstPassCacheUI(node) {
         managerList,
         overviewList,
         managerOpen: false,
+    };
+}
+
+const DIRECTOR_CACHE_WIDGET = "minimax_director_cache_manager";
+
+/** Cache manager on the Director node itself — no Refine node required. */
+function ensureDirectorCacheManagerUI(node) {
+    if (!isDirectorNode(node) || node._mmxDirectorCacheUI || typeof node.addDOMWidget !== "function") return;
+    if ((node.widgets || []).some((w) => w?.name === DIRECTOR_CACHE_WIDGET)) return;
+    const root = document.createElement("div");
+    root.style.cssText = [
+        "box-sizing:border-box",
+        "margin:2px 8px",
+        "padding:6px 10px",
+        "border:1px solid var(--border-color, #555)",
+        "border-radius:6px",
+        "background:rgba(0,0,0,.16)",
+        "font:12px/1.45 sans-serif",
+    ].join(";");
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;align-items:center;justify-content:space-between";
+    const title = document.createElement("strong");
+    title.textContent = "分段缓存";
+    title.style.cssText = "color:var(--input-text, #ddd)";
+    const manageBtn = makeSmallButton("缓存管理", () => toggleCacheManager(node));
+    manageBtn.style.fontSize = "12px";
+    manageBtn.style.padding = "2px 10px";
+    header.append(title, manageBtn);
+
+    const manager = document.createElement("div");
+    manager.style.cssText = "display:none;margin-top:6px;border-top:1px solid var(--border-color, #555);padding-top:6px";
+    const managerHead = document.createElement("div");
+    managerHead.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px";
+    const managerSummary = document.createElement("span");
+    managerSummary.style.cssText = "color:var(--input-text, #ddd);font-size:11px";
+    const managerActions = document.createElement("div");
+    managerActions.style.cssText = "display:flex;gap:6px;flex:none";
+    const deleteSelectedBtn = makeSmallButton("删除选中", () => {
+        const ui = node._mmxDirectorCacheUI;
+        deleteSegmentCacheEntries(node, [...(ui?._mmxCacheChecked || [])]);
+    });
+    managerActions.append(
+        deleteSelectedBtn,
+        makeSmallButton("刷新", () => refreshCacheManager(node)),
+    );
+    managerHead.append(managerSummary, managerActions);
+    const managerList = document.createElement("div");
+    managerList.style.cssText = "max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px";
+    const overviewTitle = document.createElement("div");
+    overviewTitle.style.cssText = "margin-top:8px;color:#999;font-size:11px";
+    overviewTitle.textContent = "其他节点的缓存（含已从工作流删除的节点）：";
+    const overviewList = document.createElement("div");
+    overviewList.style.cssText = "display:flex;flex-direction:column;gap:4px;margin-top:3px";
+    manager.append(managerHead, managerList, overviewTitle, overviewList);
+
+    for (const eventName of ["pointerdown", "mousedown", "click", "wheel"]) {
+        manager.addEventListener(eventName, (event) => event.stopPropagation());
+    }
+    root.append(header, manager);
+    const widget = node.addDOMWidget(DIRECTOR_CACHE_WIDGET, "cache_manager", root, {
+        getValue: () => "",
+        setValue: () => {},
+        getMinHeight: () => {
+            const ui = node._mmxDirectorCacheUI;
+            return ui?.managerOpen ? Math.max(60, root.scrollHeight + 16) : 34;
+        },
+        hideOnZoom: false,
+    });
+    widget.serialize = false;
+    if (!widget.options) widget.options = {};
+    widget.options.serialize = false;
+    node._mmxDirectorCacheUI = {
+        root,
+        manageBtn,
+        manager,
+        managerSummary,
+        managerList,
+        overviewList,
+        managerOpen: false,
+        widget,
     };
 }
 
@@ -979,15 +1074,28 @@ app.registerExtension({
             node._mmxRefreshFirstPassCache = (delay = 0) => {
                 refreshCacheStatusForDirector(node, delay);
             };
+            setTimeout(() => {
+                ensureDirectorCacheManagerUI(node);
+                resizeCacheWidget(node);
+            }, 0);
             return;
         }
         scheduleRefineRefresh(node);
     },
     loadedGraphNode(node) {
+        if (isDirectorNode(node)) {
+            setTimeout(() => {
+                ensureDirectorCacheManagerUI(node);
+                resizeCacheWidget(node);
+            }, 0);
+        }
         scheduleRefineRefresh(node);
     },
     afterConfigureGraph() {
         refreshAllRefineNodes();
+        for (const node of graphNodes()) {
+            if (isDirectorNode(node)) ensureDirectorCacheManagerUI(node);
+        }
         setTimeout(refreshAllRefineNodes, 100);
     },
 });
@@ -996,9 +1104,10 @@ api.addEventListener?.("executed", () => {
     for (const node of graphNodes()) {
         if (isRefineNode(node)) {
             scheduleCacheStatusRefresh(node, 250);
-            if (node._mmxFirstPassCacheUI?.managerOpen) {
-                setTimeout(() => refreshCacheManager(node), 400);
-            }
+        }
+        if (cacheUI(node)?.managerOpen) {
+            const target = node;
+            setTimeout(() => refreshCacheManager(target), 400);
         }
     }
 });
