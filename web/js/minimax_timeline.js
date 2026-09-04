@@ -113,6 +113,11 @@ import {
     toggleLocale,
 } from "./minimax_i18n.js";
 import { bindPackActions } from "./minimax_pack.js";
+import {
+    ADDGUIDE_STYLES,
+    sanitizeTimedGuides,
+    validateAllAddGuideSegments,
+} from "./minimax_addguide.js";
 
 const RULER_H = 24;
 const SEG_LABEL_H = 20;
@@ -268,6 +273,7 @@ function sanitizeSegmentForPayload(seg) {
         previewB64,
         previewFrames,
         imageB64,
+        _selectedGuideId,
         ...rest
     } = seg;
     return {
@@ -275,6 +281,7 @@ function sanitizeSegmentForPayload(seg) {
         refs: Array.isArray(rest.refs) ? rest.refs.map(sanitizeRefImage) : [],
         refAudios: Array.isArray(rest.refAudios) ? rest.refAudios.map(sanitizeRefAudio) : [],
         refVideos: Array.isArray(rest.refVideos) ? rest.refVideos.map(sanitizeRefVideo) : [],
+        timedGuides: sanitizeTimedGuides(rest),
         genImage: rest.genImage
             ? { imageFile: rest.genImage.imageFile || "", fileName: rest.genImage.fileName || "" }
             : undefined,
@@ -1199,6 +1206,7 @@ const STYLES = `
 .bd-gen-fc-row{display:flex;align-items:center;gap:6px;margin-top:6px}
 ${IMAGE_BATCH_STYLES}
 ${FL2V_STYLES}
+${ADDGUIDE_STYLES}
 @media(max-width:768px){
 .bd-prompt-layout,.bd-prompt-layout.bd-rv2v-layout,.bd-prompt-layout.bd-v2v-layout,.bd-prompt-layout.bd-v2v-layout.bd-v2v-with-live{grid-template-columns:1fr}
 .bd-prompt-layout.bd-v2v-layout.bd-v2v-with-live>.bd-live-sample{order:3;min-height:160px}
@@ -2544,6 +2552,7 @@ class MiniMaxH3DirectorEditor {
                         genImage: clean.genImage || { imageFile: "" },
                         startImage: clean.startImage || null,
                         endImage: clean.endImage || null,
+                        timedGuides: clean.timedGuides || [],
                         // Persist per-segment「引用上段」(default true when unset).
                         continuityFromPrev: isSegmentContinuityFromPrev(clean, i),
                         refImageSize: resolveSegmentRefImageSize(clean, this.timeline.output),
@@ -12380,6 +12389,17 @@ app.registerExtension({
             const orig = app.queuePrompt.bind(app);
             app.queuePrompt = function (...args) {
                 flushDirectors();
+                const graph = app.graph ?? app.canvas?.graph;
+                const errors = [];
+                for (const node of graph?._nodes ?? graph?.nodes ?? []) {
+                    const editor = node._minimaxEditor;
+                    if (editor) errors.push(...validateAllAddGuideSegments(editor));
+                }
+                if (errors.length) {
+                    const message = errors.join("\n");
+                    alert(message);
+                    return Promise.reject(new Error(message));
+                }
                 clearAllDirectorRunStatus();
                 return orig(...args);
             };
@@ -12671,4 +12691,3 @@ app.registerExtension({
         };
     },
 });
-
