@@ -52,6 +52,18 @@ def _load_minimax_nodes():
     return MiniMaxH3ImageToVideo, MiniMaxH3ReferenceToVideo
 
 
+def _load_minimax_addguide_node():
+    """Load AddGuide only when that task is executed (older ComfyUI stays usable)."""
+    try:
+        from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError(
+            "MiniMax H3 AddGuide requires a ComfyUI version that provides "
+            "MiniMaxH3AddGuide. Please update ComfyUI."
+        ) from exc
+    return MiniMaxH3AddGuide
+
+
 def _unpack_positive_latent(out):
     args = None
     if hasattr(out, "args"):
@@ -61,6 +73,36 @@ def _unpack_positive_latent(out):
     if args and len(args) >= 2:
         return args[0], args[1]
     raise RuntimeError(f"MiniMax H3 conditioning returned unexpected output: {type(out)!r}")
+
+
+def _unpack_positive(out):
+    args = out.args if hasattr(out, "args") else out
+    if isinstance(args, (tuple, list)) and args:
+        return args[0]
+    raise RuntimeError(f"MiniMax H3 AddGuide returned unexpected output: {type(out)!r}")
+
+
+def apply_minimax_timed_guides(positive, latent, *, vae, timed_guides):
+    """Chain official MiniMaxH3AddGuide calls into one segment conditioning."""
+    guides = sorted(
+        list(timed_guides or []),
+        key=lambda guide: (int(getattr(guide, "frame_index", 0)), str(getattr(guide, "id", ""))),
+    )
+    if not guides:
+        return positive
+    MiniMaxH3AddGuide = _load_minimax_addguide_node()
+    guided = positive
+    for guide in guides:
+        guided = _unpack_positive(
+            MiniMaxH3AddGuide.execute(
+                guided,
+                latent,
+                int(guide.frame_index),
+                vae=vae,
+                image=guide.tensor,
+            )
+        )
+    return guided
 
 
 def _reference_images_dict_from_kwargs(kwargs: dict) -> dict | None:

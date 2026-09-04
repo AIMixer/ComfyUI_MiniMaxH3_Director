@@ -194,7 +194,7 @@ class MiniMaxH3Director:
     DESCRIPTION = (
         "MiniMax H3 Director: MiniMaxH3ImageToVideo / ReferenceToVideo conditioning, "
         "single-stage KSampler + MiniMaxH3SigmaShift, LTXVSeparateAVLatent decode. "
-        "Supports t2v / i2v / fl2v / r2v / v2v / rv2v. "
+        "Supports t2v / i2v / fl2v / addguide / r2v / v2v / rv2v / mixed. "
         "Optional i2v_groups / r2v_groups accept multi-group packs from Director Group nodes "
         "(external priority over UI cards). Optional refine accepts MiniMax H3 Director Refine "
         "(second sample / upscale). images_pre_refine is the first-pass video before refine. "

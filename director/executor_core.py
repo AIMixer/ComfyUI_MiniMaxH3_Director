@@ -11,7 +11,7 @@ import torch
 
 from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge
 from ..lib.task_modes import SUPPORTED_TASK_KEYS
-from ..nodes.conditioning import run_minimax_conditioning
+from ..nodes.conditioning import apply_minimax_timed_guides, run_minimax_conditioning
 from .core_sampling import sample_single_stage
 from .refine_pack import (
     confirm_first_pass_enabled,
@@ -189,7 +189,7 @@ def _build_minimax_inputs(
     ref_audios = None
     ref_video_audios = None
 
-    if task_key == "fl2v":
+    if task_key in {"fl2v", "addguide"}:
         # Prefer explicit shot refs (index 0=start, 1=end). Official FL2VA allows
         # end-only — never invent a first_frame from the placeholder gen source_video
         # (1×16×16 gray) or a held clip when refs only carry image1.
@@ -486,12 +486,16 @@ def execute_director_plan_core(
         pinned = [
             seg.index + 1
             for seg in all_segments
-            if seg.index > 0 and getattr(seg, "continuity_from_prev", True)
+            if seg.index > 0
+            and seg.task_key != "addguide"
+            and getattr(seg, "continuity_from_prev", True)
         ]
         skipped_pin = [
             seg.index + 1
             for seg in all_segments
-            if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
+            if seg.index > 0
+            and seg.task_key != "addguide"
+            and not getattr(seg, "continuity_from_prev", True)
         ]
         reports.append(
             "Segment continuity: ON — motion context "
@@ -772,6 +776,18 @@ def execute_director_plan_core(
             ref_audios=ref_audios,
             ref_image_size=resolve_ref_image_size(seg, plan),
         )
+        # Refine intentionally receives the stock ImageToVideo conditioning.
+        # Timed guides constrain the first pass only; the generated result then
+        # flows through the existing refine pipeline as its source.
+        refine_positive = positive
+        if seg.task_key == "addguide":
+            positive = apply_minimax_timed_guides(
+                positive,
+                latent,
+                vae=vae,
+                timed_guides=seg.timed_guides,
+            )
+            task_hint = f"{task_hint} + {len(seg.timed_guides)} timed guide(s)"
         cond_s = time.perf_counter() - t_cond
 
         trim_frames = 0
@@ -1141,7 +1157,7 @@ def execute_director_plan_core(
                 model=model,
                 vae=vae,
                 audio_vae=audio_vae,
-                positive=positive,
+                positive=refine_positive,
                 negative=negative,
                 seed=seed,
                 cfg=cfg,

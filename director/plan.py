@@ -34,6 +34,7 @@ from .gen_timeline import (
     build_gen_director_plan,
     is_gen_timeline,
 )
+from .timed_guides import H3_NATIVE_FPS, SegmentTimedGuide
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director")
 
@@ -176,6 +177,7 @@ class SegmentPlan:
     ref_audios: list[SegmentRefAudio] = field(default_factory=list)
     ref_videos: list[SegmentRefVideo] = field(default_factory=list)
     ref_video_audios: list[SegmentRefAudio] = field(default_factory=list)
+    timed_guides: list[SegmentTimedGuide] = field(default_factory=list)
     reference_video_meta: dict = field(default_factory=dict)
     reference_video_start_frame: int = 0
     negative_prompt: str = ""
@@ -964,12 +966,16 @@ def plan_summary(plan: DirectorPlan) -> str:
             pinned = [
                 seg.index + 1
                 for seg in plan.segments
-                if seg.index > 0 and getattr(seg, "continuity_from_prev", True)
+                if seg.index > 0
+                and seg.task_key != "addguide"
+                and getattr(seg, "continuity_from_prev", True)
             ]
             skipped_pin = [
                 seg.index + 1
                 for seg in plan.segments
-                if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
+                if seg.index > 0
+                and seg.task_key != "addguide"
+                and not getattr(seg, "continuity_from_prev", True)
             ]
             lines.append(
                 f"Segment continuity: ON (motion context {plan.continuity_overlap_frames}f)"
@@ -983,7 +989,9 @@ def plan_summary(plan: DirectorPlan) -> str:
                 )
         for seg in plan.segments:
             pin_note = ""
-            if plan.continuity_enabled and seg.index > 0:
+            if seg.task_key == "addguide":
+                pin_note = " — continuity disabled for addguide"
+            elif plan.continuity_enabled and seg.index > 0:
                 pin_note = (
                     " — pin←prev"
                     if getattr(seg, "continuity_from_prev", True)
@@ -994,6 +1002,19 @@ def plan_summary(plan: DirectorPlan) -> str:
                 f"{seg.frame_count}f — {seg.task_key}{pin_note} — "
                 f"{seg.prompt[:60]}{'…' if len(seg.prompt) > 60 else ''}"
             )
+            if seg.task_key == "addguide":
+                guides = list(getattr(seg, "timed_guides", None) or [])
+                frames = ", ".join(f"F{guide.frame_index}" for guide in guides) or "none"
+                times = ", ".join(
+                    f"{guide.frame_index / H3_NATIVE_FPS:.3f}s" for guide in guides
+                ) or "none"
+                has_first = any(int(getattr(ref, "index", -1)) == 0 for ref in seg.refs)
+                has_last = any(int(getattr(ref, "index", -1)) == 1 for ref in seg.refs)
+                lines.append(
+                    f"     frames: {seg.frame_count}; first_frame: {'yes' if has_first else 'no'}; "
+                    f"last_frame: {'yes' if has_last else 'no'}; timed_guides: {len(guides)}"
+                )
+                lines.append(f"     guide_frames: {frames}; guide_times: {times}")
         return "\n".join(lines)
 
     mode_label = (
