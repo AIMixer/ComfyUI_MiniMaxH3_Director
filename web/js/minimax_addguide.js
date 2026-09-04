@@ -223,7 +223,6 @@ function commitEditor(editor, render = true) {
 function renderSlot({
     label,
     ref,
-    optional = true,
     onUpload,
     onExisting,
     onClear,
@@ -262,7 +261,7 @@ function renderSlot({
         img.alt = label;
         image.appendChild(img);
     } else {
-        image.textContent = optional ? t("addguide.optional") : t("addguide.chooseImage");
+        image.textContent = t("addguide.uploadImage");
     }
     image.onclick = (event) => { event.stopPropagation(); onUpload?.(); };
     imageWrap.appendChild(image);
@@ -408,7 +407,7 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         const error = validation.guideErrors.get(guide.id) || "";
         const wrap = renderSlot({
             label: t("addguide.guide", { n: guideIndex + 1 }),
-            ref: imageRef(guide.image), optional: false,
+            ref: imageRef(guide.image),
             selected: guide.id === selectedId,
             onUpload: () => {
                 seg._selectedGuideId = guide.id;
@@ -431,7 +430,18 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
             },
         });
         wrap.classList.add("bd-ag-guide-card");
-        wrap.onclick = () => { seg._selectedGuideId = guide.id; editor.renderImageBatchGroups?.(); };
+        wrap.dataset.guideId = guide.id;
+        // Selection is visual-only. Rebuilding here replaces a just-focused frame
+        // input before the user can type, so update cards/markers in place.
+        wrap.onclick = () => {
+            seg._selectedGuideId = guide.id;
+            root.querySelectorAll(".bd-ag-guide-card").forEach((guideCard) => {
+                guideCard.classList.toggle("selected", guideCard.dataset.guideId === guide.id);
+            });
+            root.querySelectorAll(".bd-ag-marker").forEach((marker) => {
+                marker.classList.toggle("selected", marker.dataset.guideId === guide.id);
+            });
+        };
         const frameLabel = document.createElement("span");
         frameLabel.className = "bd-ag-frame-label";
         frameLabel.textContent = t("addguide.framePosition");
