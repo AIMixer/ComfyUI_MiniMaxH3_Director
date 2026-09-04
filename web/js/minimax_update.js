@@ -133,6 +133,7 @@ export function bindUpdateAction(editor) {
                 message: availableMessage(status),
                 confirmText: t("update.installNow"),
                 cancelText: t("dialog.cancel"),
+                overlayClass: "bd-modal-overlay-top",
             });
             if (!confirmed) return;
 

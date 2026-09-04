@@ -891,6 +891,7 @@ const STYLES = `
   height:100%;min-height:0;max-height:100%;overflow:hidden;align-self:stretch
 }
 .bd-modal-overlay{position:absolute;inset:0;z-index:200;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:10px;box-sizing:border-box;border-radius:6px}
+.bd-modal-overlay.bd-modal-overlay-top{align-items:flex-start;overflow:auto}
 .bd-modal{background:#1e1e1e;border:1px solid #333;border-radius:6px;padding:12px;width:100%;max-width:460px;max-height:calc(100% - 8px);display:flex;flex-direction:column;gap:10px;box-shadow:0 10px 28px rgba(0,0,0,.5)}
 .bd-modal-title{color:#e0e0e0;font-size:12px;font-weight:600;line-height:1.35}
 .bd-modal-body{color:#aaa;font-size:11px;line-height:1.5;white-space:pre-wrap}
@@ -7301,6 +7302,7 @@ class MiniMaxH3DirectorEditor {
 
             const overlay = document.createElement("div");
             overlay.className = "bd-modal-overlay";
+            if (opts.overlayClass) overlay.classList.add(opts.overlayClass);
             const panel = document.createElement("div");
             panel.className = "bd-modal";
             panel.innerHTML = `
