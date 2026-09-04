@@ -289,6 +289,12 @@ def validate_external_group_inputs(
     if not i2v and not r2v:
         return task_key, None, None
 
+    if task_key == "mixed":
+        raise ValueError(
+            "MiniMax H3 Director: mixed mode does not use i2v_groups / r2v_groups. "
+            "Switch task_type back to t2v / i2v / fl2v / r2v, or disconnect the Group input."
+        )
+
     if i2v:
         if task_key not in I2V_FAMILY:
             raise ValueError(

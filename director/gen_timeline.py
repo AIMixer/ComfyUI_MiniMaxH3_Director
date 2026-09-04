@@ -17,12 +17,13 @@ from ..lib.task_prompts import resolve_task_key
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.gen")
 
-GEN_BLANK_KEYS = frozenset({"t2v", "r2v"})
+GEN_BLANK_KEYS = frozenset({"t2v", "r2v", "mixed"})
 GEN_IMAGE_KEYS = frozenset({"i2v"})
 FL2V_KEYS = frozenset({"fl2v"})
 GEN_TASK_KEYS = GEN_BLANK_KEYS | GEN_IMAGE_KEYS | FL2V_KEYS
-PROMPT_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v"})
-VIDEO_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v"})
+PROMPT_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v", "mixed"})
+VIDEO_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v", "mixed"})
+MIXED_SEGMENT_KEYS = frozenset({"t2v", "i2v", "fl2v", "r2v"})
 IMAGE_BATCH_KEYS = frozenset()
 
 MIN_GEN_FRAMES = 1
@@ -72,7 +73,7 @@ def gen_submode(timeline: dict, task_key: str) -> str:
 def _min_frames_for_task(task_key: str) -> int:
     if task_key in IMAGE_BATCH_KEYS or task_key in ("t2i", "i2i"):
         return MIN_GEN_FRAMES
-    if task_key in ("t2v", "i2v", "r2v"):
+    if task_key in ("t2v", "i2v", "r2v", "mixed"):
         return MIN_GEN_VIDEO_FRAMES
     return MIN_GEN_VIDEO_FRAMES
 
@@ -128,6 +129,97 @@ def _load_gen_image_tensor(ref: dict) -> torch.Tensor:
     if tensor is None:
         raise ValueError("Generation segment image could not be loaded.")
     return tensor
+
+
+def _resolve_segment_task(seg_data: dict, *, global_task_type: str, global_task_key: str) -> tuple[str, str]:
+    """Return (task_type_label, task_key) for one generation segment.
+
+    Mixed timelines must not inherit the fake global key ``mixed``. Empty
+    per-segment taskType falls back to t2v.
+    """
+    raw = ""
+    if isinstance(seg_data, dict):
+        raw = str(seg_data.get("taskType") or seg_data.get("task_type") or "").strip()
+    if global_task_key == "mixed":
+        if not raw:
+            return "t2v", "t2v"
+        key = resolve_task_key(raw)
+        if key not in MIXED_SEGMENT_KEYS:
+            return "t2v", "t2v"
+        return raw, key
+    if raw:
+        return raw, resolve_task_key(raw)
+    return global_task_type, resolve_task_key(global_task_type or "t2v")
+
+
+def _fl2v_image_raw(seg_data: dict, slot: int) -> dict | None:
+    """Resolve fl2v start (0) / end (1) from startImage/endImage or refs[]."""
+    if not isinstance(seg_data, dict):
+        return None
+    if slot == 0:
+        raw = seg_data.get("startImage") or seg_data.get("start_image")
+        if isinstance(raw, dict) and (raw.get("imageFile") or raw.get("imageB64") or raw.get("image_file")):
+            return raw
+        gi = seg_data.get("genImage") or {}
+        if isinstance(gi, dict) and (gi.get("imageFile") or gi.get("imageB64")):
+            return gi
+        if seg_data.get("imageFile"):
+            return {"imageFile": seg_data["imageFile"]}
+    elif slot == 1:
+        raw = seg_data.get("endImage") or seg_data.get("end_image")
+        if isinstance(raw, dict) and (raw.get("imageFile") or raw.get("imageB64") or raw.get("image_file")):
+            return raw
+    for item in seg_data.get("refs") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("index", item.get("slot", -1)))
+        except (TypeError, ValueError):
+            continue
+        if idx == slot and (item.get("imageFile") or item.get("imageB64") or item.get("image_file")):
+            return item
+    return None
+
+
+def _load_fl2v_segment_refs(
+    seg_data: dict,
+    *,
+    width: int,
+    height: int,
+    output_mode: str,
+    ref_max_size: int,
+):
+    """Build SegmentRef 0/1 from mixed-timeline fl2v start/end images."""
+    from .fl2v_timeline import _fit_image, _unify_fl2v_pair_canvas
+    from .plan import SegmentRef
+
+    start_raw = _fl2v_image_raw(seg_data, 0)
+    end_raw = _fl2v_image_raw(seg_data, 1)
+    start_img = None
+    end_img = None
+    if start_raw:
+        start_img = _fit_image(
+            _load_gen_image_tensor(start_raw),
+            width=width,
+            height=height,
+            output_mode=output_mode,
+            ref_max_size=ref_max_size,
+        )
+    if end_raw:
+        end_img = _fit_image(
+            _load_gen_image_tensor(end_raw),
+            width=width,
+            height=height,
+            output_mode=output_mode,
+            ref_max_size=ref_max_size,
+        )
+    start_img, end_img = _unify_fl2v_pair_canvas(start_img, end_img)
+    refs = []
+    if start_img is not None:
+        refs.append(SegmentRef(index=0, tensor=start_img[:1].clone()))
+    if end_img is not None:
+        refs.append(SegmentRef(index=1, tensor=end_img[:1].clone()))
+    return refs
 
 
 def _build_i2v_source_clip(
@@ -385,13 +477,24 @@ def build_gen_director_plan(
     for idx, (start, end, seg_data) in enumerate(segment_ranges):
         if edit_mode == "global":
             seg_prompt = prompt
-            seg_task = task_type
+            if task_key == "mixed":
+                seg_task, _ = _resolve_segment_task(
+                    seg_data if isinstance(seg_data, dict) else {},
+                    global_task_type=task_type,
+                    global_task_key=task_key,
+                )
+            else:
+                seg_task = task_type
             seg_refs = list(global_refs)
             use_global = True
             seg_negative = ""
         else:
             use_global = False
-            seg_task = seg_data.get("taskType") or seg_data.get("task_type") or task_type
+            seg_task, _ = _resolve_segment_task(
+                seg_data if isinstance(seg_data, dict) else {},
+                global_task_type=task_type,
+                global_task_key=task_key,
+            )
             seg_task_key_preview = resolve_task_key(seg_task)
             local_prompt = (seg_data.get("prompt") or "").strip()
             # r2v/r2i + commonEnabled: shared prompt prefixes each group prompt.
@@ -417,6 +520,15 @@ def build_gen_director_plan(
                 len(seg_refs),
             )
         seg_refs = segment_refs_for_context(seg_task_key, seg_refs)
+        if seg_task_key == "fl2v":
+            # segment_refs_for_context strips fl2v refs; rebuild start/end keyframes.
+            seg_refs = _load_fl2v_segment_refs(
+                seg_data if isinstance(seg_data, dict) else {},
+                width=out_w,
+                height=out_h,
+                output_mode=out_mode,
+                ref_max_size=ref_max,
+            )
         seg_ref_audios = []
         seg_ref_videos = []
         if edit_mode == "global":
@@ -477,7 +589,28 @@ def build_gen_director_plan(
                 idx + 1,
                 seg_task_key,
             )
-        if submode == "gen_blank" or seg_task_key in GEN_BLANK_KEYS:
+        if seg_task_key == "i2v":
+            if idx < len(source_clips):
+                seg_source = source_clips[idx].clone()
+            else:
+                img_ref = _resolve_gen_image_ref(
+                    seg_data if isinstance(seg_data, dict) else {},
+                    edit_mode="segment",
+                    global_block=global_block,
+                )
+                if img_ref:
+                    img = _load_gen_image_tensor(img_ref)
+                    seg_source = _build_i2v_source_clip(
+                        img,
+                        max(1, int(end) - int(start)),
+                        width=out_w,
+                        height=out_h,
+                        output_mode=out_mode,
+                        ref_max_size=ref_max,
+                    )
+                else:
+                    seg_source = None
+        elif submode == "gen_blank" or seg_task_key in GEN_BLANK_KEYS:
             seg_source = None
         else:
             seg_source = source_clips[idx].clone() if idx < len(source_clips) else None

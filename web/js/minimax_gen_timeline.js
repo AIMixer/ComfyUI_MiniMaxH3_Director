@@ -1,4 +1,4 @@
-﻿/** Shared helpers for MiniMax H3 Director generation tasks. */
+/** Shared helpers for MiniMax H3 Director generation tasks. */
 
 import { t } from "./minimax_i18n.js";
 
@@ -166,10 +166,11 @@ export function resolutionFromSelector(aspectRatio, megapixels, multiple = MINIM
 export const IMAGE_BATCH_TASKS = new Set();
 export const FL2V_TASKS = new Set(["fl2v"]);
 /** Blank-canvas / subject-ref batch generation (not source-video editing). */
-export const VIDEO_BATCH_TASKS = new Set(["t2v", "i2v", "r2v"]);
+export const VIDEO_BATCH_TASKS = new Set(["t2v", "i2v", "r2v", "mixed"]);
+export const MIXED_SEGMENT_TASKS = new Set(["t2v", "i2v", "fl2v", "r2v"]);
 export const PROMPT_BATCH_TASKS = new Set([...VIDEO_BATCH_TASKS, ...FL2V_TASKS]);
 /** Tasks that never use source-video upload toolbar. v2v/rv2v use Bernini-style video timeline. */
-export const NO_VIDEO_UPLOAD_TASKS = new Set(["t2v", "i2v", "r2v"]);
+export const NO_VIDEO_UPLOAD_TASKS = new Set(["t2v", "i2v", "r2v", "mixed"]);
 
 export function resolveTaskKey(taskTypeValue) {
     let value = String(taskTypeValue || "").split(",[object Object]", 1)[0].trim();
@@ -187,6 +188,23 @@ export function isGenTaskType(taskTypeValue) {
 
 export function isVideoBatchTask(taskKey) {
     return VIDEO_BATCH_TASKS.has(taskKey);
+}
+
+export function isMixedTask(taskKey) {
+    return resolveTaskKey(taskKey) === "mixed";
+}
+
+/** Per-segment task inside mixed mode. Empty / unknown → t2v (never "mixed"). */
+export function resolveSegmentTaskKey(segOrTask, globalTaskKey) {
+    const globalKey = resolveTaskKey(globalTaskKey);
+    const raw = (segOrTask && typeof segOrTask === "object")
+        ? (segOrTask.taskType || segOrTask.task_type || "")
+        : (segOrTask || "");
+    const segKey = resolveTaskKey(raw);
+    if (globalKey === "mixed") {
+        return MIXED_SEGMENT_TASKS.has(segKey) ? segKey : "t2v";
+    }
+    return segKey || globalKey || "t2v";
 }
 
 export function isImageBatchTask(taskKey) {
@@ -214,7 +232,7 @@ export function imageBatchVariant(taskKey) {
 
 /** t2i/r2i/t2v/r2v need fixed canvas; i2i/i2v may use long_edge. */
 export function imageBatchRequiresFixedOutput(taskKey) {
-    return taskKey === "t2i" || taskKey === "r2i" || taskKey === "t2v" || taskKey === "r2v";
+    return taskKey === "t2i" || taskKey === "r2i" || taskKey === "t2v" || taskKey === "r2v" || taskKey === "mixed";
 }
 
 /** Maximum frames per diffusion segment (model / VRAM practical limit). */
@@ -390,7 +408,7 @@ export function resolveSegmentRefImageSize(seg, fallback) {
 
 export function newBatchSegment(overrides = {}) {
     const taskKey = resolveTaskKey(overrides.taskType || overrides.task_type || "");
-    const isVideo = isVideoBatchTask(taskKey);
+    const isVideo = isVideoBatchTask(taskKey) || MIXED_SEGMENT_TASKS.has(taskKey);
     // durationSec is the user-facing source of truth; frameCount is derived by formula.
     let durationSec = defaultDurationSec(taskKey);
     if (overrides.durationSec != null && Number.isFinite(Number(overrides.durationSec))) {

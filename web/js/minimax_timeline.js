@@ -35,6 +35,7 @@ import {
     RESOLUTION_ASPECTS,
     resolutionFromSelector,
     resolveTaskKey,
+    resolveSegmentTaskKey,
     resolveSegmentRefImageSize,
     normalizeRefImageSize,
     snapResolutionDim,
@@ -178,7 +179,7 @@ function normalizeAudioMode(value) {
 const CONTINUITY_FRAME_CHOICES = [5, 22, 39, 56];
 /** Official Motion Context baseline recommendation. */
 const DEFAULT_CONTINUITY_FRAMES = 22;
-const CONTINUITY_TASKS = new Set(["t2v", "i2v", "fl2v", "r2v", "v2v", "rv2v"]);
+const CONTINUITY_TASKS = new Set(["t2v", "i2v", "fl2v", "r2v", "v2v", "rv2v", "mixed"]);
 
 function isVideoEditTaskKey(taskKey) {
     return taskKey === "v2v" || taskKey === "rv2v";
@@ -276,6 +277,22 @@ function sanitizeSegmentForPayload(seg) {
         refVideos: Array.isArray(rest.refVideos) ? rest.refVideos.map(sanitizeRefVideo) : [],
         genImage: rest.genImage
             ? { imageFile: rest.genImage.imageFile || "", fileName: rest.genImage.fileName || "" }
+            : undefined,
+        startImage: rest.startImage
+            ? {
+                imageFile: rest.startImage.imageFile || "",
+                fileName: rest.startImage.fileName || "",
+                width: rest.startImage.width || 0,
+                height: rest.startImage.height || 0,
+            }
+            : undefined,
+        endImage: rest.endImage
+            ? {
+                imageFile: rest.endImage.imageFile || "",
+                fileName: rest.endImage.fileName || "",
+                width: rest.endImage.width || 0,
+                height: rest.endImage.height || 0,
+            }
             : undefined,
         referenceVideo: rest.referenceVideo
             ? {
@@ -856,6 +873,7 @@ const STYLES = `
 }
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-plain,
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-source,
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-fl2v,
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-refs:not(.bd-batch-r2v){
   /* Header stays compact; leftover height goes to the prompt row (not a blank gap). */
   grid-template-rows:auto minmax(0,1fr);
@@ -863,9 +881,11 @@ const STYLES = `
 }
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-plain .bd-batch-head,
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-source .bd-batch-head,
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-fl2v .bd-batch-head,
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-refs:not(.bd-batch-r2v) .bd-batch-head{align-self:start}
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-plain .bd-batch-prompts,
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-source .bd-batch-prompts,
+.bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-fl2v .bd-batch-prompts,
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo>.bd-batch-card.bd-batch-refs:not(.bd-batch-r2v) .bd-batch-prompts{
   height:100%;min-height:0;max-height:100%;overflow:hidden;align-self:stretch
 }
@@ -2522,6 +2542,8 @@ class MiniMaxH3DirectorEditor {
                         refAudios: clean.refAudios || [],
                         refVideos: clean.refVideos || [],
                         genImage: clean.genImage || { imageFile: "" },
+                        startImage: clean.startImage || null,
+                        endImage: clean.endImage || null,
                         // Persist per-segment「引用上段」(default true when unset).
                         continuityFromPrev: isSegmentContinuityFromPrev(clean, i),
                         refImageSize: resolveSegmentRefImageSize(clean, this.timeline.output),
@@ -4332,7 +4354,10 @@ class MiniMaxH3DirectorEditor {
 
     _resetBatchWorkspaceLive(taskKey) {
         const key = resolveTaskKey(taskKey || this.getTaskKey());
-        this.timeline.segments = [newBatchSegment({ durationSec: defaultDurationSec(key) })];
+        this.timeline.segments = [newBatchSegment({
+            durationSec: defaultDurationSec(key === "mixed" ? "t2v" : key),
+            ...(key === "mixed" ? { taskType: "t2v" } : {}),
+        })];
         this.timeline.editMode = "segment";
         this.selectedIndex = 0;
         this._clearLiveRunSelection();
@@ -10043,7 +10068,9 @@ class MiniMaxH3DirectorEditor {
             if (pxW < 8 || seg.length <= 0) continue;
             const a = seg.start + 1;
             const b = seg.start + seg.length;
-            const rangeText = `${a}-${b}`;
+            const rangeText = this.getTaskKey() === "mixed"
+                ? `${resolveSegmentTaskKey(seg, "mixed")} ${a}-${b}`
+                : `${a}-${b}`;
             // v2v / r2v / fl2v: emphasize selected segment label (matches card selection).
             const showSegSel = this.usesBatchTimeline() || this.isFl2vMode()
                 || !(this.isImageBatch() || this.isGenMode());

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * First/last-frame (fl2v) timeline — explicit shot groups.
  * Each shot = { startImage and/or endImage (neither = t2v; official allows end-only), durationSec }.
  * Total duration = sum of shot durations. Timeline shows one block per shot.
@@ -132,7 +132,7 @@ function fl2vFps(editor) {
     return Math.max(1, Number(editor?.getFrameRate?.() || editor?.timeline?.frameRate || 24) || 24);
 }
 
-function normalizeImageRef(raw) {
+export function normalizeImageRef(raw) {
     if (!raw) return null;
     if (typeof raw === "string") {
         const imageFile = raw.trim();
@@ -145,6 +145,30 @@ function normalizeImageRef(raw) {
         width: parseInt(raw.width, 10) || 0,
         height: parseInt(raw.height, 10) || 0,
     };
+}
+
+/** Reusable start/end frame slots (standalone fl2v cards + mixed batch). */
+export function createFl2vSlotPair({ startImage = null, endImage = null } = {}) {
+    const startUrl = startImage?.imageFile ? fl2vViewUrl(startImage.imageFile) : "";
+    const endUrl = endImage?.imageFile ? fl2vViewUrl(endImage.imageFile) : "";
+    const slots = document.createElement("div");
+    slots.className = "bd-fl2v-slots";
+    slots.innerHTML = `
+                <div class="bd-fl2v-slot-wrap${startUrl ? " has-img" : ""}">
+                    <div class="bd-fl2v-slot${startUrl ? " has-img" : ""}" data-slot="start" title="${t("tooltip.fl2vStartSlot")}">
+                        ${startUrl ? `<span class="tag start">${t("fl2v.tag.start")}</span>` : ""}
+                        ${startUrl ? `<img src="${startUrl}" alt="">` : `<span class="ph">${t("panel.fl2v.startRequired")}</span>`}
+                    </div>
+                    ${startUrl ? `<button type="button" class="x" data-clear="start" title="${t("tooltip.fl2vClear")}" draggable="false">×</button>` : ""}
+                </div>
+                <div class="bd-fl2v-slot-wrap${endUrl ? " has-img" : ""}">
+                    <div class="bd-fl2v-slot${endUrl ? " has-img" : ""}" data-slot="end" title="${t("tooltip.fl2vEndSlot")}">
+                        ${endUrl ? `<span class="tag end">${t("fl2v.tag.end")}</span>` : ""}
+                        ${endUrl ? `<img src="${endUrl}" alt="">` : `<span class="ph">${t("panel.fl2v.endOptional")}</span>`}
+                    </div>
+                    ${endUrl ? `<button type="button" class="x" data-clear="end" title="${t("tooltip.fl2vClear")}" draggable="false">×</button>` : ""}
+                </div>`;
+    return slots;
 }
 
 export function newFl2vShot(overrides = {}) {
@@ -1115,8 +1139,6 @@ function renderFl2vShotCards(editor) {
         const card = document.createElement("div");
         card.className = "bd-fl2v-shot" + (i === editor.selectedIndex ? " selected" : "");
         card.dataset.shotIndex = String(i);
-        const startUrl = shot.startImage?.imageFile ? fl2vViewUrl(shot.startImage.imageFile) : "";
-        const endUrl = shot.endImage?.imageFile ? fl2vViewUrl(shot.endImage.imageFile) : "";
         const fc = shotFrameCount(shot, fl2vFps(editor));
         const badge = shot.startImage?.imageFile && shot.endImage?.imageFile
             ? t("fl2v.badge.startEnd")
@@ -1134,22 +1156,7 @@ function renderFl2vShotCards(editor) {
                 ${showCont ? `<div class="bd-fl2v-shot-cont"><label class="bd-fl2v-continuity" draggable="false" title="${t("tooltip.segmentContinuityFromPrev")}"><input type="checkbox" data-r="shot-continuity" ${contChecked ? "checked" : ""}><span>${t("batch.continuityFromPrev")}</span></label></div>` : ""}
                 <span class="bd-fl2v-shot-meta">${badge} · ${fc}f</span>
             </div>
-            <div class="bd-fl2v-slots">
-                <div class="bd-fl2v-slot-wrap${startUrl ? " has-img" : ""}">
-                    <div class="bd-fl2v-slot${startUrl ? " has-img" : ""}" data-slot="start" title="${t("tooltip.fl2vStartSlot")}">
-                        ${startUrl ? `<span class="tag start">${t("fl2v.tag.start")}</span>` : ""}
-                        ${startUrl ? `<img src="${startUrl}" alt="">` : `<span class="ph">${t("panel.fl2v.startRequired")}</span>`}
-                    </div>
-                    ${startUrl ? `<button type="button" class="x" data-clear="start" title="${t("tooltip.fl2vClear")}" draggable="false">×</button>` : ""}
-                </div>
-                <div class="bd-fl2v-slot-wrap${endUrl ? " has-img" : ""}">
-                    <div class="bd-fl2v-slot${endUrl ? " has-img" : ""}" data-slot="end" title="${t("tooltip.fl2vEndSlot")}">
-                        ${endUrl ? `<span class="tag end">${t("fl2v.tag.end")}</span>` : ""}
-                        ${endUrl ? `<img src="${endUrl}" alt="">` : `<span class="ph">${t("panel.fl2v.endOptional")}</span>`}
-                    </div>
-                    ${endUrl ? `<button type="button" class="x" data-clear="end" title="${t("tooltip.fl2vClear")}" draggable="false">×</button>` : ""}
-                </div>
-            </div>
+            ${createFl2vSlotPair({ startImage: shot.startImage, endImage: shot.endImage }).outerHTML}
             <div class="bd-fl2v-shot-foot">
                 <label class="bd-fl2v-shot-row" title="${t("tooltip.fl2vShotDuration")}">
                     ${t("panel.fl2v.duration")}

@@ -45,7 +45,8 @@ def resolve_audio_mode(plan) -> str:
     """Return generate | source | mute from timeline.output.audioMode.
 
     ``source`` is honored for v2v/rv2v (source-video extract) and r2v
-    (per-segment reference audio). Other tasks treat it as generate.
+    (per-segment reference audio). Other tasks (including mixed) treat it
+    as generate.
     """
     out = (getattr(plan, "raw", None) or {}).get("output") or {}
     raw = str(out.get("audioMode") or out.get("audio_mode") or AUDIO_MODE_GENERATE).strip().lower()
