@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 import tempfile
@@ -158,6 +159,24 @@ class ParseAndFingerprintTests(unittest.TestCase):
         self.assertNotEqual(baseline, timed.timed_guides_fingerprint([guide("a", 49, identity="sha:a"), b]))
         self.assertNotEqual(baseline, timed.timed_guides_fingerprint([guide("a", 48, identity="sha:new"), b]))
         self.assertNotEqual(baseline, timed.timed_guides_fingerprint([a]))
+
+
+class SegmentExportTests(unittest.TestCase):
+    def test_addguide_is_eligible_for_segment_mp4_export(self):
+        source = (ROOT / "director/segment_mp4_export.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        assignment = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "VIDEO_EXPORT_TASKS"
+                for target in node.targets
+            )
+        )
+        tasks = ast.literal_eval(assignment.value.args[0])
+        self.assertIn("addguide", tasks)
 
 
 class PackTests(unittest.TestCase):
