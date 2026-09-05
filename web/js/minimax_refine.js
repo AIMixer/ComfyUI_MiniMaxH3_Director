@@ -787,13 +787,23 @@ function ensureFirstPassCacheUI(node) {
         const fullW = node.size?.[0];
         if (widget && fullW && widget.width !== fullW) widget.width = fullW;
     };
+    const minHeight = () => Math.max(148, root.scrollHeight + 20);
     widget = node.addDOMWidget(CACHE_STATUS_WIDGET, "cache_status", root, {
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => Math.max(148, root.scrollHeight + 20),
+        getMinHeight: minHeight,
         hideOnZoom: false,
         onDraw: syncWidth,
         afterResize: syncWidth,
+    });
+    // Fixed-size: widgets without computeSize are growable and soak up resize
+    // free space, stretching this panel into a big blank box. Pin its height
+    // so the spare room goes to the main editor widget instead.
+    widget.computeSize = (width) => [width, minHeight()];
+    widget.computeLayoutSize = () => ({
+        minHeight: minHeight(),
+        maxHeight: minHeight(),
+        minWidth: 0,
     });
     syncWidth();
     // Status is derived UI, not a positional backend widget value.
@@ -875,16 +885,26 @@ function ensureDirectorCacheManagerUI(node) {
         const fullW = node.size?.[0];
         if (widget && fullW && widget.width !== fullW) widget.width = fullW;
     };
+    const minHeight = () => {
+        const ui = node._mmxDirectorCacheUI;
+        return ui?.managerOpen ? Math.max(60, root.scrollHeight + 16) : 34;
+    };
     widget = node.addDOMWidget(DIRECTOR_CACHE_WIDGET, "cache_manager", root, {
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => {
-            const ui = node._mmxDirectorCacheUI;
-            return ui?.managerOpen ? Math.max(60, root.scrollHeight + 16) : 34;
-        },
+        getMinHeight: minHeight,
         hideOnZoom: false,
         onDraw: syncWidth,
         afterResize: syncWidth,
+    });
+    // Fixed-size: widgets without computeSize are growable and soak up resize
+    // free space, stretching this panel into a big blank box. Pin its height
+    // so the spare room goes to the main editor widget instead.
+    widget.computeSize = (width) => [width, minHeight()];
+    widget.computeLayoutSize = () => ({
+        minHeight: minHeight(),
+        maxHeight: minHeight(),
+        minWidth: 0,
     });
     syncWidth();
     widget.serialize = false;
