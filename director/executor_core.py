@@ -1342,7 +1342,11 @@ def execute_director_plan_core(
             completed_av_latents,
             completed_refine_passes,
         )
-        if export_segments_mode:
+        # Only a segment we actually sample consumes a predecessor pin and marks
+        # a real VRAM milestone. Skipped segments in a partial run-selection do
+        # neither, so they must not trigger a release — the earlier sampled clips
+        # are this run's deliverables and still feed the images output.
+        if export_segments_mode and seg.index in run_indices:
             # Older than the predecessor cannot be pinned anymore.
             for stale in tuple(completed_outputs):
                 if int(stale) < int(seg.index) - 1:
