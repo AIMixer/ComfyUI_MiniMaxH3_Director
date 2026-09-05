@@ -28,9 +28,12 @@ def resolve_segment_raw_clip(plan: DirectorPlan, seg) -> torch.Tensor:
     if seg.source_clip is not None and seg.source_clip.shape[0] > 0:
         return seg.source_clip.clone()
 
-    # t2v/r2v (incl. external groups) have no source frames. Do not slice the
-    # placeholder gen source_video (len=segment_count 16×16 gray frames).
-    if getattr(seg, "task_key", "") in {"t2v", "r2v"}:
+    # t2v/r2v/addguide (incl. external groups) have no source frames. Do not
+    # slice the placeholder gen source_video (len=segment_count 16×16 gray
+    # frames). AddGuide is independently conditioned from its refs, so its
+    # global timeline offset must never be used as a source-video index.
+    task_key = getattr(seg, "task_key", "")
+    if task_key in {"t2v", "r2v", "addguide"}:
         return torch.zeros((0, 16, 16, 3), dtype=torch.float32)
 
     # fl2v end-only: plan leaves source_clip=None on purpose. Do not slice the
@@ -71,7 +74,10 @@ def resolve_segment_raw_clip_with_lookahead(
         # Gen canvases have no timeline lookahead beyond the clip itself.
         return seg.source_clip.clone()
 
-    if getattr(seg, "task_key", "") in {"t2v", "r2v"}:
+    # These generation-only tasks have no source video. In particular, an
+    # AddGuide segment's start_frame is a global merge offset, not a decode
+    # index; never fall through to load_timeline_segment for it.
+    if getattr(seg, "task_key", "") in {"t2v", "r2v", "addguide"}:
         return torch.zeros((0, 16, 16, 3), dtype=torch.float32)
 
     if getattr(seg, "task_key", "") == "fl2v" and is_gen_timeline_plan(plan):
