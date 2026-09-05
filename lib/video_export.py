@@ -154,13 +154,12 @@ def write_frames_to_mp4(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        assert proc.stdin is not None
-        try:
-            proc.stdin.write(rgb.tobytes())
-            proc.stdin.close()
-        except BrokenPipeError:
-            pass
-        stdout, stderr = proc.communicate()
+        # communicate(input=...) writes, flushes and closes stdin itself. Closing
+        # stdin by hand first makes CPython >=3.12 communicate() call flush() on
+        # the already-closed pipe and raise "flush of closed file". communicate()
+        # also tolerates ffmpeg exiting early (broken pipe) and still collects
+        # stderr, so the returncode check below reports the real encoder error.
+        stdout, stderr = proc.communicate(input=rgb.tobytes())
         if proc.returncode != 0 or not tmp_mp4.is_file() or tmp_mp4.stat().st_size <= 0:
             err = (stderr or b"").decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"ffmpeg encode failed (code={proc.returncode}): {err or 'unknown'}")
