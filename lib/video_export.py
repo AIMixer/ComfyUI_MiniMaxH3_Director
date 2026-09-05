@@ -34,11 +34,17 @@ def _even(n: int) -> int:
 def _frames_to_rgb_u8(frames: torch.Tensor) -> np.ndarray:
     if not isinstance(frames, torch.Tensor) or frames.ndim != 4:
         raise ValueError(f"Expected NHWC frames tensor, got {type(frames)} shape={getattr(frames, 'shape', None)}")
-    arr = frames.detach().cpu().float().clamp(0.0, 1.0).numpy()
+    if frames.dtype == torch.uint8:
+        # Already 8-bit [0,255] (uint8 assembly pipeline) — no rescale.
+        arr = frames.detach().cpu().numpy()
+    else:
+        arr = frames.detach().cpu().float().clamp(0.0, 1.0).numpy()
     if arr.shape[-1] >= 3:
         arr = arr[..., :3]
     else:
         raise ValueError(f"Expected at least 3 channels, got shape {arr.shape}")
+    if arr.dtype == np.uint8:
+        return arr
     return (arr * 255.0).astype(np.uint8)
 
 

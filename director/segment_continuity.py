@@ -1582,12 +1582,45 @@ def _fix_seam_pair(
     return left, body
 
 
+def _frames_to_u8(frames: torch.Tensor) -> torch.Tensor:
+    """float [0,1] → uint8 [0,255]; uint8 passes through. Assembly stays 8-bit
+    (export is 8-bit anyway) so a merged timeline costs ¼ the RAM."""
+    if frames.dtype == torch.uint8:
+        return frames
+    return (
+        frames.float().clamp(0.0, 1.0).mul(255.0).round().clamp(0.0, 255.0)
+        .to(torch.uint8)
+    )
+
+
+def _u8_window_to_float(frames: torch.Tensor) -> torch.Tensor:
+    if frames.dtype == torch.uint8:
+        return frames.float().div_(255.0)
+    return frames.float()
+
+
+def _fix_seam_pair_u8(
+    left_u8: torch.Tensor, body_u8: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """uint8 counterpart of :func:`_fix_seam_pair`: grades seam windows in
+    float [0,1] (the math is defined on that scale) and writes back uint8."""
+    lw = min(_seam_left_window_frames(), int(left_u8.shape[0]))
+    rw = min(_seam_right_window_frames(), int(body_u8.shape[0]))
+    left_win, body_win = _fix_seam_pair(
+        _u8_window_to_float(left_u8[-lw:].clone()),
+        _u8_window_to_float(body_u8[:rw].clone()),
+    )
+    left_u8[-lw:] = _frames_to_u8(left_win)
+    body_u8[:rw] = _frames_to_u8(body_win)
+    return left_u8, body_u8
+
+
 def concat_continuous_chunks(
     chunks: list[torch.Tensor],
     segments: list[SegmentPlan],
     plan: DirectorPlan,
 ) -> torch.Tensor:
-    """Concatenate with exposure-only seam fix.
+    """Concatenate with exposure-only seam fix. Returns uint8 [0,255] NHWC.
 
     Generation settling burn-in handles flash/pulse. Concat RGB morphs are OFF
     (00035: body0/hold→pop caused 拖影 and stutter pulses).
@@ -1595,12 +1628,13 @@ def concat_continuous_chunks(
     del segments
     if not chunks:
         raise ValueError("concat_continuous_chunks: no chunks")
-    if not getattr(plan, "continuity_enabled", False) or len(chunks) < 2:
-        return cat_frames_variable_size(chunks)
-    fixed: list[torch.Tensor] = [chunks[0]]
+    fixed: list[torch.Tensor] = [_frames_to_u8(chunks[0]).contiguous()]
+    grading = bool(getattr(plan, "continuity_enabled", False)) and len(chunks) > 1
     for i in range(1, len(chunks)):
-        left, body = _fix_seam_pair(fixed[-1], chunks[i])
-        fixed[-1] = left
+        body = _frames_to_u8(chunks[i])
+        if grading:
+            left, body = _fix_seam_pair_u8(fixed[-1], body.contiguous())
+            fixed[-1] = left
         fixed.append(body)
     return cat_frames_variable_size(fixed)
 
@@ -1612,21 +1646,21 @@ def concat_continuous_chunks_streaming(
 ) -> torch.Tensor:
     """Memory-flat counterpart of :func:`concat_continuous_chunks`.
 
-    ``chunk_loader(i)`` must return segment ``i`` as an IMAGE tensor; each
-    chunk is dropped right after being copied into the preallocated merged
-    timeline, so peak RAM ≈ merged timeline + one segment instead of 2× the
-    full timeline. Seam grading runs on small tail/head windows and is
-    mathematically identical to the full-tensor path (every fix only touches
-    those windows). Raises :class:`StreamAssemblyError` on any drift so the
-    caller can fall back to the legacy in-memory concat.
+    ``chunk_loader(i)`` must return segment ``i`` as an IMAGE tensor (float
+    [0,1] or uint8 [0,255]); each chunk is dropped right after being copied
+    into the preallocated merged timeline, and the merged timeline itself is
+    **uint8** — peak RAM ≈ ¼ merged timeline + one segment instead of 2× the
+    full float32 timeline. Seam grading runs on small tail/head windows
+    (converted to float for the math, written back as uint8) and matches the
+    full-tensor path up to 8-bit quantization. Raises
+    :class:`StreamAssemblyError` on any drift so the caller can fall back to
+    the legacy in-memory concat.
     """
     counts = [int(c) for c in frame_counts]
     if not counts or any(c <= 0 for c in counts):
         raise StreamAssemblyError("streaming concat: empty frame counts")
     total = sum(counts)
     grading = bool(getattr(plan, "continuity_enabled", False)) and len(counts) > 1
-    left_w = _seam_left_window_frames()
-    right_w = _seam_right_window_frames()
     out: torch.Tensor | None = None
     pos = 0
     for i, expected in enumerate(counts):
@@ -1642,25 +1676,26 @@ def concat_continuous_chunks_streaming(
         if out is None:
             out = torch.empty(
                 (total, int(body.shape[1]), int(body.shape[2]), 3),
-                dtype=torch.float32,
+                dtype=torch.uint8,
             )
         elif (
             int(body.shape[1]) != int(out.shape[1])
             or int(body.shape[2]) != int(out.shape[2])
         ):
             raise StreamAssemblyError("streaming concat: non-uniform canvas")
-        if body.dtype != torch.float32:
-            body = body.float()
-        out[pos : pos + expected] = body
-        if grading and i > 0:
-            lw = min(left_w, pos)
-            rw = min(right_w, expected)
-            left_win, body_win = _fix_seam_pair(
-                out[pos - lw : pos].clone(), body[:rw]
-            )
-            out[pos - lw : pos] = left_win
-            out[pos : pos + rw] = body_win
+        body_u8 = _frames_to_u8(body)
         del body
+        out[pos : pos + expected] = body_u8
+        if grading and i > 0:
+            lw = min(_seam_left_window_frames(), pos)
+            rw = min(_seam_right_window_frames(), expected)
+            left_win, body_win = _fix_seam_pair(
+                _u8_window_to_float(out[pos - lw : pos].clone()),
+                _u8_window_to_float(body_u8[:rw].clone()),
+            )
+            out[pos - int(left_win.shape[0]) : pos] = _frames_to_u8(left_win)
+            out[pos : pos + int(body_win.shape[0])] = _frames_to_u8(body_win)
+        del body_u8
         pos += expected
     if out is None:
         raise StreamAssemblyError("streaming concat: no chunks loaded")

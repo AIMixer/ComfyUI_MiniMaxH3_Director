@@ -316,6 +316,14 @@ def _ensure_nonempty_image_batches(images_out: list[torch.Tensor], *, label: str
     return fixed
 
 
+def _images_to_float32(frames: torch.Tensor) -> torch.Tensor:
+    """ComfyUI IMAGE contract is float32 [0,1]; the uint8 assembly pipeline
+    converts here at the output boundary (the only float copy)."""
+    if frames.dtype == torch.uint8:
+        return frames.float().div_(255.0)
+    return frames.float()
+
+
 def _layout_image_batches(
     plan,
     combined,
@@ -329,7 +337,7 @@ def _layout_image_batches(
         images_out = segment_outputs
         frame_count = sum(int(s.shape[0]) for s in segment_outputs)
         return images_out, frame_count
-    combined = pad_or_trim_frames(combined, plan.total_frames).cpu().float()
+    combined = _images_to_float32(pad_or_trim_frames(combined, plan.total_frames).cpu())
     return [combined], int(combined.shape[0])
 
 

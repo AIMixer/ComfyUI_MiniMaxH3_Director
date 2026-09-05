@@ -414,10 +414,14 @@ def _assemble_all_export_streaming(
         chunk = resident_map.get(seg.index)
         if chunk is None and pre:
             chunk = load_first_pass_frames_stale(
-                node_id, seg, plan, match_len=counts[i]
+                node_id, seg, plan, match_len=counts[i], raw_dtype=True
             )
         if chunk is None:
-            chunk = load_segment_cache(node_id, seg, plan, allow_stale=True)
+            # raw_dtype: keep the on-disk uint8 — the streaming concat copies
+            # straight into the uint8 merged timeline (no 4× float detour).
+            chunk = load_segment_cache(
+                node_id, seg, plan, allow_stale=True, raw_dtype=True
+            )
         if chunk is None:
             raise StreamAssemblyError(f"segment {seg.index + 1} pixels unavailable")
         return chunk
@@ -1871,9 +1875,9 @@ def execute_director_plan_core(
         else:
             pre_combined = combined
         reports.append(
-            "Export mode: all — streaming assembly (finished segments spill to "
-            "disk cache and stream back one at a time; peak RAM ≈ merged "
-            "timeline + one segment; segment IMAGE slots keep 1-frame posters)."
+            "Export mode: all — streaming uint8 assembly (merged timeline is "
+            "uint8 = ¼ RAM of float32; segments stream from disk cache one at "
+            "a time; segment IMAGE slots keep 1-frame posters)."
         )
         # Pixels are merged into combined now — release every segment's
         # full-res slots (posters keep IMAGE list lengths valid).

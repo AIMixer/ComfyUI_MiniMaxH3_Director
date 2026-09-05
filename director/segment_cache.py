@@ -449,6 +449,7 @@ def load_segment_cache(
     plan: DirectorPlan,
     *,
     allow_stale: bool = False,
+    raw_dtype: bool = False,
 ) -> torch.Tensor | None:
     """Load cached segment frames.
 
@@ -457,6 +458,10 @@ def load_segment_cache(
     when the fingerprint drifted (pipeline bump, minor plan churn). A different
     source video is never treated as usable stale — callers then passthrough
     the current clip (v2v/rv2v) or skip (gen timelines).
+
+    ``raw_dtype=True``: return the on-disk tensor as stored (uint8 [0,255])
+    without the float32 [0,1] restore — used by the streaming uint8 assembly
+    to keep the 4× float conversion out of RAM.
     """
     if not node_id:
         return None
@@ -499,9 +504,10 @@ def load_segment_cache(
                 "Segment %d: using cache without meta for export fill.",
                 idx + 1,
             )
-        return _frames_from_disk(
-            torch.load(tensor_path, map_location="cpu", weights_only=True)
-        )
+        loaded = torch.load(tensor_path, map_location="cpu", weights_only=True)
+        if raw_dtype:
+            return loaded if isinstance(loaded, torch.Tensor) else None
+        return _frames_from_disk(loaded)
     except Exception as exc:
         log.warning("Failed to load segment %d cache: %s", idx + 1, exc)
         return None
@@ -640,6 +646,7 @@ def load_first_pass_frames_stale(
     plan: DirectorPlan,
     *,
     match_len: int | None = None,
+    raw_dtype: bool = False,
 ) -> torch.Tensor | None:
     """Load ``.pre.pt`` frames for unselected-segment pre-refine fill.
 
@@ -652,6 +659,9 @@ def load_first_pass_frames_stale(
     Disk ``.pre.pt`` is written before export trim; this reapplies
     ``.pre.handoff.json`` (context prefix + export length) and optionally
     matches the final-cache frame count after later phase-align tail trims.
+
+    ``raw_dtype=True``: keep the on-disk uint8 dtype (skip the float32
+    restore) for the streaming uint8 assembly.
     """
     if not node_id:
         return None
@@ -673,7 +683,7 @@ def load_first_pass_frames_stale(
         loaded = torch.load(frames_path, map_location="cpu", weights_only=True)
         if not isinstance(loaded, torch.Tensor) or loaded.numel() <= 0:
             return None
-        frames = _frames_from_disk(loaded)
+        frames = loaded if raw_dtype else _frames_from_disk(loaded)
         if frames is None:
             return None
         handoff = None
