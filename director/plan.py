@@ -236,6 +236,8 @@ class DirectorPlan:
     sample_sigmas_linked: bool = False
     sample_shift_video: float = 12.0
     sample_shift_audio: float = 3.0
+    # Set during execute when export_mode=segments (minimax_seg_export folder).
+    segment_mp4_run_dir: str | None = None
 
     @property
     def segment_count(self) -> int:

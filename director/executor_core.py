@@ -301,7 +301,8 @@ def _prune_continuity_working_set(
 def _poster_frame(tensor: torch.Tensor | None) -> torch.Tensor:
     """1-frame stand-in so IMAGE list length stays valid after a pixel release."""
     if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4 or int(tensor.shape[0]) <= 0:
-        return torch.full((1, 1, 1, 3), 0.5)
+        # Even 2x2: 1x1 yuv420p from CreateVideo is rejected by Windows Movies & TV.
+        return torch.full((1, 2, 2, 3), 0.5)
     if int(tensor.shape[0]) == 1:
         return tensor.detach().cpu().contiguous()
     return tensor[-1:].detach().cpu().contiguous().clone()
@@ -452,6 +453,7 @@ def execute_director_plan_core(
         )
     # One timestamp folder per execute so all segments of this run stay together.
     mp4_run_dir = new_segment_mp4_run_dir(plan)
+    plan.segment_mp4_run_dir = str(mp4_run_dir) if mp4_run_dir is not None else None
     if mp4_run_dir is not None:
         reports.append(f"Segment mp4 export dir: {mp4_run_dir}")
     if live_tae_preview:
@@ -1532,7 +1534,7 @@ def execute_director_plan_core(
         )
         reports.append(
             "Export mode: segments — released prior-segment pixels after mp4 "
-            "and continuity pin (no full-timeline concat; IMAGE keeps a 1-frame poster)."
+            "and continuity pin (no full-timeline concat)."
         )
     else:
         combined = concat_continuous_chunks(export_chunks, export_segments, plan)
