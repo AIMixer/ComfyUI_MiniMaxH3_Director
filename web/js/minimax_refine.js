@@ -511,7 +511,8 @@ function renderCacheManager(node, data) {
         row.style.cssText = [
             "display:flex",
             "align-items:center",
-            "gap:6px",
+            "flex-wrap:wrap",
+            "gap:4px 6px",
             "padding:3px 6px",
             "border:1px solid var(--border-color, #444)",
             "border-radius:4px",
@@ -528,11 +529,11 @@ function renderCacheManager(node, data) {
 
         const title = document.createElement("span");
         title.textContent = `第${seg.segment}组`;
-        title.style.cssText = "min-width:52px;flex:none;font-weight:600;color:var(--input-text,#ddd)";
+        title.style.cssText = "min-width:46px;flex:none;font-weight:600;color:var(--input-text,#ddd)";
 
         const promptText = String(seg.meta?.prompt || seg.pre_meta?.prompt || "").trim();
         const info = document.createElement("span");
-        info.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#bbb";
+        info.style.cssText = "flex:1 1 140px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#bbb";
         info.textContent = promptText || "（无提示词记录）";
         info.title = promptText;
 
@@ -546,14 +547,20 @@ function renderCacheManager(node, data) {
 
         const size = document.createElement("span");
         size.textContent = formatBytes(seg.total_size);
-        size.style.cssText = "flex:none;min-width:64px;text-align:right;color:#bbb";
+        size.style.cssText = "flex:none;min-width:56px;text-align:right;color:#bbb";
         size.title = (Array.isArray(seg.files) ? seg.files : [])
             .map((f) => `${f.name}  ${formatBytes(f.size)}`)
             .join("\n");
 
         const time = document.createElement("span");
-        time.textContent = seg.mtime ? new Date(seg.mtime * 1000).toLocaleString() : "";
-        time.style.cssText = "flex:none;color:#888;font-size:11px";
+        const mtime = Number(seg.mtime) || 0;
+        if (mtime) {
+            const d = new Date(mtime * 1000);
+            const p2 = (n) => String(n).padStart(2, "0");
+            time.textContent = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+            time.title = d.toLocaleString();
+        }
+        time.style.cssText = "flex:none;color:#888;font-size:11px;white-space:nowrap";
 
         row.append(
             checkbox,
@@ -746,7 +753,7 @@ function ensureFirstPassCacheUI(node) {
     const manager = document.createElement("div");
     manager.style.cssText = "display:none;margin-top:6px;border-top:1px solid var(--border-color, #555);padding-top:6px";
     const managerHead = document.createElement("div");
-    managerHead.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px";
+    managerHead.style.cssText = "display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 6px;margin-bottom:4px";
     const managerSummary = document.createElement("span");
     managerSummary.style.cssText = "color:var(--input-text, #ddd);font-size:11px";
     const managerActions = document.createElement("div");
@@ -761,7 +768,7 @@ function ensureFirstPassCacheUI(node) {
     );
     managerHead.append(managerSummary, managerActions);
     const managerList = document.createElement("div");
-    managerList.style.cssText = "max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px";
+    managerList.style.cssText = "max-height:260px;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:4px";
     const overviewTitle = document.createElement("div");
     overviewTitle.style.cssText = "margin-top:8px;color:#999;font-size:11px";
     overviewTitle.textContent = "其他节点的缓存（含已从工作流删除的节点）：";
@@ -775,12 +782,20 @@ function ensureFirstPassCacheUI(node) {
     }
     header.append(title, buttons);
     root.append(header, body, manager);
-    const widget = node.addDOMWidget(CACHE_STATUS_WIDGET, "cache_status", root, {
+    let widget = null;
+    const syncWidth = () => {
+        const fullW = node.size?.[0];
+        if (widget && fullW && widget.width !== fullW) widget.width = fullW;
+    };
+    widget = node.addDOMWidget(CACHE_STATUS_WIDGET, "cache_status", root, {
         getValue: () => "",
         setValue: () => {},
         getMinHeight: () => Math.max(148, root.scrollHeight + 20),
         hideOnZoom: false,
+        onDraw: syncWidth,
+        afterResize: syncWidth,
     });
+    syncWidth();
     // Status is derived UI, not a positional backend widget value.
     widget.serialize = false;
     if (!widget.options) widget.options = {};
@@ -828,7 +843,7 @@ function ensureDirectorCacheManagerUI(node) {
     const manager = document.createElement("div");
     manager.style.cssText = "display:none;margin-top:6px;border-top:1px solid var(--border-color, #555);padding-top:6px";
     const managerHead = document.createElement("div");
-    managerHead.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px";
+    managerHead.style.cssText = "display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 6px;margin-bottom:4px";
     const managerSummary = document.createElement("span");
     managerSummary.style.cssText = "color:var(--input-text, #ddd);font-size:11px";
     const managerActions = document.createElement("div");
@@ -843,7 +858,7 @@ function ensureDirectorCacheManagerUI(node) {
     );
     managerHead.append(managerSummary, managerActions);
     const managerList = document.createElement("div");
-    managerList.style.cssText = "max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:4px";
+    managerList.style.cssText = "max-height:260px;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:4px";
     const overviewTitle = document.createElement("div");
     overviewTitle.style.cssText = "margin-top:8px;color:#999;font-size:11px";
     overviewTitle.textContent = "其他节点的缓存（含已从工作流删除的节点）：";
@@ -855,7 +870,12 @@ function ensureDirectorCacheManagerUI(node) {
         manager.addEventListener(eventName, (event) => event.stopPropagation());
     }
     root.append(header, manager);
-    const widget = node.addDOMWidget(DIRECTOR_CACHE_WIDGET, "cache_manager", root, {
+    let widget = null;
+    const syncWidth = () => {
+        const fullW = node.size?.[0];
+        if (widget && fullW && widget.width !== fullW) widget.width = fullW;
+    };
+    widget = node.addDOMWidget(DIRECTOR_CACHE_WIDGET, "cache_manager", root, {
         getValue: () => "",
         setValue: () => {},
         getMinHeight: () => {
@@ -863,7 +883,10 @@ function ensureDirectorCacheManagerUI(node) {
             return ui?.managerOpen ? Math.max(60, root.scrollHeight + 16) : 34;
         },
         hideOnZoom: false,
+        onDraw: syncWidth,
+        afterResize: syncWidth,
     });
+    syncWidth();
     widget.serialize = false;
     if (!widget.options) widget.options = {};
     widget.options.serialize = false;
