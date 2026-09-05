@@ -1536,6 +1536,52 @@ def continuity_merged_frame_count(plan: DirectorPlan) -> int:
     return int(plan.total_frames)
 
 
+class StreamAssemblyError(RuntimeError):
+    """Streaming「全部导出」assembly cannot proceed; caller falls back to legacy."""
+
+
+def _seam_left_window_frames() -> int:
+    """Tail-window size of the previous chunk that seam grading can ever touch."""
+    window = max(8, int(CONTINUITY_HOLD_MAX_FRAMES) + 1)
+    if CONTINUITY_HOLD_POP_ON_TAIL:
+        window = max(
+            window,
+            int(CONTINUITY_HOLD_POP_SCAN) + int(CONTINUITY_HOLD_POP_LOOKAHEAD) + 8,
+        )
+    return window
+
+
+def _seam_right_window_frames() -> int:
+    """Opening-window size of the next chunk that seam grading can ever touch."""
+    return max(
+        8,
+        int(CONTINUITY_SEAM_ADD_LUMA_FRAMES) + 2,
+        int(CONTINUITY_HOLD_POP_SCAN) + int(CONTINUITY_HOLD_POP_LOOKAHEAD) + 8,
+        int(CONTINUITY_SPIKE_SCAN) + 4,
+    )
+
+
+def _fix_seam_pair(
+    left: torch.Tensor, body: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """One seam of concat grading, shared by legacy concat + streaming assembly.
+
+    Every op only reads ``left[-1]`` / rewrites a bounded tail of ``left`` and
+    a bounded opening of ``body`` (see ``_seam_*_window_frames``), so callers
+    may pass those windows instead of whole chunks with identical results.
+    """
+    left = _unfreeze_held_tail(left)
+    if CONTINUITY_HOLD_POP_ON_TAIL:
+        left = _break_hold_pop_window(left, from_end=True)
+    body = _break_hold_pop_window(body, from_end=False)
+    if float(CONTINUITY_SPIKE_WEIGHT) > 0:
+        body = _ease_opening_spikes(body)
+    body = _soften_body0_toward_prev(body, left)
+    body = _additive_opening_luma(body, left)
+    left, body = _micro_seam_bridge(left, body)
+    return left, body
+
+
 def concat_continuous_chunks(
     chunks: list[torch.Tensor],
     segments: list[SegmentPlan],
@@ -1553,18 +1599,72 @@ def concat_continuous_chunks(
         return cat_frames_variable_size(chunks)
     fixed: list[torch.Tensor] = [chunks[0]]
     for i in range(1, len(chunks)):
-        left = _unfreeze_held_tail(fixed[-1])
-        if CONTINUITY_HOLD_POP_ON_TAIL:
-            left = _break_hold_pop_window(left, from_end=True)
-        body = _break_hold_pop_window(chunks[i], from_end=False)
-        if float(CONTINUITY_SPIKE_WEIGHT) > 0:
-            body = _ease_opening_spikes(body)
-        body = _soften_body0_toward_prev(body, left)
-        body = _additive_opening_luma(body, left)
-        left, body = _micro_seam_bridge(left, body)
+        left, body = _fix_seam_pair(fixed[-1], chunks[i])
         fixed[-1] = left
         fixed.append(body)
     return cat_frames_variable_size(fixed)
+
+
+def concat_continuous_chunks_streaming(
+    chunk_loader,
+    frame_counts: list[int],
+    plan: DirectorPlan,
+) -> torch.Tensor:
+    """Memory-flat counterpart of :func:`concat_continuous_chunks`.
+
+    ``chunk_loader(i)`` must return segment ``i`` as an IMAGE tensor; each
+    chunk is dropped right after being copied into the preallocated merged
+    timeline, so peak RAM ≈ merged timeline + one segment instead of 2× the
+    full timeline. Seam grading runs on small tail/head windows and is
+    mathematically identical to the full-tensor path (every fix only touches
+    those windows). Raises :class:`StreamAssemblyError` on any drift so the
+    caller can fall back to the legacy in-memory concat.
+    """
+    counts = [int(c) for c in frame_counts]
+    if not counts or any(c <= 0 for c in counts):
+        raise StreamAssemblyError("streaming concat: empty frame counts")
+    total = sum(counts)
+    grading = bool(getattr(plan, "continuity_enabled", False)) and len(counts) > 1
+    left_w = _seam_left_window_frames()
+    right_w = _seam_right_window_frames()
+    out: torch.Tensor | None = None
+    pos = 0
+    for i, expected in enumerate(counts):
+        body = chunk_loader(i)
+        if (
+            not torch.is_tensor(body)
+            or body.ndim != 4
+            or int(body.shape[0]) != expected
+        ):
+            raise StreamAssemblyError(
+                f"streaming concat: chunk {i} unavailable or length drift"
+            )
+        if out is None:
+            out = torch.empty(
+                (total, int(body.shape[1]), int(body.shape[2]), 3),
+                dtype=torch.float32,
+            )
+        elif (
+            int(body.shape[1]) != int(out.shape[1])
+            or int(body.shape[2]) != int(out.shape[2])
+        ):
+            raise StreamAssemblyError("streaming concat: non-uniform canvas")
+        if body.dtype != torch.float32:
+            body = body.float()
+        out[pos : pos + expected] = body
+        if grading and i > 0:
+            lw = min(left_w, pos)
+            rw = min(right_w, expected)
+            left_win, body_win = _fix_seam_pair(
+                out[pos - lw : pos].clone(), body[:rw]
+            )
+            out[pos - lw : pos] = left_win
+            out[pos : pos + rw] = body_win
+        del body
+        pos += expected
+    if out is None:
+        raise StreamAssemblyError("streaming concat: no chunks loaded")
+    return out
 
 
 def apply_cached_segment_continuity(

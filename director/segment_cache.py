@@ -507,6 +507,20 @@ def load_segment_cache(
         return None
 
 
+def segment_frames_cache_exists(node_id: str | None, seg: SegmentPlan) -> bool:
+    """Cheap existence probe for ``seg_XXXX.pt`` (no payload load, no fingerprint).
+
+    Streaming「全部导出」uses this to decide whether a finished segment's
+    in-memory pixels may be released and reloaded from disk at final assembly.
+    """
+    if not node_id:
+        return False
+    root = _cache_root(node_id)
+    if root is None:
+        return False
+    return (root / f"seg_{int(seg.index):04d}.pt").is_file()
+
+
 def load_segment_audio(
     node_id: str | None,
     seg: SegmentPlan,
