@@ -438,6 +438,7 @@ export function newBatchSegment(overrides = {}) {
         refAudios: [],
         refVideos: [],
         timedGuides: [],
+        timedAudioGuides: [],
         genImage: { imageFile: "" },
         previewB64: "",
         previewFrames: [],

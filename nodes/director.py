@@ -61,7 +61,7 @@ class MiniMaxH3Director:
                 ),
                 "audio_vae": (
                     "VAE",
-                    {"tooltip": "MiniMax H3 audio VAE (minimax_h3_audio_vae). Required for r2v / v2v / rv2v."},
+                    {"tooltip": "MiniMax H3 audio VAE (minimax_h3_audio_vae). Required for r2v / v2v / rv2v and AddGuide audio guides."},
                 ),
                 "clip": (
                     "CLIP",

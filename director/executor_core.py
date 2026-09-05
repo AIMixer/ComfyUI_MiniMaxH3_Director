@@ -278,6 +278,13 @@ def _release_segment_file_ref_audios(plan: DirectorPlan, seg) -> None:
         item.audio = None
         if isinstance(cache, dict):
             cache.pop(path, None)
+    for item in getattr(seg, "timed_audio_guides", None) or []:
+        path = str(getattr(item, "audio_path", "") or "").strip()
+        if not path:
+            continue
+        item.audio = None
+        if isinstance(cache, dict):
+            cache.pop(path, None)
 
 
 def _prune_continuity_working_set(
@@ -788,8 +795,15 @@ def execute_director_plan_core(
                 latent,
                 vae=vae,
                 timed_guides=seg.timed_guides,
+                audio_vae=audio_vae,
+                timed_audio_guides=seg.timed_audio_guides,
+                frame_count=seg.frame_count,
+                audio_cache=getattr(plan, "audio_decode_cache", None),
             )
-            task_hint = f"{task_hint} + {len(seg.timed_guides)} timed guide(s)"
+            task_hint = (
+                f"{task_hint} + {len(seg.timed_guides)} picture guide(s)"
+                f" + {len(seg.timed_audio_guides)} audio guide(s)"
+            )
         cond_s = time.perf_counter() - t_cond
 
         trim_frames = 0

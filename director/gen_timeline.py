@@ -17,7 +17,15 @@ from ..lib.image_prep import (
     resolve_output_dimensions,
 )
 from ..lib.task_prompts import resolve_task_key
-from .timed_guides import SegmentTimedGuide, parse_timed_guides, validate_timed_guides
+from ..lib.audio_io import probe_audio_duration
+from .timed_guides import (
+    SegmentTimedAudioGuide,
+    SegmentTimedGuide,
+    parse_timed_audio_guides,
+    parse_timed_guides,
+    validate_timed_audio_guides,
+    validate_timed_guides,
+)
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.gen")
 
@@ -261,6 +269,42 @@ def _load_timed_guides(seg_data: dict) -> list[SegmentTimedGuide]:
         load_image=load_reference_tensor,
         image_identity=_timed_guide_identity,
     )
+
+
+def _timed_audio_source(audio_raw: dict) -> tuple[str, str, str, float]:
+    audio_file = str(
+        audio_raw.get("audioFile")
+        or audio_raw.get("audio_file")
+        or audio_raw.get("fileName")
+        or ""
+    ).replace("\\", "/").strip()
+    subfolder = str(audio_raw.get("subfolder") or "").replace("\\", "/").strip("/")
+    if subfolder and audio_file and not audio_file.startswith(subfolder + "/"):
+        audio_file = f"{subfolder}/{audio_file}"
+    if not audio_file:
+        return "", "", "missing", 0.0
+    audio_path = os.path.join(
+        folder_paths.get_input_directory(), audio_file.replace("/", os.sep)
+    )
+    try:
+        stat = os.stat(audio_path)
+        mtime_ns = int(
+            getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+        )
+        identity = f"{audio_file}:{int(stat.st_size)}:{mtime_ns}"
+        duration = probe_audio_duration(audio_path)
+        return audio_file, audio_path, identity, duration
+    except OSError:
+        return audio_file, audio_path, f"{audio_file}:missing", 0.0
+
+
+def _load_timed_audio_guides(seg_data: dict) -> list[SegmentTimedAudioGuide]:
+    raw_guides = (
+        seg_data.get("timedAudioGuides")
+        or seg_data.get("timed_audio_guides")
+        or []
+    )
+    return parse_timed_audio_guides(raw_guides, audio_source=_timed_audio_source)
 
 
 def _build_i2v_source_clip(
@@ -572,19 +616,35 @@ def build_gen_director_plan(
                 ref_max_size=ref_max,
             )
         timed_guides = []
+        timed_audio_guides = []
         if seg_task_key == "addguide":
             timed_guides = _load_timed_guides(
                 seg_data if isinstance(seg_data, dict) else {}
             )
+            timed_audio_guides = _load_timed_audio_guides(
+                seg_data if isinstance(seg_data, dict) else {}
+            )
             has_first = any(int(getattr(ref, "index", -1)) == 0 for ref in seg_refs)
             has_last = any(int(getattr(ref, "index", -1)) == 1 for ref in seg_refs)
-            timed_guides = validate_timed_guides(
-                timed_guides,
-                frame_count=max(1, int(end) - int(start)),
-                first_present=has_first,
-                last_present=has_last,
-                segment_number=idx + 1,
-            )
+            frame_count = max(1, int(end) - int(start))
+            if not timed_guides and not timed_audio_guides:
+                raise ValueError(
+                    f"AddGuide segment #{idx + 1} requires at least one Picture Guide or Audio Guide."
+                )
+            if timed_guides:
+                timed_guides = validate_timed_guides(
+                    timed_guides,
+                    frame_count=frame_count,
+                    first_present=has_first,
+                    last_present=has_last,
+                    segment_number=idx + 1,
+                )
+            if timed_audio_guides:
+                timed_audio_guides = validate_timed_audio_guides(
+                    timed_audio_guides,
+                    frame_count=frame_count,
+                    segment_number=idx + 1,
+                )
         seg_ref_audios = []
         seg_ref_videos = []
         if edit_mode == "global":
@@ -682,6 +742,7 @@ def build_gen_director_plan(
                 use_global=use_global,
                 refs=seg_refs,
                 timed_guides=timed_guides,
+                timed_audio_guides=timed_audio_guides,
                 ref_audios=seg_ref_audios,
                 ref_videos=seg_ref_videos,
                 negative_prompt=seg_negative,

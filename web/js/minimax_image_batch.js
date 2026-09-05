@@ -47,6 +47,7 @@ import {
     hasDuplicateReferenceAudio,
     isReferenceAudioSourceFile,
     prepareLocalReferenceAudio,
+    probePreparedAudioDuration,
 } from "./minimax_ref_audio.js";
 
 const _players = new WeakMap();
@@ -1177,6 +1178,60 @@ async function pickAddGuideImage(editor, index, kind, guideId) {
     } catch (err) {
         console.error("[MiniMax H3Director] AddGuide existing-image pick failed:", err);
         alert(t("upload.alertFailed", { err: err?.message || err }));
+    }
+}
+
+function applyAddGuideAudio(editor, index, guideId, prepared) {
+    const seg = editor.timeline.segments?.[index];
+    if (!seg) return;
+    normalizeAddGuideSegment(seg);
+    const guide = seg.timedAudioGuides.find((item) => item.id === guideId);
+    if (!guide) return;
+    const rel = String(prepared?.relPath || prepared?.audioFile || "").replace(/\\/g, "/");
+    if (!rel) return;
+    guide.audio = {
+        audioFile: rel,
+        fileName: prepared.fileName || rel.split("/").pop() || rel,
+        type: prepared.type || "input",
+        subfolder: prepared.subfolder || "",
+        durationSec: Math.max(0, Number(prepared.durationSec) || 0),
+    };
+    editor.commit?.(true, { syncTimeline: true });
+    editor.flushTimelineSync?.();
+    editor.renderImageBatchGroups?.();
+    editor.scheduleRender?.();
+}
+
+function uploadAddGuideAudio(editor, index, guideId) {
+    pickFile("audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma", async (file) => {
+        try {
+            if (!isReferenceAudioSourceFile(file)) throw new Error(t("addguide.error.audioFile"));
+            const prepared = await prepareLocalReferenceAudio(file);
+            prepared.durationSec = await probePreparedAudioDuration(prepared);
+            applyAddGuideAudio(editor, index, guideId, prepared);
+        } catch (err) {
+            console.error("[MiniMax H3Director] Audio Guide upload failed:", err);
+            alert(t("upload.refAudioFailed", { err: err?.message || err }));
+        }
+    });
+}
+
+async function pickAddGuideAudio(editor, index, guideId) {
+    try {
+        const seg = editor.timeline.segments?.[index];
+        normalizeAddGuideSegment(seg);
+        const current = seg?.timedAudioGuides?.find((item) => item.id === guideId)?.audio?.audioFile;
+        const picked = await editor.chooseAudioInput({
+            title: t("addguide.chooseAudio"),
+            currentValue: current || "",
+            allowVideo: false,
+        });
+        if (!picked?.relPath) return;
+        picked.durationSec = await probePreparedAudioDuration(picked);
+        applyAddGuideAudio(editor, index, guideId, picked);
+    } catch (err) {
+        console.error("[MiniMax H3Director] Audio Guide existing-audio pick failed:", err);
+        alert(t("upload.refAudioFailed", { err: err?.message || err }));
     }
 }
 
@@ -2786,6 +2841,8 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             appendAddGuideEditor(card, editor, seg, index, {
                 upload: (kind, guideId) => uploadAddGuideImage(editor, index, kind, guideId),
                 pick: (kind, guideId) => void pickAddGuideImage(editor, index, kind, guideId),
+                uploadAudio: (guideId) => uploadAddGuideAudio(editor, index, guideId),
+                pickAudio: (guideId) => void pickAddGuideAudio(editor, index, guideId),
             });
         } else if (isFl2v) {
             const media = document.createElement("div");

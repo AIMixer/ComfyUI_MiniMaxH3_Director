@@ -40,6 +40,17 @@ def guide(identifier: str, frame: int, *, batch: int = 1, identity: str = "img:a
     )
 
 
+def audio_guide(identifier: str, frame: int, *, duration: float = 4.0, identity: str = "aud:a"):
+    return timed.SegmentTimedAudioGuide(
+        id=identifier,
+        frame_index=frame,
+        audio_file=f"{identifier}.wav",
+        audio_path=f"/{identifier}.wav",
+        audio_identity=identity,
+        source_duration_sec=duration,
+    )
+
+
 class DefaultFrameTests(unittest.TestCase):
     def test_repeated_additions_fill_earliest_largest_gap(self):
         self.assertEqual(timed.choose_default_guide_frame(243, []), 121)
@@ -161,6 +172,77 @@ class ParseAndFingerprintTests(unittest.TestCase):
         self.assertNotEqual(baseline, timed.timed_guides_fingerprint([a]))
 
 
+class AudioGuideTests(unittest.TestCase):
+    def test_timeline_json_preserves_audio_id_frame_and_metadata(self):
+        parsed = timed.parse_timed_audio_guides(
+            [
+                {
+                    "id": "audio-stable",
+                    "frameIndex": 36,
+                    "audio": {"audioFile": "guides/voice.wav", "fileName": "voice.wav"},
+                }
+            ],
+            audio_source=lambda raw: (
+                raw["audioFile"],
+                "/input/guides/voice.wav",
+                "voice:identity",
+                3.154,
+            ),
+        )
+        self.assertEqual(parsed[0].id, "audio-stable")
+        self.assertEqual(parsed[0].frame_index, 36)
+        self.assertEqual(parsed[0].audio_file, "guides/voice.wav")
+        self.assertEqual(parsed[0].meta["fileName"], "voice.wav")
+
+    def test_audio_guides_are_independent_sorted_and_allow_f0(self):
+        ordered = timed.validate_timed_audio_guides(
+            [audio_guide("later", 48), audio_guide("first", 0)],
+            frame_count=243,
+        )
+        self.assertEqual([item.frame_index for item in ordered], [0, 48])
+        with self.assertRaisesRegex(ValueError, "more than one Audio Guide"):
+            timed.validate_timed_audio_guides(
+                [audio_guide("a", 24), audio_guide("b", 24)], frame_count=243
+            )
+
+    def test_effective_duration_handoff_recovers_but_never_exceeds_source(self):
+        first = audio_guide("a", 0, duration=4.0)
+        self.assertEqual(
+            timed.audio_guide_effective_duration(first, next_frame_index=48, frame_count=243),
+            2.0,
+        )
+        self.assertEqual(
+            timed.audio_guide_effective_duration(first, next_frame_index=72, frame_count=243),
+            3.0,
+        )
+        self.assertEqual(
+            timed.audio_guide_effective_duration(first, next_frame_index=120, frame_count=243),
+            4.0,
+        )
+        self.assertEqual(
+            timed.audio_guide_effective_duration(first, next_frame_index=None, frame_count=72),
+            3.0,
+        )
+
+    def test_cache_material_changes_when_next_audio_guide_moves(self):
+        first = audio_guide("a", 0, duration=4.0)
+        at_two = timed.timed_audio_guides_fingerprint(
+            [first, audio_guide("b", 48)], frame_count=243
+        )
+        at_three = timed.timed_audio_guides_fingerprint(
+            [first, audio_guide("b", 72)], frame_count=243
+        )
+        self.assertEqual(at_two[0]["effective_duration_sec"], 2.0)
+        self.assertEqual(at_three[0]["effective_duration_sec"], 3.0)
+        self.assertNotEqual(at_two, at_three)
+
+    def test_trim_is_a_real_waveform_crop(self):
+        audio = {"waveform": torch.arange(20).reshape(1, 1, 20), "sample_rate": 10}
+        trimmed = timed.trim_audio_guide(audio, 1.2)
+        self.assertEqual(trimmed["waveform"].shape[-1], 12)
+        self.assertEqual(audio["waveform"].shape[-1], 20)
+
+
 class SegmentExportTests(unittest.TestCase):
     def test_addguide_is_eligible_for_segment_mp4_export(self):
         source = (ROOT / "director/segment_mp4_export.py").read_text(encoding="utf-8")
@@ -213,6 +295,7 @@ class PackTests(unittest.TestCase):
             source_dir.mkdir(parents=True)
             (source_dir / "early.png").write_bytes(b"early")
             (source_dir / "later.jpg").write_bytes(b"later")
+            (source_dir / "voice.wav").write_bytes(b"voice")
 
             card = {
                 "timedGuides": [
@@ -227,6 +310,14 @@ class PackTests(unittest.TestCase):
                         "image": {"imageFile": "guides/early.png"},
                     },
                 ]
+                ,
+                "timedAudioGuides": [
+                    {
+                        "id": "audio-stable",
+                        "frameIndex": 24,
+                        "audio": {"audioFile": "guides/voice.wav", "durationSec": 2.5},
+                    }
+                ],
             }
             staging = root / "staging"
             missing = []
@@ -250,6 +341,11 @@ class PackTests(unittest.TestCase):
             )
             self.assertTrue((staging / "asset_groups/01/guide_001.png").is_file())
             self.assertTrue((staging / "asset_groups/01/guide_002.jpg").is_file())
+            self.assertEqual(
+                card["timedAudioGuides"][0]["audio"]["audioFile"],
+                "asset_groups/01/audio_guide_001.wav",
+            )
+            self.assertTrue((staging / "asset_groups/01/audio_guide_001.wav").is_file())
 
             self.pack._prefix_pack_paths(card, "minimax_director_packs/imported")
             self.assertEqual(
@@ -258,6 +354,10 @@ class PackTests(unittest.TestCase):
             )
             self.assertEqual(card["timedGuides"][0]["frameIndex"], 48)
             self.assertEqual(card["timedGuides"][0]["id"], "stable-early")
+            self.assertEqual(
+                card["timedAudioGuides"][0]["audio"]["audioFile"],
+                "minimax_director_packs/imported/asset_groups/01/audio_guide_001.wav",
+            )
 
 
 class ConditioningTests(unittest.TestCase):
@@ -320,6 +420,43 @@ class ConditioningTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "MiniMaxH3AddGuide") as caught:
                 self.conditioning._load_minimax_addguide_node()
         self.assertEqual(str(caught.exception), expected)
+
+    def test_picture_then_trimmed_audio_are_chained(self):
+        calls = []
+
+        class Output:
+            def __init__(self, positive):
+                self.args = (positive,)
+
+        class FakeAddGuide:
+            @staticmethod
+            def execute(positive, latent, frame_idx, **kwargs):
+                calls.append((frame_idx, kwargs))
+                return Output([*positive, frame_idx])
+
+        audio = {"waveform": torch.zeros((1, 2, 400)), "sample_rate": 100}
+        fake_audio_io = types.ModuleType("addguide_pkg.lib.audio_io")
+        fake_audio_io.load_reference_audio = lambda path, cache=None: audio
+        sys.modules["addguide_pkg.lib.audio_io"] = fake_audio_io
+        sys.modules["addguide_pkg.director.timed_guides"] = timed
+        original_loader = self.conditioning._load_minimax_addguide_node
+        self.conditioning._load_minimax_addguide_node = lambda: FakeAddGuide
+        try:
+            result = self.conditioning.apply_minimax_timed_guides(
+                [],
+                object(),
+                vae="video-vae",
+                timed_guides=[guide("pg", 24)],
+                audio_vae="audio-vae",
+                timed_audio_guides=[audio_guide("a", 0), audio_guide("b", 48)],
+                frame_count=243,
+            )
+        finally:
+            self.conditioning._load_minimax_addguide_node = original_loader
+        self.assertEqual(result, [24, 0, 48])
+        self.assertIn("image", calls[0][1])
+        self.assertEqual(calls[1][1]["audio"]["waveform"].shape[-1], 200)
+        self.assertEqual(calls[2][1]["audio"]["waveform"].shape[-1], 400)
 
 
 if __name__ == "__main__":

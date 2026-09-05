@@ -29,6 +29,7 @@ class FakeElement {
         this.style = {};
         this.className = "";
         this.value = "";
+        this._listeners = new Map();
         this.classList = {
             add: (...names) => {
                 const current = new Set(this.className.split(/\s+/).filter(Boolean));
@@ -54,6 +55,19 @@ class FakeElement {
     }
 
     setAttribute() {}
+
+    addEventListener(type, listener) {
+        if (!this._listeners.has(type)) this._listeners.set(type, new Set());
+        this._listeners.get(type).add(listener);
+    }
+
+    removeEventListener(type, listener) {
+        this._listeners.get(type)?.delete(listener);
+    }
+
+    dispatch(type, event = {}) {
+        for (const listener of this._listeners.get(type) || []) listener(event);
+    }
 
     getBoundingClientRect() {
         return { left: 0, width: 100 };
@@ -105,7 +119,6 @@ class FakeElement {
     }
 }
 
-
 globalThis.document = {
     createElement: (tagName) => new FakeElement(tagName),
 };
@@ -129,7 +142,8 @@ const addGuide = await loadAddGuideModule();
 function makeEditor() {
     return {
         renderCount: 0,
-        commit() {},
+        commitCount: 0,
+        commit() { this.commitCount += 1; },
         flushTimelineSync() {},
         renderImageBatchGroups() {
             this.renderCount += 1;
@@ -137,6 +151,63 @@ function makeEditor() {
         scheduleRender() {},
         updateDomWidgetHeight() {},
     };
+}
+
+{
+    const editor = makeEditor();
+    const segment = {
+        frameCount: 120,
+        timedGuides: [],
+        timedAudioGuides: [{
+            id: "audio-interactions",
+            frameIndex: 61,
+            audio: { audioFile: "voice.wav", fileName: "voice.wav", durationSec: 3 },
+        }],
+    };
+    const card = new FakeElement("div");
+    addGuide.appendAddGuideEditor(card, editor, segment, 0, {});
+    const audioCard = card.querySelector(".bd-ag-audio-card");
+    const frameButtons = audioCard.querySelectorAll(".bd-ag-frame-controls")[0].children;
+    frameButtons[2].click();
+    assert.equal(segment.timedAudioGuides[0].frameIndex, 62, "AG + button must update frameIndex");
+
+    const rerendered = new FakeElement("div");
+    addGuide.appendAddGuideEditor(rerendered, editor, segment, 0, {});
+    const handle = rerendered.querySelector(".bd-ag-audio-handle");
+    handle.onpointerdown({ preventDefault() {}, stopPropagation() {}, pointerId: 1 });
+    handle.dispatch("pointermove", { clientX: 20 });
+    handle.dispatch("pointerup", {});
+    assert.equal(segment.timedAudioGuides[0].frameIndex, 24, "AG handle drag must update frameIndex");
+
+    const clear = rerendered.querySelector(".bd-ag-audio-clear");
+    clear.click();
+    assert.equal(segment.timedAudioGuides.length, 1, "clearing audio must retain the AG card");
+    assert.equal(segment.timedAudioGuides[0].audio, null);
+    rerendered.querySelector(".bd-ag-audio-delete").click();
+    assert.equal(segment.timedAudioGuides.length, 0, "deleting AG must remove the whole card");
+}
+
+{
+    const editor = makeEditor();
+    const segment = {
+        frameCount: 120,
+        timedGuides: [],
+        timedAudioGuides: [{
+            id: "audio-stable-dom",
+            frameIndex: 0,
+            audio: { audioFile: "voice.wav", fileName: "voice.wav", durationSec: 6.7 },
+        }],
+    };
+    const card = new FakeElement("div");
+    addGuide.appendAddGuideEditor(card, editor, segment, 0, {});
+    const audio = card.querySelector(".bd-ag-audio-element");
+    audio.duration = 6.713;
+    audio.onloadedmetadata();
+    assert.equal(
+        editor.commitCount,
+        0,
+        "loadedmetadata must not commit and trigger an endless AddGuide rerender loop",
+    );
 }
 
 {
@@ -188,6 +259,32 @@ function makeEditor() {
         ["addguide.uploadImage", "addguide.uploadImage", "addguide.uploadImage"],
         "First, empty Guide, and Last must use the same upload copy",
     );
+    assert.equal(
+        card.querySelectorAll(".bd-ag-section-label").length,
+        0,
+        "the reference layout must not add visible picture/audio section headings",
+    );
+    assert.equal(
+        card.querySelectorAll(".bd-ag-frame-row").length,
+        1,
+        "a Picture Guide must keep label, controls, and time in one row",
+    );
+    for (const image of card.querySelectorAll(".bd-ag-image")) {
+        assert.ok(
+            image.parentElement.querySelector(".bd-ag-actions"),
+            "empty upload and existing-image actions must share one media well",
+        );
+    }
+    assert.match(
+        addGuide.ADDGUIDE_STYLES,
+        /\.bd-ag-slot\{[^}]*flex:0 0 274px;height:244px/,
+        "Picture Guide cards must use the reference card footprint",
+    );
+    assert.match(
+        addGuide.ADDGUIDE_STYLES,
+        /\.bd-ag-add\{[^}]*flex:0 0 274px;height:244px/,
+        "the add-picture card must align with Picture Guide cards",
+    );
 }
 
 {
@@ -229,6 +326,48 @@ function makeEditor() {
             "Last Frame at 10.083s (F242)",
         ],
     );
+}
+
+{
+    const segment = {
+        frameCount: 243,
+        timedGuides: [{ id: "pg", frameIndex: 48, image: { imageFile: "pg.png" } }],
+        timedAudioGuides: [
+            { id: "later", frameIndex: 48, audio: { audioFile: "later.wav", durationSec: 4 } },
+            { id: "first", frameIndex: 0, audio: { audioFile: "first.wav", durationSec: 4 } },
+        ],
+    };
+    const validation = addGuide.validateAddGuideSegment(segment);
+    assert.equal(validation.valid, true, "PG and AG may share F48");
+    assert.deepEqual(
+        addGuide.getTimedAudioGuideRanges(segment).map((range) => [range.start, range.end]),
+        [[0, 48], [48, 144]],
+        "the next AG truncates the previous AG while PG positions have no effect",
+    );
+    segment.timedAudioGuides.find((guide) => guide.id === "later").frameIndex = 72;
+    assert.deepEqual(
+        addGuide.getTimedAudioGuideRanges(segment).map((range) => [range.start, range.end]),
+        [[0, 72], [72, 168]],
+    );
+    segment.timedAudioGuides.find((guide) => guide.id === "later").frameIndex = 120;
+    assert.equal(
+        addGuide.getTimedAudioGuideRanges(segment)[0].end,
+        96,
+        "the previous AG cannot grow past its four-second source",
+    );
+    const sanitized = addGuide.sanitizeTimedAudioGuides(segment);
+    assert.deepEqual(sanitized.map((guide) => guide.id), ["first", "later"]);
+    assert.equal(sanitized[0].audio.durationSec, 4);
+}
+
+{
+    const segment = {
+        frameCount: 120,
+        timedGuides: [],
+        timedAudioGuides: [{ id: "audio-only", frameIndex: 0, audio: { audioFile: "only.wav", durationSec: 8 } }],
+    };
+    assert.equal(addGuide.validateAddGuideSegment(segment).valid, true, "audio-only AddGuide is valid");
+    assert.equal(addGuide.getTimedAudioGuideRanges(segment)[0].end, 120, "segment end truncates the last AG");
 }
 
 console.log("AddGuide UI regression checks: OK");

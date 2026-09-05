@@ -115,6 +115,7 @@ import {
 import { bindPackActions } from "./minimax_pack.js";
 import {
     ADDGUIDE_STYLES,
+    sanitizeTimedAudioGuides,
     sanitizeTimedGuides,
     validateAllAddGuideSegments,
 } from "./minimax_addguide.js";
@@ -282,6 +283,7 @@ function sanitizeSegmentForPayload(seg) {
         refAudios: Array.isArray(rest.refAudios) ? rest.refAudios.map(sanitizeRefAudio) : [],
         refVideos: Array.isArray(rest.refVideos) ? rest.refVideos.map(sanitizeRefVideo) : [],
         timedGuides: sanitizeTimedGuides(rest),
+        timedAudioGuides: sanitizeTimedAudioGuides(rest),
         genImage: rest.genImage
             ? { imageFile: rest.genImage.imageFile || "", fileName: rest.genImage.fileName || "" }
             : undefined,
@@ -2553,6 +2555,7 @@ class MiniMaxH3DirectorEditor {
                         startImage: clean.startImage || null,
                         endImage: clean.endImage || null,
                         timedGuides: clean.timedGuides || [],
+                        timedAudioGuides: clean.timedAudioGuides || [],
                         // Persist per-segment「引用上段」(default true when unset).
                         continuityFromPrev: isSegmentContinuityFromPrev(clean, i),
                         refImageSize: resolveSegmentRefImageSize(clean, this.timeline.output),
@@ -8095,10 +8098,13 @@ class MiniMaxH3DirectorEditor {
     }
 
     async chooseAudioInput(opts = {}) {
+        const allowVideo = opts.allowVideo !== false;
         const choice = await this.showInputMediaPicker({
-            kind: "reference_audio",
+            kind: allowVideo ? "reference_audio" : "audio",
             title: opts.title || t("mediaPicker.pickAudio"),
-            accept: "audio/*,video/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma,.mp4,.mov,.webm,.mkv,.avi,.m4v,.mpg,.mpeg,.mts,.ts",
+            accept: allowVideo
+                ? "audio/*,video/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma,.mp4,.mov,.webm,.mkv,.avi,.m4v,.mpg,.mpeg,.mts,.ts"
+                : "audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma",
             currentValue: opts.currentValue || "",
         });
         if (!choice) return null;
