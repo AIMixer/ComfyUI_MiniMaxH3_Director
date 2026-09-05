@@ -539,7 +539,7 @@ def execute_director_plan_core(
     if mp4_run_dir is not None:
         reports.append(f"Segment mp4 export dir: {mp4_run_dir}")
     if live_tae_preview:
-        reports.append("Live preview: ON — 采样 TAE + 成片后整段 JPEG 播放。")
+        reports.append("Live preview: ON — 采样 TAE + 成片后首帧海报图（整段预览已移除）。")
     else:
         reports.append("Live preview: OFF — 跳过 TAE 与成片 JPEG（节点内不播放）。")
     if review_each_segment:
@@ -1399,22 +1399,20 @@ def execute_director_plan_core(
             and decoded.shape[0] >= 1
         ):
             try:
-                frames_b64 = [
-                    tensor_frame_to_jpeg_b64(decoded[i])
-                    for i in range(int(decoded.shape[0]))
-                ]
+                # 全段预览视频已移除:整段 JPEG 帧列表会在长片段上造成数 GB
+                # 的内存尖峰(base64 全帧),只发首帧静态海报图。
+                poster_b64 = tensor_frame_to_jpeg_b64(decoded[0])
                 h, w = int(decoded.shape[1]), int(decoded.shape[2])
                 report_director_segment_preview(
                     node_id,
                     segment_index=ui_idx,
-                    image_b64=frames_b64[0],
+                    image_b64=poster_b64,
                     width=w,
                     height=h,
-                    frames=frames_b64,
                     fps=float(plan.frame_rate or 24),
                 )
             except Exception as exc:
-                log.debug("Segment video preview skipped: %s", exc)
+                log.debug("Segment poster preview skipped: %s", exc)
 
         if clear_vram_between_segments and progress_index < seg_total - 1:
             cleanup_segment_vram(enabled=True)
