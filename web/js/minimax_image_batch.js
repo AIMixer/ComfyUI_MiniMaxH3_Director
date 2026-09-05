@@ -422,6 +422,33 @@ function stopPlayer(el) {
     }
 }
 
+/** Loop live sampling frames on an existing <img> so the card shows a clip. */
+function startLiveFrameCycler(el, img, frames, fps) {
+    stopPlayer(el);
+    const urls = (frames || []).filter((f) => typeof f === "string" && f).map((f) => frameSrc(f));
+    if (urls.length < 2) return;
+    const st = {
+        playing: true,
+        timer: null,
+        idx: 0,
+        images: urls.map((u) => {
+            const im = new Image();
+            im.src = u;
+            return im;
+        }),
+    };
+    const interval = Math.max(120, 1000 / Math.min(Math.max(Number(fps) || 4, 1), 8));
+    st.timer = setInterval(() => {
+        if (!st.playing || !img.isConnected) {
+            stopPlayer(el);
+            return;
+        }
+        st.idx = (st.idx + 1) % st.images.length;
+        img.src = st.images[st.idx].src;
+    }, interval);
+    _players.set(el, st);
+}
+
 function stopAllPlayers(root) {
     root?.querySelectorAll(".bd-batch-vpreview")?.forEach((wrap) => stopPlayer(wrap));
     pauseActiveR2vMedia(null);
@@ -2160,6 +2187,10 @@ function mountLivePreview(el, seg, badgeText) {
     wrap.appendChild(img);
     wrap.appendChild(badge);
     el.appendChild(wrap);
+    // Resume clip playback after a re-render (frames kept on the segment).
+    if (seg.previewLiveFrames?.length > 1) {
+        startLiveFrameCycler(el, img, seg.previewLiveFrames, seg.previewLiveFps);
+    }
 }
 
 function mountVideoPreview(el, seg, running, fps, editor) {
@@ -2837,21 +2868,26 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
     seg.previewB64 = imageB64 || "";
     if (extra.step != null) seg.previewStep = extra.step;
     if (extra.total_steps != null) seg.previewTotalSteps = extra.total_steps;
-    if (Array.isArray(extra.frames) && extra.frames.length) {
+    const hasFrames = Array.isArray(extra.frames) && extra.frames.length;
+    if (extra.live) {
+        // Live sampling frames are a short looping clip, kept separate from the
+        // final playback frames so the finished video is not clobbered.
+        seg.previewLive = true;
+        seg.previewLiveFrames = hasFrames && extra.frames.length > 1 ? extra.frames : [];
+        if (seg.previewLiveFrames.length) seg.previewLiveFps = extra.fps || 4;
+        // Keep final multi-frame playback until a real final payload arrives.
+        if (!Array.isArray(seg.previewFrames) || seg.previewFrames.length <= 1) {
+            seg.previewFrames = imageB64 ? [imageB64] : [];
+        }
+    } else if (hasFrames) {
         seg.previewFrames = extra.frames;
         seg.previewFps = extra.fps || seg.previewFps || 24;
         seg.previewLive = false;
+        seg.previewLiveFrames = [];
     } else if (imageB64) {
-        if (extra.live) {
-            // Keep final multi-frame playback until a real final payload arrives.
-            if (!Array.isArray(seg.previewFrames) || seg.previewFrames.length <= 1) {
-                seg.previewFrames = [imageB64];
-            }
-            seg.previewLive = true;
-        } else {
-            seg.previewFrames = [imageB64];
-            seg.previewLive = false;
-        }
+        seg.previewFrames = [imageB64];
+        seg.previewLive = false;
+        seg.previewLiveFrames = [];
     }
 
     // Live sampling updates: patch the card preview in-place (avoid full re-render thrash).
@@ -2868,9 +2904,16 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
             let badge = preview.querySelector(".bd-batch-live-badge");
             if (!img) {
                 mountLivePreview(preview, seg, badgeText);
+                img = preview.querySelector("img.bd-live-preview");
             } else {
                 img.src = frameSrc(imageB64);
                 if (badge) badge.textContent = badgeText;
+            }
+            // Play the live temporal frames as a looping clip on the card.
+            if (img && seg.previewLiveFrames?.length > 1) {
+                startLiveFrameCycler(preview, img, seg.previewLiveFrames, seg.previewLiveFps);
+            } else {
+                stopPlayer(preview);
             }
             const pickThumb = editor.batchPicker?.querySelector?.(`.bd-batch-pick[data-batch-index="${segmentIndex}"] img.bd-batch-pick-thumb`);
             if (pickThumb) pickThumb.src = frameSrc(imageB64);

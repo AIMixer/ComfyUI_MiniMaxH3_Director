@@ -560,6 +560,40 @@ async def minimax_first_pass_cache_status(request):
         )
 
 
+async def minimax_segment_cache_detail(request):
+    """Per-segment cache inventory for one Director node (cache manager view)."""
+    try:
+        if request.can_read_body and request.content_type == "application/json":
+            body = await request.json()
+        else:
+            body = dict(request.query)
+    except Exception as exc:
+        return web.Response(status=400, text=f"Invalid request: {exc}")
+
+    node_id = str(body.get("node_id") or "").strip()
+    if not re.fullmatch(r"\d+", node_id):
+        return web.Response(status=400, text="Invalid Director node id.")
+
+    try:
+        from .segment_cache import describe_segment_cache
+
+        return web.json_response(await asyncio.to_thread(describe_segment_cache, node_id))
+    except Exception as exc:
+        log.warning("MiniMax H3 Director segment cache detail failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
+async def minimax_cache_overview(request):
+    """Overview of every node cache group under minimax_seg_cache/."""
+    try:
+        from .segment_cache import list_cache_group_overview
+
+        return web.json_response(await asyncio.to_thread(list_cache_group_overview))
+    except Exception as exc:
+        log.warning("MiniMax H3 Director cache overview failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
 async def minimax_clear_segment_cache(request):
     """Delete first-pass (.pre.*) or final segment cache files."""
     try:
@@ -575,13 +609,36 @@ async def minimax_clear_segment_cache(request):
     if kind not in {"first_pass", "final", "all"}:
         return web.Response(status=400, text="kind must be first_pass, final or all.")
 
-    try:
-        from .segment_cache import clear_segment_cache
+    segment_index = body.get("segment_index", None)
 
-        removed = clear_segment_cache(node_id, kind=kind)
-        return web.json_response({"removed": removed, "kind": kind})
+    try:
+        from .segment_cache import clear_segment_cache, clear_segment_cache_for
+
+        if segment_index is None or segment_index == "":
+            removed = clear_segment_cache(node_id, kind=kind)
+        else:
+            removed = clear_segment_cache_for(node_id, int(segment_index), kind=kind)
+        return web.json_response({"removed": removed, "kind": kind, "segment_index": segment_index})
     except Exception as exc:
         log.warning("MiniMax H3 Director clear segment cache failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
+async def minimax_run_state(request):
+    """Latest「逐组审核」halt snapshot for one Director node.
+
+    The halt is normally pushed over WebSocket; a refreshed browser tab missed
+    that push and calls this route to restore the review panel.
+    """
+    node_id = str(request.query.get("node_id") or "").strip()
+    if not re.fullmatch(r"\d+", node_id):
+        return web.Response(status=400, text="Invalid Director node id.")
+    try:
+        from .progress import get_director_review_state
+
+        return web.json_response({"review": get_director_review_state(node_id)})
+    except Exception as exc:
+        log.warning("MiniMax H3 Director run state query failed: %s", exc)
         return web.Response(status=500, text=str(exc))
 
 
@@ -634,6 +691,24 @@ def register_routes() -> bool:
     _register_route(
         routes,
         "POST",
+        "/minimax/director/segment_cache_detail",
+        minimax_segment_cache_detail,
+    )
+    _register_route(
+        routes,
+        "GET",
+        "/minimax/director/segment_cache_detail",
+        minimax_segment_cache_detail,
+    )
+    _register_route(
+        routes,
+        "GET",
+        "/minimax/director/cache_overview",
+        minimax_cache_overview,
+    )
+    _register_route(
+        routes,
+        "POST",
         "/minimax/director/clear_segment_cache",
         minimax_clear_segment_cache,
     )
@@ -642,6 +717,7 @@ def register_routes() -> bool:
     _register_route(routes, "POST", "/minimax/director/export_pack", minimax_export_pack)
     _register_route(routes, "GET", "/minimax/director/download_pack", minimax_download_pack)
     _register_route(routes, "POST", "/minimax/director/import_pack", minimax_import_pack)
+    _register_route(routes, "GET", "/minimax/director/run_state", minimax_run_state)
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")
     return True

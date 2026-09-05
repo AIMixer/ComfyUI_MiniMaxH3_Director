@@ -24,7 +24,26 @@ PHASE_LABELS = {
     "decode": "AV 解码",
     "plan": "解析时间轴 / 加载视频",
     "finish": "全部完成",
+    "review": "等待审核",
 }
+
+# Latest「逐组审核」halt payload per node id. The halt reaches the browser only
+# via a WebSocket push, so a reloaded tab misses it and permanently loses the
+# review panel (继续 / 重跑本组). The /minimax/director/run_state HTTP route
+# serves this snapshot so the UI can restore the halt after a page refresh.
+_REVIEW_STATES: dict[str, dict] = {}
+
+
+def get_director_review_state(node_id: str | None) -> dict | None:
+    if not node_id:
+        return None
+    state = _REVIEW_STATES.get(str(node_id))
+    return dict(state) if state else None
+
+
+def clear_director_review_state(node_id: str | None) -> None:
+    if node_id:
+        _REVIEW_STATES.pop(str(node_id), None)
 
 
 def _phase_index(phase: str) -> int:
@@ -151,6 +170,7 @@ def report_director_segment_preview(
 
 
 def report_director_finish(node_id: str | None, segment_total: int) -> None:
+    clear_director_review_state(node_id)
     report_director_progress(
         node_id,
         segment_index=max(0, segment_total - 1),
@@ -167,6 +187,8 @@ def report_director_planning(
     *,
     timeline_segment_total: int | None = None,
 ) -> None:
+    # A new run supersedes any previous「逐组审核」halt for this node.
+    clear_director_review_state(node_id)
     report_director_progress(
         node_id,
         segment_index=0,
@@ -176,3 +198,44 @@ def report_director_planning(
         phase_max=1,
         timeline_segment_total=timeline_segment_total,
     )
+
+
+def report_director_review(
+    node_id: str | None,
+    *,
+    run_position: int,
+    run_total: int,
+    timeline_segment_index: int,
+    timeline_segment_total: int,
+    review_video: str = "",
+) -> None:
+    """「逐组审核」halt: a group just finished; wait for 继续 / 重跑本组."""
+    if not node_id:
+        return
+    payload = {
+        "node_id": str(node_id),
+        "segment": int(run_position) + 1,
+        "segment_total": max(1, int(run_total)),
+        "timeline_segment": int(timeline_segment_index) + 1,
+        "timeline_segment_total": max(1, int(timeline_segment_total)),
+        "partial_run": True,
+        "phase": "review",
+        "phase_label": PHASE_LABELS.get("review", "review"),
+        "phase_value": 1,
+        "phase_max": 1,
+        "overall_value": int(run_position) + 1,
+        "overall_max": max(1, int(run_total)),
+        "remaining_segments": max(0, int(run_total) - int(run_position) - 1),
+        "frames_label": "",
+        "task_key": "",
+        "review_video": review_video or "",
+    }
+    _REVIEW_STATES[str(node_id)] = dict(payload)
+    try:
+        from server import PromptServer
+
+        srv = PromptServer.instance
+        if srv:
+            srv.send_sync("minimax_director_progress", payload, srv.client_id)
+    except Exception as exc:
+        log.debug("Director review send skipped: %s", exc)
