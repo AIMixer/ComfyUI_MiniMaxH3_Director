@@ -78,6 +78,8 @@ from .segment_mp4_export import (
 )
 from .segment_continuity import (
     concat_continuous_chunks,
+    exposure_anchor_mean,
+    flatten_segment_exposure,
     is_continuity_active,
     resolve_prev_segment_output,
 )
@@ -527,11 +529,24 @@ def execute_director_plan_core(
     # replaces older IMAGE slots with 1-frame posters.
     segment_export_lengths: dict[int, int] = {}
     export_segments_mode = plan.export_mode == "segments"
+    # Open-loop exposure anchor: absolute per-channel target = first exported
+    # segment's exposure, shared across the run so per-segment brightness drift is
+    # levelled. Pixel-only; never fed back into latents or audio (the native latent
+    # pin / motion handoff is untouched). Rebound inside _run_one_segment.
+    exposure_anchor_rgb: torch.Tensor | None = None
+    exposure_anchor_on = bool(
+        getattr(plan, "exposure_anchor_enabled", False)
+        and getattr(plan, "continuity_enabled", False)
+        and timeline_seg_total >= 2
+    )
+    exposure_anchor_strength = float(
+        getattr(plan, "exposure_anchor_strength", 0.0) or 0.0
+    )
 
     def _run_one_segment(
         seg, *, progress_index: int
     ) -> tuple[torch.Tensor, dict[str, Any] | None, torch.Tensor]:
-        nonlocal held_for_confirmation
+        nonlocal held_for_confirmation, exposure_anchor_rgb
         if seg.task_key not in SUPPORTED_TASK_KEYS:
             raise ValueError(
                 f"Task '{seg.task_key}' is not supported on MiniMax H3 Director. "
@@ -1191,6 +1206,26 @@ def execute_director_plan_core(
             export_len=export_len,
             plan=plan,
         )
+        # Segment-continuity "exposure anchor": level this segment's exported free
+        # region back to an ABSOLUTE target (segment 1 exposure) with a smooth
+        # per-frame per-channel gain — global brightness only. Open-loop and pixel
+        # side only: latents and audio are untouched, so the native v9 latent pin
+        # and audio handoff are fully preserved (unlike the reverted video_from_frames
+        # feedback loop, which re-encoded corrected pixels as the video pin).
+        if exposure_anchor_on:
+            if exposure_anchor_rgb is None:
+                # Partial re-run: seed the anchor from the lowest-index finished
+                # (e.g. cached) chunk so this run flattens to the same reference.
+                for _idx in sorted(k for k, v in completed_outputs.items() if v is not None):
+                    exposure_anchor_rgb = exposure_anchor_mean(completed_outputs[_idx])
+                    if exposure_anchor_rgb is not None:
+                        break
+            decoded, exposure_anchor_rgb = flatten_segment_exposure(
+                decoded,
+                anchor_rgb=exposure_anchor_rgb,
+                strength=exposure_anchor_strength,
+                seg_index=seg.index,
+            )
         report_director_progress(
             node_id, segment_index=progress_index, segment_total=seg_total,
             phase="decode", phase_value=1, phase_max=1, **meta,
@@ -1209,6 +1244,15 @@ def execute_director_plan_core(
                 export_len=export_len,
                 plan=plan,
             )
+            # Flatten the first-pass preview to the same anchor so the saved _pre
+            # clip matches the final clip's exposure.
+            if exposure_anchor_on:
+                pre_export, _ = flatten_segment_exposure(
+                    pre_export,
+                    anchor_rgb=exposure_anchor_rgb,
+                    strength=exposure_anchor_strength,
+                    seg_index=seg.index,
+                )
             pre_chunk = pre_export
             if getattr(pre_chunk, "device", None) is not None and pre_chunk.device.type != "cpu":
                 pre_chunk = pre_chunk.cpu()

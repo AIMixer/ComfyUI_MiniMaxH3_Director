@@ -156,6 +156,30 @@ function isContinuityEnabled(output) {
     return false;
 }
 
+/** Exposure anchor (segment-continuity companion): default on; only explicit off is false. */
+function isExposureAnchorEnabled(output) {
+    if (!output) return true;
+    const raw = output.exposureAnchorEnabled ?? output.exposure_anchor_enabled;
+    if (raw == null) return true;
+    if (raw === false || raw === 0) return false;
+    if (typeof raw === "string") {
+        const s = raw.trim().toLowerCase();
+        return s !== "false" && s !== "0" && s !== "no" && s !== "off";
+    }
+    return true;
+}
+
+/** Exposure anchor strength (percent 0–60, default 40). Tolerates legacy fractions (0.4). */
+function getExposureAnchorStrength(output) {
+    if (!output) return 40;
+    let raw = output.exposureAnchorStrength ?? output.exposure_anchor_strength;
+    if (raw == null || raw === "") return 40;
+    let n = Number(raw);
+    if (!Number.isFinite(n)) return 40;
+    if (n > 0 && n < 1) n = n * 100; // 0.4 → 40
+    return Math.max(0, Math.min(60, Math.round(n)));
+}
+
 /** Whether段间引导 controls apply for the current task + segment count. */
 function isContinuityEligible(editor) {
     if (!editor) return false;
@@ -206,6 +230,8 @@ function normalizeOutputContinuity(output = {}) {
         ...output,
         continuityEnabled: isContinuityEnabled(output),
         continuityOverlapFrames: snapContinuityFrames(rawOverlap),
+        exposureAnchorEnabled: isExposureAnchorEnabled(output),
+        exposureAnchorStrength: getExposureAnchorStrength(output),
         audioMode: normalizeAudioMode(output.audioMode ?? output.audio_mode),
         refImageSize: normalizeRefImageSize(output.refImageSize ?? output.ref_image_size),
     };
@@ -1912,6 +1938,8 @@ function parseTimeline(raw, totalFrames, fps) {
             refImageSize: normalizeRefImageSize(data.output?.refImageSize ?? data.output?.ref_image_size),
             continuityEnabled: data.output?.continuityEnabled ?? data.output?.continuity_enabled,
             continuityOverlapFrames: data.output?.continuityOverlapFrames ?? data.output?.continuity_overlap_frames,
+            exposureAnchorEnabled: data.output?.exposureAnchorEnabled ?? data.output?.exposure_anchor_enabled,
+            exposureAnchorStrength: data.output?.exposureAnchorStrength ?? data.output?.exposure_anchor_strength,
         });
         // Infer aspectRatio from saved width/height when older payloads omitted the label.
         if (!data.output.aspectRatio && data.output.width > 0 && data.output.height > 0) {
@@ -2850,6 +2878,11 @@ class MiniMaxH3DirectorEditor {
                     <option value="39">39</option>
                     <option value="56">56</option>
                 </select>
+                <label data-i18n-title="tooltip.exposureAnchor" style="margin-left:6px;white-space:nowrap"><input type="checkbox" data-r="exposure-anchor-cb" checked><span data-i18n="output.exposureAnchor">曝光锚定</span></label>
+                <span data-r="exposure-anchor-strength-wrap" style="display:inline-flex;align-items:center;gap:2px;white-space:nowrap" data-i18n-title="tooltip.exposureAnchorStrength">
+                    <input type="range" data-r="exposure-anchor-strength" min="0" max="60" step="1" value="40" style="width:64px">
+                    <span class="bd-meta" data-r="exposure-anchor-strength-val">40%</span>
+                </span>
             </span>
             <button type="button" class="bd-btn bd-btn-live-preview" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>`;
         this.mainBody.appendChild(outputBar);
@@ -3155,6 +3188,9 @@ class MiniMaxH3DirectorEditor {
         this.segmentContinuityWrap = this.root.querySelector('[data-r="segment-continuity-wrap"]');
         this.segmentContinuityCb = this.root.querySelector('[data-r="segment-continuity-cb"]');
         this.segmentContinuityOverlap = this.root.querySelector('[data-r="segment-continuity-overlap"]');
+        this.exposureAnchorCb = this.root.querySelector('[data-r="exposure-anchor-cb"]');
+        this.exposureAnchorStrength = this.root.querySelector('[data-r="exposure-anchor-strength"]');
+        this.exposureAnchorStrengthVal = this.root.querySelector('[data-r="exposure-anchor-strength-val"]');
         this.outPreview = this.root.querySelector('[data-r="out-preview"]');
         this.runStatusEl = this.root.querySelector('[data-r="run-status"]');
         this.runTitleEl = this.root.querySelector('[data-r="run-title"]');
@@ -3451,6 +3487,29 @@ class MiniMaxH3DirectorEditor {
             this.segmentContinuityOverlap.oninput = applyOverlap;
             this.segmentContinuityOverlap.addEventListener("keydown", (e) => e.stopPropagation());
             this.segmentContinuityOverlap.addEventListener("keyup", (e) => e.stopPropagation());
+        }
+        if (this.exposureAnchorCb) {
+            this.exposureAnchorCb.onchange = () => {
+                this.onOutputField("exposureAnchorEnabled", this.exposureAnchorCb.checked);
+                this.updateSegmentContinuityUI();
+            };
+        }
+        if (this.exposureAnchorStrength) {
+            const syncStrengthLabel = () => {
+                if (this.exposureAnchorStrengthVal) {
+                    this.exposureAnchorStrengthVal.textContent = `${+this.exposureAnchorStrength.value}%`;
+                }
+            };
+            this.exposureAnchorStrength.oninput = () => {
+                syncStrengthLabel();
+                this.onOutputField("exposureAnchorStrength", +this.exposureAnchorStrength.value);
+            };
+            this.exposureAnchorStrength.onchange = () => {
+                syncStrengthLabel();
+                this.onOutputField("exposureAnchorStrength", +this.exposureAnchorStrength.value);
+            };
+            this.exposureAnchorStrength.addEventListener("keydown", (e) => e.stopPropagation());
+            this.exposureAnchorStrength.addEventListener("keyup", (e) => e.stopPropagation());
         }
         if (this.segContinuityFromPrevCb) {
             this.segContinuityFromPrevCb.onchange = () => {
@@ -5994,6 +6053,7 @@ class MiniMaxH3DirectorEditor {
             audioMode: "generate",
             refImageSize: "match",
             continuityEnabled: false, continuityOverlapFrames: DEFAULT_CONTINUITY_FRAMES,
+            exposureAnchorEnabled: true, exposureAnchorStrength: 40,
         };
         // Prefer ResolutionSelector fields; backfill from width/height when missing.
         // Custom keeps explicit width/height and does not recompute from megapixels.
@@ -6043,6 +6103,12 @@ class MiniMaxH3DirectorEditor {
                 snapContinuityFrames(out.continuityOverlapFrames ?? DEFAULT_CONTINUITY_FRAMES),
             );
         }
+        if (this.exposureAnchorCb) this.exposureAnchorCb.checked = isExposureAnchorEnabled(out);
+        if (this.exposureAnchorStrength) {
+            const s = getExposureAnchorStrength(out);
+            this.exposureAnchorStrength.value = String(s);
+            if (this.exposureAnchorStrengthVal) this.exposureAnchorStrengthVal.textContent = `${s}%`;
+        }
         this.syncFrameRateUI(this.timeline.frameRate);
         this.updateOutputModeUI();
         this.updateSegmentContinuityUI();
@@ -6086,6 +6152,19 @@ class MiniMaxH3DirectorEditor {
         if (this.segmentContinuityCb && this.timeline?.output) {
             // Keep DOM aligned with timeline; eligibility only gates visibility.
             this.segmentContinuityCb.checked = isContinuityEnabled(this.timeline.output);
+        }
+        if (this.exposureAnchorCb && this.timeline?.output) {
+            this.exposureAnchorCb.checked = isExposureAnchorEnabled(this.timeline.output);
+        }
+        if (this.exposureAnchorStrength && this.timeline?.output) {
+            const s = getExposureAnchorStrength(this.timeline.output);
+            this.exposureAnchorStrength.value = String(s);
+            if (this.exposureAnchorStrengthVal) this.exposureAnchorStrengthVal.textContent = `${s}%`;
+            const on = isExposureAnchorEnabled(this.timeline.output);
+            this.exposureAnchorStrength.disabled = !on;
+            if (this.exposureAnchorStrengthVal) {
+                this.exposureAnchorStrengthVal.style.opacity = on ? "" : "0.4";
+            }
         }
         this.syncSegmentContinuityFromPrevUI();
         this.syncSegmentRefImageSizeUI();
@@ -6308,6 +6387,7 @@ class MiniMaxH3DirectorEditor {
             audioMode: "generate",
             refImageSize: "match",
             continuityEnabled: false, continuityOverlapFrames: DEFAULT_CONTINUITY_FRAMES,
+            exposureAnchorEnabled: true, exposureAnchorStrength: 40,
         };
         if (key === "aspectRatio") {
             if (isCustomAspectRatio(value)) {
@@ -6360,6 +6440,12 @@ class MiniMaxH3DirectorEditor {
             this.timeline.output.continuityEnabled = !!value;
         } else if (key === "continuityOverlapFrames") {
             this.timeline.output.continuityOverlapFrames = snapContinuityFrames(value);
+        } else if (key === "exposureAnchorEnabled") {
+            this.timeline.output.exposureAnchorEnabled = !!value;
+        } else if (key === "exposureAnchorStrength") {
+            let n = Math.round(Number(value) || 0);
+            if (n > 0 && n < 1) n = Math.round(n * 100);
+            this.timeline.output.exposureAnchorStrength = Math.max(0, Math.min(60, n));
         }
         this.syncOutputUIFromTimeline();
         if (this.isFl2vMode()) updateFl2vDetailUI(this);
@@ -6470,6 +6556,7 @@ class MiniMaxH3DirectorEditor {
             audioMode: "generate",
             refImageSize: "match",
             continuityEnabled: false, continuityOverlapFrames: DEFAULT_CONTINUITY_FRAMES,
+            exposureAnchorEnabled: true, exposureAnchorStrength: 40,
         };
         if (this.timeline.output.audioMode == null) {
             this.timeline.output.audioMode = "generate";
@@ -6501,6 +6588,20 @@ class MiniMaxH3DirectorEditor {
             this.timeline.output.continuityOverlapFrames = snapContinuityFrames(
                 this.timeline.output.continuityOverlapFrames,
             );
+        }
+        // Exposure anchor: read from DOM when eligible; otherwise keep the stored
+        // preference (missing defaults to on / 40%).
+        if (continuityEligible && this.exposureAnchorCb) {
+            this.timeline.output.exposureAnchorEnabled = !!this.exposureAnchorCb.checked;
+        } else if (this.timeline.output.exposureAnchorEnabled == null) {
+            this.timeline.output.exposureAnchorEnabled = true;
+        }
+        if (continuityEligible && this.exposureAnchorStrength) {
+            this.timeline.output.exposureAnchorStrength = getExposureAnchorStrength({
+                exposureAnchorStrength: this.exposureAnchorStrength.value,
+            });
+        } else if (this.timeline.output.exposureAnchorStrength == null) {
+            this.timeline.output.exposureAnchorStrength = 40;
         }
         this.syncOutputToWidgets();
     }
