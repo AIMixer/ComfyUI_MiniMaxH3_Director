@@ -12596,6 +12596,35 @@ function clearAllDirectorRunStatus() {
     }
 }
 
+/**
+ *「逐组审核」halt reaches the browser only via a WebSocket push, so a page
+ * refresh loses the review panel (继续 / 重跑本组) even though the halt still
+ * stands server-side. Fetch the backend's last halt snapshot and re-open it.
+ * Active-run phases are NOT restored here — live progress events resume on
+ * their own once the next report arrives.
+ */
+async function restoreDirectorReviewState(node) {
+    try {
+        const editor = node?._minimaxEditor;
+        if (!editor || node?.id == null || node.id < 0) return;
+        const resp = await api.fetchApi(
+            `/minimax/director/run_state?node_id=${encodeURIComponent(String(node.id))}`,
+        );
+        if (!resp?.ok) return;
+        const data = await resp.json();
+        const state = data?.review;
+        if (
+            state
+            && state.phase === "review"
+            && String(state.node_id) === String(node.id)
+        ) {
+            editor.setRunProgress?.(state);
+        }
+    } catch {
+        /* restore is best-effort */
+    }
+}
+
 /** Old workflows may still list removed output slots (e.g. segment_images). */
 function isMiniMaxH3DirectorNode(node) {
     const cls = node?.comfyClass || node?.type || "";
@@ -12971,6 +13000,8 @@ app.registerExtension({
                 ed._externalGroupsSyncSig = null;
                 ed.syncExternalGroupsTimeline?.();
                 ed.scheduleSettleRender?.();
+                // Page refresh missed any「逐组审核」halt push — pull it back.
+                restoreDirectorReviewState(this);
             }, 80);
             return out;
         };

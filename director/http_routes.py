@@ -624,6 +624,24 @@ async def minimax_clear_segment_cache(request):
         return web.Response(status=500, text=str(exc))
 
 
+async def minimax_run_state(request):
+    """Latest「逐组审核」halt snapshot for one Director node.
+
+    The halt is normally pushed over WebSocket; a refreshed browser tab missed
+    that push and calls this route to restore the review panel.
+    """
+    node_id = str(request.query.get("node_id") or "").strip()
+    if not re.fullmatch(r"\d+", node_id):
+        return web.Response(status=400, text="Invalid Director node id.")
+    try:
+        from .progress import get_director_review_state
+
+        return web.json_response({"review": get_director_review_state(node_id)})
+    except Exception as exc:
+        log.warning("MiniMax H3 Director run state query failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
 def _register_route(routes, method: str, path: str, handler) -> None:
     if hasattr(routes, "add_route"):
         routes.add_route(method, path, handler)
@@ -699,6 +717,7 @@ def register_routes() -> bool:
     _register_route(routes, "POST", "/minimax/director/export_pack", minimax_export_pack)
     _register_route(routes, "GET", "/minimax/director/download_pack", minimax_download_pack)
     _register_route(routes, "POST", "/minimax/director/import_pack", minimax_import_pack)
+    _register_route(routes, "GET", "/minimax/director/run_state", minimax_run_state)
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")
     return True

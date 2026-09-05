@@ -27,6 +27,24 @@ PHASE_LABELS = {
     "review": "等待审核",
 }
 
+# Latest「逐组审核」halt payload per node id. The halt reaches the browser only
+# via a WebSocket push, so a reloaded tab misses it and permanently loses the
+# review panel (继续 / 重跑本组). The /minimax/director/run_state HTTP route
+# serves this snapshot so the UI can restore the halt after a page refresh.
+_REVIEW_STATES: dict[str, dict] = {}
+
+
+def get_director_review_state(node_id: str | None) -> dict | None:
+    if not node_id:
+        return None
+    state = _REVIEW_STATES.get(str(node_id))
+    return dict(state) if state else None
+
+
+def clear_director_review_state(node_id: str | None) -> None:
+    if node_id:
+        _REVIEW_STATES.pop(str(node_id), None)
+
 
 def _phase_index(phase: str) -> int:
     try:
@@ -152,6 +170,7 @@ def report_director_segment_preview(
 
 
 def report_director_finish(node_id: str | None, segment_total: int) -> None:
+    clear_director_review_state(node_id)
     report_director_progress(
         node_id,
         segment_index=max(0, segment_total - 1),
@@ -168,6 +187,8 @@ def report_director_planning(
     *,
     timeline_segment_total: int | None = None,
 ) -> None:
+    # A new run supersedes any previous「逐组审核」halt for this node.
+    clear_director_review_state(node_id)
     report_director_progress(
         node_id,
         segment_index=0,
@@ -209,6 +230,7 @@ def report_director_review(
         "task_key": "",
         "review_video": review_video or "",
     }
+    _REVIEW_STATES[str(node_id)] = dict(payload)
     try:
         from server import PromptServer
 
