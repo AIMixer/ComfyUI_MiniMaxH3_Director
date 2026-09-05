@@ -125,9 +125,9 @@ class SegmentRefAudio:
     """Standalone reference audio for MiniMax ``<Audio N>`` (index 0-based)."""
 
     index: int
-    audio: dict | None = None  # ComfyUI AUDIO; lazy for uploaded files
+    audio: dict  # ComfyUI AUDIO: {waveform, sample_rate}; decoded eagerly at build
     audio_file: str = ""
-    audio_path: str = ""  # absolute input path; runtime-only, not a cache identity
+    audio_path: str = ""  # absolute input path (runtime-only; for cache fingerprint)
 
 
 @dataclass
@@ -223,7 +223,8 @@ class DirectorPlan:
     continuity_enabled: bool = False
     continuity_overlap_frames: int = 0
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
-    # Full source-video PCM reused only during this Director execution.
+    # Full source-video PCM, reused only during this one Director execution and
+    # freed when the run ends (replaces the old never-cleared process cache).
     audio_decode_cache: dict = field(default_factory=dict, repr=False)
     refine: dict | None = None
     # Sampling knobs stamped at execute time (first-pass cache fingerprint).
@@ -345,7 +346,7 @@ def _load_refs(ref_list: list[dict]) -> list[SegmentRef]:
 
 
 def _reference_audio_file(item: dict) -> tuple[str, str]:
-    """Return (timeline-relative identity, absolute input path)."""
+    """Return (timeline identity rel, absolute input path) for a refAudios entry."""
     rel = str(
         item.get("audioFile")
         or item.get("audio_file")
@@ -356,9 +357,10 @@ def _reference_audio_file(item: dict) -> tuple[str, str]:
     if not rel:
         return "", ""
     sub = str(item.get("subfolder") or "").replace("\\", "/").strip().strip("/")
-    if sub and not rel.startswith(sub + "/"):
-        rel = f"{sub}/{rel}"
-    file_path = os.path.join(folder_paths.get_input_directory(), rel.replace("/", os.sep))
+    located = rel
+    if sub and not located.startswith(sub + "/"):
+        located = f"{sub}/{located}"
+    file_path = os.path.join(folder_paths.get_input_directory(), located.replace("/", os.sep))
     return rel, file_path
 
 
@@ -377,7 +379,14 @@ def load_reference_audio_item(item: dict) -> dict | None:
 
 
 def _load_ref_audios(audio_list: list[dict]) -> list[SegmentRefAudio]:
-    """Build lazy file-backed reference slots without decoding PCM up front."""
+    """Eagerly decode uploaded reference audio at plan build.
+
+    Decoding up front (instead of lazily during the generation loop) guarantees
+    the ``<Audio N>`` PCM is in memory before conditioning, and keeps a slot only
+    when decode actually succeeded — so prompt ``<Audio N>`` tags always line up
+    with a populated ref_audio slot (no tag-to-empty-slot mismatch = no silent
+    timbre drop).
+    """
     out: list[SegmentRefAudio] = []
     for item in audio_list or []:
         if not isinstance(item, dict):
@@ -391,10 +400,14 @@ def _load_ref_audios(audio_list: list[dict]) -> list[SegmentRefAudio]:
         if not os.path.isfile(file_path):
             log.warning("Reference audio missing: %s", file_path)
             continue
+        audio = load_reference_audio(file_path)
+        if audio is None:
+            log.warning("Failed to decode reference audio: %s", file_path)
+            continue
         out.append(
             SegmentRefAudio(
                 index=index,
-                audio=None,
+                audio=audio,
                 audio_file=rel,
                 audio_path=file_path,
             )
