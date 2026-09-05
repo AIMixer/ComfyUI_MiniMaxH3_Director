@@ -290,8 +290,16 @@ def _prune_continuity_working_set(
 ) -> None:
     """Keep only the direct predecessor needed by the next segment.
 
-    Final/pre-refine frames are released separately in「分段导出」after the
-    next pin. A missing direct predecessor is loaded from disk cache.
+    Final/pre-refine frames (in ``completed_outputs`` /
+    ``completed_pre_refine`` / ``completed_refine_passes``) are released
+    separately in「分段导出」after the next pin via
+    ``_release_segment_pixels``. When the segment's disk cache is durable
+    the IMAGE slot drops to a 1-frame placeholder and finalization
+    rehydrates full frames from cache (low RAM during the run); only
+    cache-less segments keep full frames resident
+    (``keep_segment_outputs=True``) so VHS_VideoCombine downstream never
+    receives a 0-second clip.
+    A missing direct predecessor is loaded from disk cache.
     """
     current = int(next_segment_index)
     keep = current - 1
@@ -319,11 +327,26 @@ def _release_segment_pixels(
     segment_outputs: list[torch.Tensor],
     segment_pre_refine: list[torch.Tensor],
     progress_pos: dict[int, int],
+    keep_segment_outputs: bool = False,
 ) -> bool:
     """Drop full-resolution pixels for a finished predecessor. Audio stays.
 
-    Replaces IMAGE-list slots with a 1-frame poster. Safe after mp4 + the
-    next segment has already pinned / phase-trimmed this index.
+    Replaces IMAGE-list slots with a 1-frame poster (default) so the IMAGE
+    list shrinks — used by「全部导出」/ streaming concat, and by「分段导出」
+    whenever the segment's disk cache is durable (finalization rehydrates
+    the full frames from cache just before the node returns).
+
+    When ``keep_segment_outputs=True`` (「分段导出」fallback for a segment
+    with NO disk cache to rehydrate from), only the rolling continuity
+    working set (``completed_outputs`` / ``completed_pre_refine`` /
+    ``completed_refine_passes``) is dropped; ``segment_outputs`` /
+    ``segment_pre_refine`` keep their full frames because the node's IMAGE
+    list IS the per-segment output and downstream VHS_VideoCombine reads it
+    directly. Releasing here without a rehydration source would hand
+    VHS_VideoCombine a 1-frame poster and produce 0-second clips.
+
+    Safe after mp4 + the next segment has already pinned / phase-trimmed
+    this index.
     """
     idx = int(index)
     if idx < 0:
@@ -333,20 +356,21 @@ def _release_segment_pixels(
     completed_refine_passes.pop(idx, None)
     run_pos = progress_pos.get(idx)
     had = chunk is not None or pre is not None
-    if run_pos is not None and run_pos < len(segment_outputs):
-        src = chunk if chunk is not None else segment_outputs[run_pos]
-        poster = _poster_frame(src)
-        segment_outputs[run_pos] = poster
-        if run_pos < len(segment_pre_refine):
-            if pre is chunk:
-                segment_pre_refine[run_pos] = poster
-            else:
-                segment_pre_refine[run_pos] = _poster_frame(
-                    pre if pre is not None else segment_pre_refine[run_pos]
-                )
-        had = True
-    elif chunk is not None or pre is not None:
-        had = True
+    if not keep_segment_outputs:
+        if run_pos is not None and run_pos < len(segment_outputs):
+            src = chunk if chunk is not None else segment_outputs[run_pos]
+            poster = _poster_frame(src)
+            segment_outputs[run_pos] = poster
+            if run_pos < len(segment_pre_refine):
+                if pre is chunk:
+                    segment_pre_refine[run_pos] = poster
+                else:
+                    segment_pre_refine[run_pos] = _poster_frame(
+                        pre if pre is not None else segment_pre_refine[run_pos]
+                    )
+            had = True
+        elif chunk is not None or pre is not None:
+            had = True
     if had:
         del chunk, pre
         gc.collect()
@@ -1437,8 +1461,21 @@ def execute_director_plan_core(
         )
         if export_segments_mode:
             # Older than the predecessor cannot be pinned anymore.
+            # Drop the IMAGE slot to a 1-frame placeholder ONLY when the
+            # segment's disk cache is durable — finalization rehydrates
+            # full frames from cache so downstream VHS_VideoCombine gets
+            # full-length clips. Without a cache there is nothing to
+            # rehydrate from: keep the full frames resident
+            # (keep_segment_outputs=True), else the slot would encode as
+            # a 0-second clip.
             for stale in tuple(completed_outputs):
                 if int(stale) < int(seg.index) - 1:
+                    stale_seg = next(
+                        (s for s in all_segments if s.index == int(stale)), None
+                    )
+                    can_rehydrate = stale_seg is not None and segment_frames_cache_exists(
+                        node_id, stale_seg
+                    )
                     _release_segment_pixels(
                         stale,
                         completed_outputs=completed_outputs,
@@ -1447,6 +1484,7 @@ def execute_director_plan_core(
                         segment_outputs=segment_outputs,
                         segment_pre_refine=segment_pre_refine,
                         progress_pos=progress_pos,
+                        keep_segment_outputs=not can_rehydrate,
                     )
         run_this_seg = seg.index in run_indices and not review_halt
         resume_cached = None
@@ -1504,6 +1542,17 @@ def execute_director_plan_core(
                 )
             if export_segments_mode and seg.index > 0:
                 # Next pin + phase-trim already happened inside _run_one_segment.
+                # Release the predecessor's pixels to a placeholder only when
+                # its disk cache can rehydrate it at finalization; a cache-less
+                # predecessor keeps full frames because those frames ARE the
+                # node's per-segment IMAGE output (a placeholder would encode
+                # as a 0-second clip downstream).
+                prev_seg_rel = next(
+                    (s for s in all_segments if s.index == seg.index - 1), None
+                )
+                can_rehydrate_prev = prev_seg_rel is not None and segment_frames_cache_exists(
+                    node_id, prev_seg_rel
+                )
                 _release_segment_pixels(
                     seg.index - 1,
                     completed_outputs=completed_outputs,
@@ -1512,6 +1561,7 @@ def execute_director_plan_core(
                     segment_outputs=segment_outputs,
                     segment_pre_refine=segment_pre_refine,
                     progress_pos=progress_pos,
+                    keep_segment_outputs=not can_rehydrate_prev,
                 )
             if plan.export_mode == "all":
                 output_segments.append(seg)
@@ -1708,8 +1758,56 @@ def execute_director_plan_core(
             for pos, idx in enumerate(run_list)
         ]
     if export_segments_mode:
-        # Never assemble the full timeline in RAM. Layout uses the segment list
-        # (older slots are 1-frame posters after release).
+        # Never assemble the full timeline in RAM. During the run each
+        # finished segment's IMAGE slot dropped to a 1-frame placeholder
+        # once its disk cache was durable; rehydrate full frames from cache
+        # now so the node's `images` output hands downstream
+        # VHS_VideoCombine full-length clips. The high-RAM window is this
+        # final rehydrate only — not the whole sampling run.
+        rehydrated = 0
+        for pos, idx in enumerate(run_list):
+            if pos >= len(segment_outputs):
+                break
+            cur = segment_outputs[pos]
+            expected = int(segment_export_lengths.get(idx) or 0)
+            cur_frames = int(cur.shape[0]) if isinstance(cur, torch.Tensor) else 0
+            needs_rehydrate = (
+                cur_frames != expected if expected > 0 else cur_frames <= 1
+            )
+            if not needs_rehydrate:
+                continue
+            seg_obj = next((s for s in all_segments if s.index == idx), None)
+            if seg_obj is None:
+                continue
+            loaded = load_segment_cache(node_id, seg_obj, plan, allow_stale=True)
+            if loaded is None or int(loaded.shape[0]) <= 1:
+                if cur_frames > 1:
+                    # Resident frames disagree with the recorded length but
+                    # are better than nothing — keep them.
+                    continue
+                log.warning(
+                    "Segment %d: disk cache unavailable at export rehydrate — "
+                    "IMAGE slot stays a placeholder.",
+                    idx + 1,
+                )
+                continue
+            loaded = loaded.float()
+            if expected > 0 and int(loaded.shape[0]) > expected:
+                # Tail-trim parity with the phase-align export cut.
+                loaded = loaded[:expected].contiguous()
+            segment_outputs[pos] = loaded
+            rehydrated += 1
+            if (
+                pos < len(segment_pre_refine)
+                and int(segment_pre_refine[pos].shape[0]) <= 1
+                and int(loaded.shape[0]) > 1
+            ):
+                pre_loaded = load_first_pass_frames_stale(
+                    node_id, seg_obj, plan, match_len=int(loaded.shape[0])
+                )
+                segment_pre_refine[pos] = (
+                    pre_loaded if pre_loaded is not None else loaded
+                )
         fallback = torch.full((1, 1, 1, 3), 0.5)
         combined = segment_outputs[-1] if segment_outputs else fallback
         pre_combined = (
@@ -1718,8 +1816,11 @@ def execute_director_plan_core(
             else combined
         )
         reports.append(
-            "Export mode: segments — released prior-segment pixels after mp4 "
-            "and continuity pin (no full-timeline concat; IMAGE keeps a 1-frame poster)."
+            "Export mode: segments — finished segments spilled pixels to disk "
+            "cache during the run (RAM held placeholders only"
+            + (f", rehydrated {rehydrated} clip(s) at export" if rehydrated else "")
+            + "); the IMAGE list keeps every segment's full frames so "
+            "downstream VHS_VideoCombine gets full-length clips."
         )
     elif stream_all_mode:
         combined = _assemble_all_export_streaming(

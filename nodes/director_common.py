@@ -365,7 +365,9 @@ def finalize_director_outputs(
         report = (
             report
             + f"\n\nExport mode: segments — {len(segment_outputs)} clip(s) on images output "
-            "(full frames are in per-segment mp4; released clips keep a 1-frame poster)."
+            "(per-segment IMAGE batches keep their full frames so VHS_VideoCombine "
+            "downstream encodes full-length clips; full mp4s are also in "
+            "output/minimax_seg_export/)."
         )
     if plan.run_indices is not None and split_layout:
         report = (
