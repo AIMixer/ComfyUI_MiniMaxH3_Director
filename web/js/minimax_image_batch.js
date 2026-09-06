@@ -900,8 +900,10 @@ export function normalizeImageBatchSegments(editor) {
 }
 
 export function addImageBatchGroup(editor) {
-    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
+    const externalLocked = taskKey !== "addguide"
+        && (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
+    if (externalLocked) return;
     const prev = editor.timeline.segments?.[editor.timeline.segments.length - 1];
     const followType = taskKey === "mixed"
         ? resolveSegmentTaskKey(prev, taskKey)
@@ -920,7 +922,8 @@ export function addImageBatchGroup(editor) {
 }
 
 export function deleteImageBatchGroup(editor, index) {
-    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
+    const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
+    if (taskKey !== "addguide" && (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.())) return;
     if (editor.timeline.segments.length <= 1) return;
     // Persist drafts while DOM still matches the current array, then splice.
     flushBatchPromptInputs(editor);
@@ -2556,7 +2559,8 @@ export function renderImageBatchGroups(editor) {
             ? t(hintKey)
             : t(isVideo ? "batch.hint.defaultVideo" : "batch.hint.defaultImage");
     }
-    const externalLocked = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
+    const externalConnected = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
+    const externalLocked = key !== "addguide" && externalConnected;
     if (editor.batchI2vNotice) {
         const needsRefs = key === "r2i" || key === "r2v";
         const global = editor.timeline.global || {};
@@ -2575,8 +2579,10 @@ export function renderImageBatchGroups(editor) {
         ));
         // External graph media may exist as tensors even when UI path sync failed —
         // don't scare users with a false "will degrade to t2v" notice.
-        if (key === "mixed" && externalLocked) {
-            editor.batchI2vNotice.textContent = t("batch.notice.mixedExternal");
+        if ((key === "mixed" || key === "addguide") && externalConnected) {
+            editor.batchI2vNotice.textContent = t(
+                key === "addguide" ? "batch.notice.addguideExternal" : "batch.notice.mixedExternal",
+            );
             editor.batchI2vNotice.classList.add("visible");
         } else if (needsRefs && !hasAnyMedia && !externalLocked) {
             editor.batchI2vNotice.textContent = t(key === "r2v" ? "batch.notice.r2vNoRefs" : "batch.notice.r2iNoRefs");
@@ -3427,7 +3433,9 @@ export function setR2vToolbar(editor, enabled) {
     editor.root?.querySelector('[data-r="equal-n"]')?.classList.toggle("hidden", enabled);
     editor.root?.querySelector(".bd-mode")?.classList.toggle("hidden", enabled);
 
-    const externalLocked = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
+    const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
+    const externalLocked = taskKey !== "addguide"
+        && !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
     const del = editor.root?.querySelector('[data-a="del"]');
     if (del) {
         if (externalLocked) {

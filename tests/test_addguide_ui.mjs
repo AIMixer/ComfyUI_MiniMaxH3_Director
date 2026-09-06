@@ -167,6 +167,11 @@ function makeEditor() {
     const card = new FakeElement("div");
     addGuide.appendAddGuideEditor(card, editor, segment, 0, {});
     const audioCard = card.querySelector(".bd-ag-audio-card");
+    assert.equal(
+        card.querySelectorAll(".bd-ag-audio-explanation").length,
+        0,
+        "Audio Guide must not render the removed persistent explanation panel",
+    );
     const frameButtons = audioCard.querySelectorAll(".bd-ag-frame-controls")[0].children;
     frameButtons[2].click();
     assert.equal(segment.timedAudioGuides[0].frameIndex, 62, "AG + button must update frameIndex");

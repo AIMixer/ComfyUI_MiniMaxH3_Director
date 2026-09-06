@@ -2130,7 +2130,8 @@ class MiniMaxH3DirectorEditor {
         if (!el) return;
         const i2v = this.hasExternalI2vGroups();
         const r2v = this.hasExternalR2vGroups();
-        const active = i2v || r2v;
+        const taskKey = resolveTaskKey(this.getTaskKey?.() || this.taskTypeWidget?.value);
+        const active = taskKey !== "addguide" && (i2v || r2v);
         el.classList.toggle("hidden", !active);
         this.root?.classList.toggle("bd-external-groups", active);
         // Refresh add/delete visibility when external wiring toggles.
@@ -2156,6 +2157,7 @@ class MiniMaxH3DirectorEditor {
      * widget so execution (and the next sync) don't revive stale graph text.
      */
     writeExternalGroupPrompt(segIndex, prompt) {
+        if (resolveTaskKey(this.getTaskKey?.() || this.taskTypeWidget?.value) === "addguide") return;
         if (!this.hasExternalI2vGroups?.() && !this.hasExternalR2vGroups?.()) return;
         const nodes = collectExternalGroupNodes(this);
         const node = nodes?.[segIndex];
@@ -2178,6 +2180,11 @@ class MiniMaxH3DirectorEditor {
     /** Mirror graph-wired Group count/duration into the Director timeline UI. */
     syncExternalGroupsTimeline() {
         this.updateExternalGroupsBanner();
+        if (resolveTaskKey(this.getTaskKey?.() || this.taskTypeWidget?.value) === "addguide") {
+            this._externalGroupsSyncSig = null;
+            this.renderImageBatchGroups?.();
+            return;
+        }
         // Keep any in-progress Director textarea edits before rebuilding from graph.
         if (this.isImageBatch?.()) flushBatchPromptInputs(this);
         if (this.isFl2vMode?.()) flushFl2vPromptDraft(this);
@@ -4801,7 +4808,8 @@ class MiniMaxH3DirectorEditor {
             const del = this.root?.querySelector('[data-a="del"]');
             if (del) {
                 if (showBatchTrack) {
-                    const externalLocked = !!(this.hasExternalI2vGroups?.() || this.hasExternalR2vGroups?.());
+                    const externalLocked = this.getTaskKey() !== "addguide"
+                        && !!(this.hasExternalI2vGroups?.() || this.hasExternalR2vGroups?.());
                     if (externalLocked) {
                         del.classList.add("hidden");
                         del.disabled = true;

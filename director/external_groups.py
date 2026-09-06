@@ -272,6 +272,11 @@ def validate_external_group_inputs(
     r2v_groups,
 ) -> tuple[str, list[dict[str, Any]] | None, str | None]:
     """Return (task_key, groups_or_None, family_or_None). None groups → use UI timeline."""
+    task_key = resolve_task_key(task_type)
+    if task_key == "addguide":
+        # Ignore external payloads before normalization/validation; use the UI timeline.
+        return task_key, None, None
+
     i2v_linked = i2v_groups is not None
     r2v_linked = r2v_groups is not None
     i2v = normalize_groups_list(i2v_groups)
@@ -285,7 +290,6 @@ def validate_external_group_inputs(
             "MiniMax H3 Director: connect either Image to Video groups (i2v_groups) "
             "or Reference to Video groups (r2v_groups), not both."
         )
-    task_key = resolve_task_key(task_type)
     if not i2v and not r2v:
         return task_key, None, None
 
