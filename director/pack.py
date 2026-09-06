@@ -842,6 +842,8 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
             "refImageSize": "match",
             "continuityEnabled": False,
             "continuityOverlapFrames": 22,
+            "continuityMode": "guide",
+            "continuityRedraw": 0.65,
         },
         "segments": segments or [{
             "id": "g0",
