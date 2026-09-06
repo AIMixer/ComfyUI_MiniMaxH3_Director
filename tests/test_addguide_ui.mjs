@@ -366,6 +366,21 @@ function makeEditor() {
 }
 
 {
+    const editor = {
+        getTaskKey: () => "addguide",
+        hasExternalI2vGroups: () => true,
+        hasExternalR2vGroups: () => false,
+    };
+    assert.deepEqual(
+        addGuide.validateAddGuideExternalGroups(editor),
+        ["batch.notice.addguideExternal"],
+        "queue validation must block AddGuide while an external Group remains connected",
+    );
+    editor.hasExternalI2vGroups = () => false;
+    assert.deepEqual(addGuide.validateAddGuideExternalGroups(editor), []);
+}
+
+{
     const segment = {
         frameCount: 120,
         timedGuides: [],

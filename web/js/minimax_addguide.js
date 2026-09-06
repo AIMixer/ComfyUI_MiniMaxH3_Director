@@ -268,6 +268,17 @@ export function validateAllAddGuideSegments(editor) {
     return errors;
 }
 
+export function validateAddGuideExternalGroups(editor) {
+    const taskKey = resolveTaskKey(editor?.getTaskKey?.() || editor?.taskTypeWidget?.value || "");
+    const connected = !!(
+        editor?.hasExternalI2vGroups?.()
+        || editor?.hasExternalR2vGroups?.()
+    );
+    return taskKey === "addguide" && connected
+        ? [t("batch.notice.addguideExternal")]
+        : [];
+}
+
 function displayTime(frame) {
     return `${(Math.max(0, Number(frame) || 0) / H3_NATIVE_FPS).toFixed(3)}s`;
 }

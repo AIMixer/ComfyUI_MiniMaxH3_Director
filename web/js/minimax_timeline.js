@@ -117,6 +117,7 @@ import {
     ADDGUIDE_STYLES,
     sanitizeTimedAudioGuides,
     sanitizeTimedGuides,
+    validateAddGuideExternalGroups,
     validateAllAddGuideSegments,
 } from "./minimax_addguide.js";
 
@@ -12407,7 +12408,10 @@ app.registerExtension({
                 const errors = [];
                 for (const node of graph?._nodes ?? graph?.nodes ?? []) {
                     const editor = node._minimaxEditor;
-                    if (editor) errors.push(...validateAllAddGuideSegments(editor));
+                    if (editor) {
+                        errors.push(...validateAddGuideExternalGroups(editor));
+                        errors.push(...validateAllAddGuideSegments(editor));
+                    }
                 }
                 if (errors.length) {
                     const message = errors.join("\n");

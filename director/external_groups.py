@@ -35,6 +35,20 @@ MMX_DIR_GROUP = "MMX_DIR_GROUP"
 MMX_DIR_GROUPS = MMX_DIR_GROUP
 I2V_FAMILY = frozenset({"t2v", "i2v", "fl2v"})
 R2V_FAMILY = frozenset({"r2v"})
+ADDGUIDE_EXTERNAL_GROUP_ERROR = (
+    "AddGuide mode does not use external Groups. Disconnect i2v_groups / r2v_groups before running."
+)
+
+
+def connected_external_group_inputs(prompt, unique_id) -> list[str]:
+    """Return connected Director Group input names without evaluating their nodes."""
+    if not isinstance(prompt, dict):
+        return []
+    node = prompt.get(str(unique_id), prompt.get(unique_id, {}))
+    inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
+    if not isinstance(inputs, dict):
+        return []
+    return [name for name in ("i2v_groups", "r2v_groups") if name in inputs]
 
 
 def _as_image_batch(image: Any) -> torch.Tensor | None:
@@ -274,7 +288,8 @@ def validate_external_group_inputs(
     """Return (task_key, groups_or_None, family_or_None). None groups → use UI timeline."""
     task_key = resolve_task_key(task_type)
     if task_key == "addguide":
-        # Ignore external payloads before normalization/validation; use the UI timeline.
+        if i2v_groups is not None or r2v_groups is not None:
+            raise ValueError(ADDGUIDE_EXTERNAL_GROUP_ERROR)
         return task_key, None, None
 
     i2v_linked = i2v_groups is not None
