@@ -1693,6 +1693,12 @@ def execute_director_plan_core(
     elif not output_chunks and not segment_outputs:
         raise ValueError("Director plan produced no segments.")
 
+    # segment_outputs / segment_pre_refine / segment_audios 只包含「本次实际
+    # 采样」的分段 —— 逐组审核续跑时, 命中磁盘缓存的已选分段直接跳过, 不进
+    # 这些列表. 与它们按下标配对的出口列表必须按 resampled_this_run 过滤
+    # (采样顺序), 否则 export_segments 比 export_chunks 长, 补丁循环越界.
+    sampled_order = [i for i in run_list if i in resampled_this_run]
+
     if stream_all_mode:
         export_chunks: list[torch.Tensor] = []
         export_pre_chunks: list[torch.Tensor] = []
@@ -1703,7 +1709,7 @@ def execute_director_plan_core(
         export_segments = (
             output_segments
             if output_chunks
-            else [all_segments[i] for i in sorted(run_indices)]
+            else [all_segments[i] for i in sampled_order]
         )
         # Prefer completed_outputs: motion-context may have trimmed a prev export
         # tail (phase-align pin gap) after that chunk was already appended here.
@@ -1750,14 +1756,14 @@ def execute_director_plan_core(
     else:
         segment_audios = [
             completed_audios.get(idx) or (segment_audios[pos] if pos < len(segment_audios) else {})
-            for pos, idx in enumerate(run_list)
+            for pos, idx in enumerate(sampled_order)
         ]
         export_frame_counts = [
             int(
                 segment_export_lengths.get(idx)
                 or (segment_outputs[pos].shape[0] if pos < len(segment_outputs) else 0)
             )
-            for pos, idx in enumerate(run_list)
+            for pos, idx in enumerate(sampled_order)
         ]
     if export_segments_mode:
         # Never assemble the full timeline in RAM. During the run each
@@ -1767,7 +1773,7 @@ def execute_director_plan_core(
         # VHS_VideoCombine full-length clips. The high-RAM window is this
         # final rehydrate only — not the whole sampling run.
         rehydrated = 0
-        for pos, idx in enumerate(run_list):
+        for pos, idx in enumerate(sampled_order):
             if pos >= len(segment_outputs):
                 break
             cur = segment_outputs[pos]
