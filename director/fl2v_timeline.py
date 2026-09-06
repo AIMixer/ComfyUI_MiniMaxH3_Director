@@ -733,11 +733,17 @@ def build_fl2v_director_plan(
     raw["keyframes"] = keyframes
     raw["totalFrames"] = timeline_total
 
-    from .segment_continuity import resolve_continuity_settings
+    from .segment_continuity import (
+        resolve_continuity_mode,
+        resolve_continuity_redraw,
+        resolve_continuity_settings,
+    )
 
     continuity_enabled, continuity_overlap = resolve_continuity_settings(
         timeline, segment_count=len(segments)
     )
+    continuity_mode = resolve_continuity_mode(timeline)
+    continuity_redraw = resolve_continuity_redraw(timeline)
     run_indices = (
         frozenset(selected_plan_indices) if run_sel is not None else None
     )
@@ -763,4 +769,6 @@ def build_fl2v_director_plan(
         run_indices=run_indices,
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        continuity_mode=continuity_mode,
+        continuity_redraw=continuity_redraw,
     )

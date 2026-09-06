@@ -78,6 +78,7 @@ from .segment_mp4_export import (
 )
 from .segment_continuity import (
     concat_continuous_chunks,
+    is_continue_mode,
     is_continuity_active,
     resolve_prev_segment_output,
 )
@@ -506,10 +507,16 @@ def execute_director_plan_core(
             and seg.task_key != "addguide"
             and not getattr(seg, "continuity_from_prev", True)
         ]
+        mode_label = "guide+redraw" if is_continue_mode(plan) else "guide"
+        redraw_note = (
+            f", redraw {float(getattr(plan, 'continuity_redraw', 0.65)):.2f}"
+            if is_continue_mode(plan)
+            else ""
+        )
         reports.append(
-            "Segment continuity: ON — motion context "
-            f"{snap_context_frames(plan.continuity_overlap_frames)}f "
-            "(pin previous AV tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)."
+            f"Segment continuity: ON — {mode_label} "
+            f"{snap_context_frames(plan.continuity_overlap_frames)}f{redraw_note} "
+            "(previous AV tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)."
         )
         if pinned:
             reports.append("  Pin from prev: #" + ", #".join(str(i) for i in pinned))
@@ -807,31 +814,53 @@ def execute_director_plan_core(
         cond_s = time.perf_counter() - t_cond
 
         trim_frames = 0
+        after_shift = None
         if use_motion_context:
-            # Pin audio from previous AV latent whenever available (official MC path).
+            # Pin audio from previous AV latent whenever available.
             # Do not gate on decode_audio — mute only skips final audio decode.
             pin_audio = (
                 audio_mode != AUDIO_MODE_MUTE
                 and (prev_av is not None or prev_audio is not None)
             )
-            positive, trim_frames, prev_export_trim = apply_motion_context(
-                positive,
-                latent,
-                vae=vae,
-                context_length=context_n,
-                context_latent=prev_av,
-                context_frames=prev_tail,
-                # Always pass export audio so a canvas-mismatch fallback
-                # (Refine upscale) can still pin audio from the decoded tail.
-                context_audio=prev_audio,
-                audio_vae=audio_vae,
-                continue_audio=pin_audio,
-                # t2v/i2v/r2v/v2v/rv2v: context owns the head.
-                # fl2v keeps last_frame, marked so origin-shift retiming can move it.
-                keep_existing_keyframes=(seg.task_key == "fl2v"),
-                context_end_frame=prev_end_frame,
-                audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
-            )
+            if is_continue_mode(plan):
+                from .h3_latent_continue import (
+                    apply_latent_continue,
+                    install_continue_prefix_remask,
+                )
+
+                latent, trim_frames, prev_export_trim = apply_latent_continue(
+                    latent,
+                    prev_av=prev_av,
+                    prev_tail=prev_tail,
+                    vae=vae,
+                    context_length=context_n,
+                    context_end_frame=prev_end_frame,
+                    pin_audio=pin_audio,
+                    context_audio=prev_audio,
+                    audio_vae=audio_vae,
+                    audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
+                    seam_min_mask=getattr(plan, "continuity_redraw", 0.65),
+                )
+                after_shift = install_continue_prefix_remask
+            else:
+                positive, trim_frames, prev_export_trim = apply_motion_context(
+                    positive,
+                    latent,
+                    vae=vae,
+                    context_length=context_n,
+                    context_latent=prev_av,
+                    context_frames=prev_tail,
+                    # Always pass export audio so a canvas-mismatch fallback
+                    # (Refine upscale) can still pin audio from the decoded tail.
+                    context_audio=prev_audio,
+                    audio_vae=audio_vae,
+                    continue_audio=pin_audio,
+                    # t2v/i2v/r2v/v2v/rv2v: context owns the head.
+                    # fl2v keeps last_frame, marked so origin-shift retiming can move it.
+                    keep_existing_keyframes=(seg.task_key == "fl2v"),
+                    context_end_frame=prev_end_frame,
+                    audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
+                )
             # Phase-align can pin a few frames before the previous export end.
             # Drop that orphaned tail so concat does not replay it at the seam.
             trimmed_prev_export = 0
@@ -986,10 +1015,16 @@ def execute_director_plan_core(
                         prev_export_trim,
                         prev_idx + 1,
                     )
-            task_hint = f"{task_hint} + motion context {trim_frames}f"
+            handoff_label = "guide+redraw" if is_continue_mode(plan) else "guide"
+            task_hint = f"{task_hint} + {handoff_label} {trim_frames}f"
+            remask_note = (
+                f"(redraw {float(getattr(plan, 'continuity_redraw', 0.65)):.2f}, no cond-pin) "
+                if is_continue_mode(plan)
+                else ""
+            )
             reports.append(
-                f"Seg #{seg.index + 1}: motion context ON — pin {trim_frames}f "
-                f"from seg #{seg.index} "
+                f"Seg #{seg.index + 1}: continuity {handoff_label} — "
+                f"{trim_frames}f from seg #{seg.index} {remask_note}"
                 f"({'AV latent' if prev_av is not None else 'pixels'}"
                 f"{', +audio' if pin_audio else ', video-only'}); "
                 f"sample={sample_len}f → export {num_frames}f"
@@ -1065,6 +1100,7 @@ def execute_director_plan_core(
                 on_phase=_report_sample_phase,
                 on_step_preview=_report_step_preview if live_tae_preview else None,
                 preview_every=1,
+                after_shift=after_shift,
             )
 
         first_pass_samples = samples

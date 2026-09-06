@@ -116,6 +116,56 @@ def _truthy_continuity_flag(value) -> bool:
     return False
 
 
+CONTINUITY_MODE_GUIDE = "guide"
+CONTINUITY_MODE_CONTINUE = "continue"
+DEFAULT_CONTINUITY_REDRAW = 0.65
+
+
+def resolve_continuity_mode(timeline: dict | None) -> str:
+    """Global 引导 / 引导+重绘 strategy. Default guide. Ignored when continuity is off."""
+    output = (timeline or {}).get("output") if isinstance(timeline, dict) else None
+    if not isinstance(output, dict):
+        return CONTINUITY_MODE_GUIDE
+    raw = output.get("continuityMode", output.get("continuity_mode"))
+    if isinstance(raw, str) and raw.strip().lower() in {
+        "continue",
+        "continuation",
+        "latent",
+        "guide_redraw",
+        "guide+redraw",
+        "redraw",
+    }:
+        return CONTINUITY_MODE_CONTINUE
+    return CONTINUITY_MODE_GUIDE
+
+
+def resolve_continuity_redraw(timeline: dict | None) -> float:
+    """重绘幅度 for 引导+重绘. Ignored in official Guide mode."""
+    from .h3_latent_continue import clamp_seam_min_mask
+
+    output = (timeline or {}).get("output") if isinstance(timeline, dict) else None
+    if not isinstance(output, dict):
+        return DEFAULT_CONTINUITY_REDRAW
+    raw = (
+        output.get("continuityRedraw")
+        if output.get("continuityRedraw") is not None
+        else output.get("continuity_redraw")
+    )
+    if raw is None:
+        raw = output.get("continueSeam")
+    if raw is None:
+        return DEFAULT_CONTINUITY_REDRAW
+    return clamp_seam_min_mask(raw)
+
+
+def is_continue_mode(plan) -> bool:
+    """True when master continuity is on and strategy is latent continue."""
+    if plan is None or not getattr(plan, "continuity_enabled", False):
+        return False
+    mode = str(getattr(plan, "continuity_mode", CONTINUITY_MODE_GUIDE) or "").strip().lower()
+    return mode == CONTINUITY_MODE_CONTINUE
+
+
 def resolve_continuity_settings(timeline: dict, *, segment_count: int) -> tuple[bool, int]:
     """Read segment continuity flags from timeline JSON (output only; default off)."""
     if segment_count < 2:
