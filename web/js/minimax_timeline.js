@@ -5183,6 +5183,9 @@ class MiniMaxH3DirectorEditor {
         if (this.timeline.segments.length === 1) {
             this.timeline.segments[0].frameCount = fc;
             this.timeline.segments[0].length = fc;
+            if (isVideoBatchTask(this.getTaskKey())) {
+                this.timeline.segments[0].durationSec = preferredDurationSecFromFrames(fc, this.getFrameRate());
+            }
         }
         this.commit();
     }
@@ -5192,6 +5195,9 @@ class MiniMaxH3DirectorEditor {
         if (!seg) return;
         const minFc = minFrameCount(this.getTaskKey());
         seg.frameCount = clamp(parseInt(this.genSegFc?.value, 10) || minFc, minFc, MAX_GEN_FRAMES);
+        if (isVideoBatchTask(this.getTaskKey())) {
+            seg.durationSec = preferredDurationSecFromFrames(seg.frameCount, this.getFrameRate());
+        }
         if (this.genSegFc) this.genSegFc.value = seg.frameCount;
         this.commit();
     }
@@ -5280,19 +5286,19 @@ class MiniMaxH3DirectorEditor {
                     const resolved = this._previewSegments
                         ? {
                             frames: fc,
-                            durationSec: preferredDurationSecFromFrames(fc, 24),
+                            durationSec: preferredDurationSecFromFrames(fc, this.getFrameRate()),
                         }
                         : durationToClampedMiniMaxFrames(
                             Number.isFinite(raw)
                                 ? raw
-                                : preferredDurationSecFromFrames(fc || defaultFrameCount(key), 24),
-                            24,
+                                : preferredDurationSecFromFrames(fc || defaultFrameCount(key), this.getFrameRate()),
+                            this.getFrameRate(),
                         );
                     sec += resolved.durationSec;
                     total += resolved.frames;
                 }
                 sec = roundDurationSec(sec);
-                const play = framesToDurationSec(total, 24);
+                const play = framesToDurationSec(total, this.getFrameRate());
                 this.videoNameEl.textContent = total
                     ? t("videoName.batchVideo", {
                         key,
@@ -5754,8 +5760,29 @@ class MiniMaxH3DirectorEditor {
         return map;
     }
 
+    _rescaleBatchTimelineForFrameRate(oldFps, newFps) {
+        if (this.isFl2vMode()) {
+            syncFl2vFromShots(this);
+            return;
+        }
+        if (!isVideoBatchTask(this.getTaskKey?.())) return;
+        for (const seg of this.timeline.segments || []) {
+            const frameCount = parseInt(seg.frameCount ?? seg.length, 10) || 0;
+            if (!(Number.isFinite(Number(seg.durationSec)) && Number(seg.durationSec) > 0) && frameCount > 0) {
+                seg.durationSec = preferredDurationSecFromFrames(frameCount, oldFps);
+            }
+        }
+        normalizeImageBatchSegments(this);
+        if (this.totalFramesWidget) {
+            this.totalFramesWidget.value = sumFrameCounts(this.timeline.segments);
+        }
+    }
+
     _resampleTimelineForFrameRate(oldFps, newFps) {
-        if (this.isImageBatch() || this.isGenMode() || !this.hasVideo()) return;
+        if (this.isFl2vMode() || this.isImageBatch() || this.isGenMode() || !this.hasVideo()) {
+            this._rescaleBatchTimelineForFrameRate(oldFps, newFps);
+            return;
+        }
         const oldTotal = this.getTotalFrames();
         const newTotal = this._timelineFrameCountAtFps(newFps, oldFps, oldTotal);
         const hasExplicitMap = this.getFrameMap().length > 0;
@@ -5814,11 +5841,11 @@ class MiniMaxH3DirectorEditor {
                 const fc = Math.max(0, parseInt(seg.frameCount ?? seg.length, 10) || 0);
                 const raw = Number(seg.durationSec);
                 if (dragging) {
-                    sec += preferredDurationSecFromFrames(fc, 24);
+                    sec += preferredDurationSecFromFrames(fc, this.getFrameRate());
                 } else if (Number.isFinite(raw) && raw > 0) {
                     sec += raw;
                 } else if (fc > 0) {
-                    sec += preferredDurationSecFromFrames(fc, 24);
+                    sec += preferredDurationSecFromFrames(fc, this.getFrameRate());
                 }
             }
             return Math.max(0.001, roundDurationSec(sec));
@@ -9075,8 +9102,8 @@ class MiniMaxH3DirectorEditor {
                 const seg = segs[index];
                 if (!seg) continue;
                 const fc = Math.max(1, parseInt(seg.frameCount ?? seg.length, 10) || 1);
-                const sec = preferredDurationSecFromFrames(fc, 24);
-                const play = framesToDurationSec(fc, 24);
+                const sec = preferredDurationSecFromFrames(fc, this.getFrameRate());
+                const play = framesToDurationSec(fc, this.getFrameRate());
                 if (input.value !== String(sec)) input.value = String(sec);
                 input.title = t("batch.durationTooltip", { frames: fc, play });
             }
@@ -9180,7 +9207,7 @@ class MiniMaxH3DirectorEditor {
                     const fc = Math.max(1, parseInt(seg.frameCount ?? seg.length, 10) || 1);
                     seg.frameCount = fc;
                     seg.length = fc;
-                    seg.durationSec = preferredDurationSecFromFrames(fc, 24);
+                    seg.durationSec = preferredDurationSecFromFrames(fc, this.getFrameRate());
                 }
                 normalizeImageBatchSegments(this);
                 this.renderImageBatchGroups();

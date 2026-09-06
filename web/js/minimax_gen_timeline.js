@@ -314,14 +314,14 @@ export function minFrameCount(taskKey) {
     return 5;
 }
 
-export function minDurationSec() {
-    return roundDurationSec(framesToDurationSec(5, 24)) || 0.2;
+export function minDurationSec(fps = 24) {
+    return roundDurationSec(framesToDurationSec(5, fps)) || 0.2;
 }
 
 /** Max 1-decimal seconds whose aligned frame count still fits in MAX_GEN_FRAMES. */
-export function maxDurationSec() {
-    let sec = roundDurationSec(framesToDurationSec(MAX_GEN_FRAMES, 24));
-    while (sec > 0.1 && durationToMiniMaxFrames(sec, 24) > MAX_GEN_FRAMES) {
+export function maxDurationSec(fps = 24) {
+    let sec = roundDurationSec(framesToDurationSec(MAX_GEN_FRAMES, fps));
+    while (sec > 0.1 && durationToMiniMaxFrames(sec, fps) > MAX_GEN_FRAMES) {
         sec = roundDurationSec(sec - 0.1);
     }
     return sec;
