@@ -289,17 +289,17 @@ export function getAddGuidePromptMentions(seg) {
     const count = Math.max(1, Number.parseInt(seg?.frameCount ?? seg?.length, 10) || 1);
     const last = count - 1;
     const items = [];
-    const append = (name, frame, ref, tag) => {
+    const append = (name, frame, ref) => {
         const image = imageRef(ref);
         if (!image) return;
         items.push({
             kind: "guide",
             label: `${name} · F${frame} · ${displayTime(frame)}`,
-            tag,
+            tag: `At ${displayTime(frame)},`,
             thumb: viewUrl(image),
         });
     };
-    append(t("addguide.first"), 0, startRef(seg), "First Frame at 0.000s (F0)");
+    append(t("addguide.first"), 0, startRef(seg));
     const guides = [...(seg.timedGuides || [])].sort((a, b) => Number(a.frameIndex) - Number(b.frameIndex));
     guides.forEach((guide, index) => {
         const frame = Number(guide.frameIndex);
@@ -308,14 +308,12 @@ export function getAddGuidePromptMentions(seg) {
             t("addguide.guide", { n: index + 1 }),
             frame,
             guide.image,
-            `Guide ${index + 1} at ${displayTime(frame)} (F${frame})`,
         );
     });
     append(
         t("addguide.last"),
         last,
         endRef(seg),
-        `Last Frame at ${displayTime(last)} (F${last})`,
     );
     return items;
 }

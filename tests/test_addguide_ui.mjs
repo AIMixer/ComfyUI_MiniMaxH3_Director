@@ -325,12 +325,13 @@ function makeEditor() {
     assert.deepEqual(
         anchors.map((item) => item.tag),
         [
-            "First Frame at 0.000s (F0)",
-            "Guide 1 at 2.000s (F48)",
-            "Guide 2 at 5.000s (F120)",
-            "Last Frame at 10.083s (F242)",
+            "At 0.000s,",
+            "At 2.000s,",
+            "At 5.000s,",
+            "At 10.083s,",
         ],
     );
+    assert.equal(anchors[1].label, "Guide 1 · F48 · 2.000s");
 }
 
 {
