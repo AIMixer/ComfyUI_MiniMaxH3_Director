@@ -560,6 +560,153 @@ async def minimax_first_pass_cache_status(request):
         )
 
 
+async def minimax_clear_segment_cache(request):
+    """Delete first-pass (.pre.*) or final segment cache files."""
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return web.Response(status=400, text=f"Invalid JSON: {exc}")
+
+    node_id = str(body.get("node_id") or "").strip()
+    if not re.fullmatch(r"\d+", node_id):
+        return web.Response(status=400, text="Invalid Director node id.")
+
+    kind = str(body.get("kind") or "final").strip().lower()
+    if kind not in {"first_pass", "final", "all"}:
+        return web.Response(status=400, text="kind must be first_pass, final or all.")
+
+    index = body.get("index")
+    if index is not None:
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return web.Response(status=400, text="index must be an integer.")
+        if index < 0:
+            return web.Response(status=400, text="index must be >= 0.")
+
+    try:
+        from .segment_cache import clear_segment_cache
+
+        removed = clear_segment_cache(node_id, kind=kind, index=index)
+        return web.json_response(
+            {"removed": removed, "kind": kind, "index": index}
+        )
+    except Exception as exc:
+        log.warning("MiniMax H3 Director clear segment cache failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
+async def minimax_segment_cache_preview(request):
+    """POST /minimax/director/segment_cache_preview — 刷新后恢复段卡片缓存视频预览。"""
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return web.Response(status=400, text=f"Invalid JSON: {exc}")
+
+    node_id = str(body.get("node_id") or "").strip()
+    if not re.fullmatch(r"\d+", node_id):
+        return web.Response(status=400, text="Invalid Director node id.")
+
+    try:
+        index = int(body.get("index"))
+    except (TypeError, ValueError):
+        return web.Response(status=400, text="index must be an integer.")
+    if index < 0:
+        return web.Response(status=400, text="index must be >= 0.")
+
+    try:
+        from .segment_cache import load_segment_cache_preview
+
+        payload = load_segment_cache_preview(
+            node_id,
+            index,
+            max_frames=int(body.get("max_frames") or 12),
+        )
+        return web.json_response(payload or {"frames": []})
+    except Exception as exc:
+        log.warning("MiniMax H3 Director segment cache preview failed: %s", exc)
+        return web.json_response({"frames": [], "error": str(exc)}, status=500)
+
+
+async def minimax_grade_preview(request) -> web.Response:
+    """POST /minimax/grade/preview — 实时调色（绕过 ComfyUI 队列）。
+
+    读取调色台最近一次真实执行时缓存的原始输入帧，应用当前 spec 并写
+    LRU 预览 mp4，秒级返回，不触发任何下游节点。
+    """
+    try:
+        from .grade_core import apply_grade, auto_analyze, load_grade_input, save_preview_video
+
+        data = await request.json()
+        node_id = str(data.get("node_id") or "x")
+        spec = data.get("spec") or {}
+        fps = float(data.get("fps") or 24.0) or 24.0
+        images = load_grade_input(node_id)
+        if images is None:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "no_cache",
+                    "message": (
+                        "实时调色需要先完整运行一次工作流（缓存原始画面）。"
+                        "缓存位于 ComfyUI output\\temp 目录，之后更新插件版本不会丢失；"
+                        "刚部署过新版本时，跑一次完整 Queue 即可重新生成。"
+                    ),
+                }
+            )
+        out = apply_grade(images, spec)
+        name = None
+        if not bool(data.get("skip_preview")):
+            slot = int(spec.get("preview_slot") or 0) % 3
+            name = save_preview_video(out, fps, f"minimax_grade_preview_{node_id}_{slot}.mp4")
+        result = {"ok": True, "video": name, "frames": int(out.shape[0])}
+        req = spec.get("auto_requests")
+        if isinstance(req, dict) and req.get("mode"):
+            result["auto_results"] = auto_analyze(images, spec)
+        return web.json_response(result)
+    except Exception as exc:
+        log.warning("MiniMax H3 Grade preview route failed: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def minimax_grade_presets(request) -> web.Response:
+    """GET /minimax/grade/presets — 参数库列表（含参数内容）。"""
+    del request
+    try:
+        from .grade_core import list_grade_presets
+
+        return web.json_response({"presets": list_grade_presets()})
+    except Exception as exc:
+        log.warning("MiniMax H3 Grade presets route failed: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+async def minimax_grade_presets_save(request) -> web.Response:
+    """POST /minimax/grade/presets/save {params} — 自动命名保存（日期_次数）。"""
+    try:
+        from .grade_core import save_grade_preset
+
+        data = await request.json()
+        entry = save_grade_preset(data.get("params") or {})
+        return web.json_response({"ok": True, "name": entry["name"], "created": entry["created"]})
+    except Exception as exc:
+        log.warning("MiniMax H3 Grade presets save failed: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def minimax_grade_presets_delete(request) -> web.Response:
+    """POST /minimax/grade/presets/delete {name} — 删除指定参数。"""
+    try:
+        from .grade_core import delete_grade_preset
+
+        data = await request.json()
+        ok = delete_grade_preset(str(data.get("name") or ""))
+        return web.json_response({"ok": ok})
+    except Exception as exc:
+        log.warning("MiniMax H3 Grade presets delete failed: %s", exc)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
 def _register_route(routes, method: str, path: str, handler) -> None:
     if hasattr(routes, "add_route"):
         routes.add_route(method, path, handler)
@@ -569,6 +716,20 @@ def _register_route(routes, method: str, path: str, handler) -> None:
         routes.get(path)(handler)
     else:
         raise AttributeError("Unsupported ComfyUI route table API")
+
+
+async def minimax_director_version(request) -> web.Response:
+    """GET /minimax/director/version — 部署确认用版本信息（时间轴面板角标）。"""
+    del request
+    try:
+        from .h3_motion_context import CONTINUITY_PIPELINE_ID, DIRECTOR_RELEASE
+
+        return web.json_response(
+            {"release": DIRECTOR_RELEASE, "pipeline": CONTINUITY_PIPELINE_ID}
+        )
+    except Exception as exc:
+        log.warning("MiniMax H3 Director version route failed: %s", exc)
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 def register_routes() -> bool:
@@ -606,6 +767,28 @@ def register_routes() -> bool:
         "/minimax/director/first_pass_cache_status",
         minimax_first_pass_cache_status,
     )
+    _register_route(
+        routes,
+        "POST",
+        "/minimax/director/clear_segment_cache",
+        minimax_clear_segment_cache,
+    )
+    _register_route(
+        routes,
+        "POST",
+        "/minimax/director/segment_cache_preview",
+        minimax_segment_cache_preview,
+    )
+    from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
+
+    _register_route(routes, "POST", "/minimax/director/export_pack", minimax_export_pack)
+    _register_route(routes, "GET", "/minimax/director/download_pack", minimax_download_pack)
+    _register_route(routes, "POST", "/minimax/director/import_pack", minimax_import_pack)
+    _register_route(routes, "POST", "/minimax/grade/preview", minimax_grade_preview)
+    _register_route(routes, "GET", "/minimax/grade/presets", minimax_grade_presets)
+    _register_route(routes, "POST", "/minimax/grade/presets/save", minimax_grade_presets_save)
+    _register_route(routes, "POST", "/minimax/grade/presets/delete", minimax_grade_presets_delete)
+    _register_route(routes, "GET", "/minimax/director/version", minimax_director_version)
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")
     return True

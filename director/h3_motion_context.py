@@ -35,6 +35,9 @@ CONTINUITY_TASK_KEYS = frozenset({"t2v", "i2v", "fl2v", "r2v", "v2v", "rv2v"})
 # v8: v7 + export audio cache + fps in fingerprint + trim hydrate on partial re-run.
 # Single source of truth — imported by segment_cache.segment_cache_fingerprint.
 CONTINUITY_PIPELINE_ID = "minimax_h3_motion_context_v8"
+# rebasedV2 重建分支：v8 基线 + 调色台（MiniMaxH3Grade）整体移植。
+# 发布版本号（展示用）：每次交付新文件时手动 +1，便于确认部署是否到位。
+DIRECTOR_RELEASE = "v8.6-grade"
 # Example workflow tested value (NikoDemon80): audio_context_length=24 with video=22.
 DEFAULT_AUDIO_CONTEXT_FRAMES = 24
 
@@ -608,3 +611,115 @@ def generation_frame_budget(visible_frames: int, context_frames: int) -> tuple[i
 def handoff_end_frame(*, trim_frames: int, export_frames: int) -> int:
     """Sample-timeline pixel index where the exported segment ends (exclusive)."""
     return max(0, int(trim_frames)) + max(0, int(export_frames))
+
+# ── 调色台（MiniMaxH3Grade）依赖的纯函数助手（自 v52.x 移植） ─────────
+def _rgb_to_yuv(t: "torch.Tensor") -> "torch.Tensor":
+    """Rec.601 YUV (luma + chroma) from RGB [0,1]."""
+    r, g, b = t[..., 0], t[..., 1], t[..., 2]
+    y = 0.299 * r + 0.587 * g + 0.114 * b
+    u = 0.492 * (b - y)
+    v = 0.877 * (r - y)
+    return torch.stack([y, u, v], dim=-1)
+
+
+def _yuv_to_rgb(t: "torch.Tensor") -> "torch.Tensor":
+    y, u, v = t[..., 0], t[..., 1], t[..., 2]
+    r = y + 1.140 * v
+    b = y + 2.033 * u
+    g = (y - 0.299 * r - 0.114 * b) / 0.587
+    return torch.stack([r, g, b], dim=-1)
+
+
+def _gaussian_blur_batch(frames: "torch.Tensor", sigma: float = 1.2) -> "torch.Tensor":
+    """Separable Gaussian blur for an [N,H,W,C] batch (reflect pad)."""
+    k = max(3, int(round(float(sigma) * 4.0)) | 1)
+    t = k // 2
+    x = torch.arange(-t, t + 1, device=frames.device, dtype=torch.float32)
+    g = torch.exp(-x.pow(2.0) / (2.0 * float(sigma) * float(sigma)))
+    g = (g / g.sum()).to(dtype=frames.dtype, device=frames.device)
+    c = int(frames.shape[-1])
+    kh = g.reshape(1, 1, k, 1).repeat(1, c, 1, 1)
+    kw = g.reshape(1, 1, 1, k).repeat(1, c, 1, 1)
+    x = frames.permute(0, 3, 1, 2)
+    x = torch.nn.functional.pad(x, (t, t, 0, 0), mode="reflect")
+    x = torch.nn.functional.conv2d(x, kw, groups=c, padding=0)
+    x = torch.nn.functional.pad(x, (0, 0, t, t), mode="reflect")
+    x = torch.nn.functional.conv2d(x, kh, groups=c, padding=0)
+    return x.permute(0, 2, 3, 1)
+
+
+def _uv_affine(src: "torch.Tensor", dst: "torch.Tensor") -> "tuple":
+    """U/V 平面 2×2 仿射（含旋转）：把 src 的色度分布映射到 dst 的均值+协方差。"""
+    eye = torch.eye(2, device=src.device, dtype=src.dtype)
+    ms = src.mean(0)
+    md = dst.mean(0)
+    n = max(int(src.shape[0]) - 1, 1)
+    Cs = ((src - ms).T @ (src - ms)) / n
+    Cd = ((dst - md).T @ (dst - md)) / n
+    try:
+        Ls = torch.linalg.cholesky(Cs + eye * 1e-6)
+        Ld = torch.linalg.cholesky(Cd + eye * 1e-6)
+        A = Ld @ torch.linalg.inv(Ls)
+    except Exception:
+        A = torch.diag(dst.std(0).clamp(min=1e-5) / src.std(0).clamp(min=1e-5))
+    o = md - A @ ms
+    return A, o
+
+
+# ── 阶段4：仅亮度（对比度/亮度）接缝补偿（rebasedV2，v8 基线最小修正） ──
+def tone_compensate_luma(
+    frames: "torch.Tensor",
+    anchor: "torch.Tensor | None",
+    *,
+    strength: float = 1.0,
+    window: int = 22,
+    label: str = "export",
+) -> "torch.Tensor":
+    """接缝窗口（本段开头 vs 上段末尾，pin 连续性下同内容）测 luma mean/std，
+    全段统一反向 gain/offset。RGB 等比例缩放+平移——色相零接触（铁律：
+    只修对比度/亮度，色度留给调色台）。无锚点（第 1 段/引导关）原样返回。
+    """
+    if frames is None or anchor is None:
+        return frames
+    try:
+        f = frames.float()
+        a = anchor.float().to(device=f.device)
+        n = int(f.shape[0])
+        if n <= 0 or int(a.shape[0]) < 2:
+            return frames
+        s = float(strength)
+        if s <= 0:
+            return frames
+        w = max(2, min(int(window), n, int(a.shape[0])))
+
+        def _luma(t: "torch.Tensor") -> "torch.Tensor":
+            return 0.299 * t[..., 0] + 0.587 * t[..., 1] + 0.114 * t[..., 2]
+
+        head = f[:w]
+        tail = a[-w:]
+        h_mean = float(_luma(head).mean().item())
+        h_std = float(_luma(head).std().item())
+        t_mean = float(_luma(tail).mean().item())
+        t_std = float(_luma(tail).std().item())
+        if h_std < 1e-5 or t_std < 1e-5:
+            return frames
+        gain = max(0.85, min(1.15, t_std / h_std))
+        offset = max(-0.05, min(0.05, t_mean - gain * h_mean))
+        g = 1.0 + (gain - 1.0) * s
+        o = offset * s
+        if abs(g - 1.0) < 1e-4 and abs(o) < 2e-4:
+            return frames
+        out = (f * g + o).clamp(0.0, 1.0).to(dtype=frames.dtype)
+        log.info(
+            "段间连贯：仅亮度补偿 %s ×%.3f +%.3f（对比度 %+.1f%% 亮度 %+.1f%%，窗口 %df）",
+            label,
+            g,
+            o,
+            (g - 1.0) * 100.0,
+            o * 100.0,
+            w,
+        )
+        return out
+    except Exception as exc:
+        log.warning("段间连贯：仅亮度补偿失败（%s），以原帧导出。", exc)
+        return frames

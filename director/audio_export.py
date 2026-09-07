@@ -14,6 +14,7 @@ from ..lib.audio_io import (
     diagnose_source_audio_failure,
     extract_timeline_audio,
     frames_to_audio_samples,
+    load_reference_audio,
 )
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.audio_export")
@@ -23,7 +24,16 @@ SILENT_SAMPLE_RATE = 44100
 AUDIO_MODE_GENERATE = "generate"
 AUDIO_MODE_SOURCE = "source"
 AUDIO_MODE_MUTE = "mute"
-VIDEO_EDIT_AUDIO_TASKS = frozenset({"v2v", "rv2v"})
+VIDEO_EDIT_AUDIO_TASKS = frozenset({"v2v", "rv2v", "r2v"})
+
+
+def _execution_audio_cache(plan) -> dict[str, dict[str, Any]]:
+    """PCM cache owned by this DirectorPlan / current execution only."""
+    cache = getattr(plan, "audio_decode_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(plan, "audio_decode_cache", cache)
+    return cache
 
 
 def task_passes_source_audio(task_key: str) -> bool:
@@ -34,7 +44,9 @@ def task_passes_source_audio(task_key: str) -> bool:
 def resolve_audio_mode(plan) -> str:
     """Return generate | source | mute from timeline.output.audioMode.
 
-    ``source`` is only honored for v2v/rv2v; other tasks treat it as generate.
+    ``source`` is honored for v2v/rv2v (source-video extract) and r2v
+    (per-segment reference audio). Other tasks (including mixed) treat it
+    as generate.
     """
     out = (getattr(plan, "raw", None) or {}).get("output") or {}
     raw = str(out.get("audioMode") or out.get("audio_mode") or AUDIO_MODE_GENERATE).strip().lower()
@@ -54,6 +66,58 @@ def resolve_audio_mode(plan) -> str:
     if mode == AUDIO_MODE_SOURCE and task_key not in VIDEO_EDIT_AUDIO_TASKS:
         return AUDIO_MODE_GENERATE
     return mode
+
+
+def _normalize_audio(audio: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Force reference audio to 44.1 kHz stereo before mux (any input format)."""
+    if audio is None or not _audio_has_samples(audio):
+        return audio
+    wave = audio["waveform"]
+    sr = int(audio.get("sample_rate") or SILENT_SAMPLE_RATE)
+    try:
+        import torchaudio
+        if not isinstance(wave, torch.Tensor) or wave.ndim != 3:
+            return audio
+        if sr != SILENT_SAMPLE_RATE:
+            wave = torchaudio.functional.resample(wave, sr, SILENT_SAMPLE_RATE)
+            sr = SILENT_SAMPLE_RATE
+        ch = int(wave.shape[1])
+        if ch < 2:
+            wave = wave.repeat(1, 2, 1)
+        elif ch > 2:
+            wave = wave[:, :2, :]
+        return {"waveform": wave.contiguous(), "sample_rate": sr}
+    except Exception as exc:
+        log.warning("参考音频归一化到 44.1k 立体声失败（%s）；按原始格式 mux。", exc)
+        return audio
+
+
+def _materialize_ref_audio(ref, plan=None) -> dict[str, Any] | None:
+    """Use in-memory PCM, or re-decode from audio_path after a segment release."""
+    audio = getattr(ref, "audio", None)
+    if _audio_has_samples(audio):
+        return audio
+    path = str(getattr(ref, "audio_path", "") or "").strip()
+    if not path:
+        return None
+    cache = _execution_audio_cache(plan) if plan is not None else None
+    audio = load_reference_audio(path, cache=cache)
+    if _audio_has_samples(audio):
+        try:
+            ref.audio = audio
+        except Exception:
+            pass
+        return audio
+    return None
+
+
+def _ref_audio_for_segment(seg, plan=None) -> dict[str, Any] | None:
+    """First usable reference audio on a segment (the 'original sound' source)."""
+    for ref in (getattr(seg, "ref_audios", None) or []):
+        audio = _materialize_ref_audio(ref, plan)
+        if _audio_has_samples(audio):
+            return _normalize_audio(audio)
+    return None
 
 
 def empty_audio_dict(sample_rate: int = SILENT_SAMPLE_RATE) -> dict[str, Any]:
@@ -94,11 +158,21 @@ def prepare_segment_audio_for_file_export(
         timeline = getattr(plan, "raw", None) or {}
         start = int(getattr(seg, "start_frame", 0) or 0)
         end = int(getattr(seg, "end_frame", start + n_frames) or (start + n_frames))
-        extracted = extract_timeline_audio(timeline, start, end, fps)
+        extracted = extract_timeline_audio(
+            timeline, start, end, fps, audio_cache=_execution_audio_cache(plan),
+        )
         if _audio_has_samples(extracted):
             sr = int(extracted.get("sample_rate") or SILENT_SAMPLE_RATE)
             return _pad_or_trim_audio_to_frames(
                 extracted, frame_count=n_frames, fps=fps, sample_rate=sr
+            )
+        # r2v has no source-timeline video; fall back to the segment's
+        # first usable reference audio (the "original sound" option).
+        ref = _ref_audio_for_segment(seg, plan)
+        if _audio_has_samples(ref):
+            sr = int(ref.get("sample_rate") or SILENT_SAMPLE_RATE)
+            return _pad_or_trim_audio_to_frames(
+                ref, frame_count=n_frames, fps=fps, sample_rate=sr
             )
     return None
 
@@ -227,6 +301,30 @@ def _segment_frame_counts_for_audio(
         out = list(ui_counts[:n_audios])
         while len(out) < n_audios:
             out.append(ui_counts[-1] if ui_counts else 0)
+        # 回退计数是未裁切的 UI 段长，而 total_frames 是 pin 相位对齐裁尾后的
+        # 真实导出帧数（两者相差数帧）——直接按 UI 段长拼接会让合并音频超过
+        # 视频总长，最终在时间轴末尾被硬砍掉数帧（段尾语音截断），同时每个
+        # 接缝的音画偏移逐段累积。无逐缝裁切信息时按比例重标定：合并音频与
+        # 视频严格等长（消除尾部硬砍），接缝偏移从累积的 5/10 帧级压到 ~1 帧级。
+        s = sum(out)
+        if s > 0 and int(total_frames) > 0 and s != int(total_frames):
+            scaled = [max(0, int(round(c * total_frames / s))) for c in out]
+            delta = int(total_frames) - sum(scaled)
+            if delta != 0:
+                # 舍入残差从尾部向前摊，保证合计严格等于 total_frames。
+                for j in range(len(scaled) - 1, -1, -1):
+                    if delta == 0:
+                        break
+                    step = 1 if delta > 0 else -1
+                    if scaled[j] + step < 0:
+                        continue
+                    scaled[j] += step
+                    delta -= step
+            log.info(
+                "Audio fallback counts rescaled %s -> %s to match export total %d frames.",
+                out, scaled, int(total_frames),
+            )
+            out = scaled
         return out
 
     # Last resort only when plan has no segments.
@@ -348,7 +446,12 @@ def build_director_audio_outputs(
         for i, tensor in enumerate(images_out):
             gen = segment_audios[i] if i < len(segment_audios) else None
             if _audio_has_samples(gen):
-                n_frames = int(getattr(tensor, "shape", [0])[0] or 0)
+                if segment_frame_counts is not None and i < len(segment_frame_counts):
+                    n_frames = int(segment_frame_counts[i] or 0)
+                else:
+                    n_frames = 0
+                if n_frames <= 0:
+                    n_frames = int(getattr(tensor, "shape", [0])[0] or 0)
                 sr = int(gen.get("sample_rate") or SILENT_SAMPLE_RATE)
                 outputs.append(
                     _pad_or_trim_audio_to_frames(gen, frame_count=n_frames, fps=fps, sample_rate=sr)
@@ -377,7 +480,15 @@ def build_director_audio_outputs(
                 outputs.append(empty_audio_dict(silent_sample_rate))
                 continue
             seg = plan.segments[seg_indices[i]]
-            extracted = extract_timeline_audio(timeline, seg.start_frame, seg.end_frame, fps)
+            extracted = extract_timeline_audio(
+                timeline,
+                seg.start_frame,
+                seg.end_frame,
+                fps,
+                audio_cache=_execution_audio_cache(plan),
+            )
+            if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
+                extracted = _ref_audio_for_segment(seg, plan) or extracted
             if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
                 hint = diagnose_source_audio_failure(
                     timeline, seg.start_frame, seg.end_frame, fps
@@ -390,7 +501,12 @@ def build_director_audio_outputs(
                 extracted = None
                 source_fallback = "silent"
             audio = _coerce_audio_output(extracted, sample_rate=silent_sample_rate)
-            n_frames = int(getattr(tensor, "shape", [0])[0] or seg.frame_count or 0)
+            if segment_frame_counts is not None and i < len(segment_frame_counts):
+                n_frames = int(segment_frame_counts[i] or 0)
+            else:
+                n_frames = 0
+            if n_frames <= 0:
+                n_frames = int(getattr(tensor, "shape", [0])[0] or seg.frame_count or 0)
             sr = int(audio.get("sample_rate") or silent_sample_rate)
             outputs.append(
                 _pad_or_trim_audio_to_frames(
@@ -402,7 +518,21 @@ def build_director_audio_outputs(
     end = max(0, int(output_frame_end if output_frame_end is not None else plan.total_frames))
     if images_out and hasattr(images_out[0], "shape"):
         end = max(end, int(images_out[0].shape[0]))
-    extracted = extract_timeline_audio(timeline, 0, end, fps) if end > 0 else None
+    extracted = (
+        extract_timeline_audio(
+            timeline, 0, end, fps, audio_cache=_execution_audio_cache(plan),
+        )
+        if end > 0
+        else None
+    )
+    if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
+        # Multi-segment source: use each segment's own reference audio, joined
+        # along the timeline (segments without a ref audio become silence).
+        refs = [_ref_audio_for_segment(seg, plan) for seg in (getattr(plan, "segments", None) or [])]
+        if any(a is not None for a in refs):
+            extracted = _merge_generated_segment_audios(
+                plan, refs, total_frames=end, fps=fps,
+            )
     if mode == AUDIO_MODE_SOURCE and not _audio_has_samples(extracted):
         hint = diagnose_source_audio_failure(timeline, 0, end, fps)
         # Soft fallback after a successful video run: silent only (no model audio).

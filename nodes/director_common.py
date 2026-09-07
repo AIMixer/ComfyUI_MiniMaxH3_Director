@@ -14,9 +14,11 @@ from ..director.audio_export import (
     resolve_audio_mode,
     source_audio_report_note,
 )
+from ..director.drift_stats import write_grade_bounds
 from ..director.frame_align import pad_or_trim_frames
 from ..director.gen_timeline import is_prompt_batch_timeline, is_video_batch_task_key
 from ..director.plan import build_director_plan, count_all_timeline_segments, count_timeline_segments, plan_summary
+from ..director.segment_mp4_export import released_output_slots
 from ..director.progress import report_director_planning
 from ..lib.image_prep import fit_canvas, fit_video_long_edge
 from ..lib.video_io import load_timeline_segment
@@ -95,6 +97,17 @@ def director_perf_inputs() -> dict:
                     "将时间轴原片解码到独立的 source_images 输出口；"
                     "需将 source_images 另接预览/合成节点才能查看，不会改变主 images。"
                     "默认关以节省内存。"
+                ),
+            },
+        ),
+        "luma_compensate": (
+            "BOOLEAN",
+            {
+                "default": True,
+                "tooltip": (
+                    "仅亮度对比度漂移补偿（默认开 = 当前行为）：把每段向上一段尾部做"
+                    "等比例增益+平移（构造上色相零接触），压制多段生成时对比度的逐代"
+                    "积累。关闭后为完全原生行为（对比度会轻微积累），供 A/B 对照。"
                 ),
             },
         ),
@@ -302,6 +315,18 @@ def _empty_source_images_for(images_out: list[torch.Tensor]) -> list[torch.Tenso
     return placeholders
 
 
+def _pad_even_hw_image(img: torch.Tensor) -> torch.Tensor:
+    """yuv420p (CreateVideo → SaveVideo) needs even H/W; 1x1 is unplayable on Windows."""
+    n, h, w, c = (int(img.shape[0]), int(img.shape[1]), int(img.shape[2]), int(img.shape[3]))
+    eh = max(2, h + (h % 2))
+    ew = max(2, w + (w % 2))
+    if eh == h and ew == w:
+        return img
+    out = img.new_zeros((n, eh, ew, c))
+    out[:, :h, :w].copy_(img)
+    return out
+
+
 def _ensure_nonempty_image_batches(images_out: list[torch.Tensor], *, label: str) -> list[torch.Tensor]:
     fixed: list[torch.Tensor] = []
     for i, img in enumerate(images_out):
@@ -310,9 +335,8 @@ def _ensure_nonempty_image_batches(images_out: list[torch.Tensor], *, label: str
         if int(img.shape[0]) <= 0:
             h, w, c = int(img.shape[1]), int(img.shape[2]), int(img.shape[3])
             log.warning("Director %s[%d] has 0 frames; emitting 1-frame placeholder.", label, i)
-            fixed.append(torch.full((1, max(1, h), max(1, w), max(1, c)), 0.5))
-        else:
-            fixed.append(img)
+            img = torch.full((1, max(2, h), max(2, w), max(1, c)), 0.5)
+        fixed.append(_pad_even_hw_image(img))
     return fixed
 
 
@@ -359,11 +383,26 @@ def finalize_director_outputs(
         is_batch=is_batch,
         video_batch=video_batch,
     )
+    if segment_frame_counts:
+        frame_count = int(sum(int(n) for n in segment_frame_counts))
+    released_slots: list[int] = []
     if export_segments and len(segment_outputs) > 1:
-        report = (
-            report
-            + f"\n\nExport mode: segments — {len(segment_outputs)} clip(s) on images output."
-        )
+        released_slots = released_output_slots(segment_outputs, segment_frame_counts)
+        mp4_dir = getattr(plan, "segment_mp4_run_dir", None)
+        if released_slots:
+            where = f" Full clips stay in {mp4_dir}." if mp4_dir else ""
+            report = (
+                report
+                + f"\n\nExport mode: segments — {len(segment_outputs)} clip(s); "
+                f"{len(released_slots)} released clip(s) omitted from images "
+                "so CreateVideo → SaveVideo do not write stills."
+                + where
+            )
+        else:
+            report = (
+                report
+                + f"\n\nExport mode: segments — {len(segment_outputs)} clip(s) on images output."
+            )
     if plan.run_indices is not None and split_layout:
         report = (
             report
@@ -401,13 +440,33 @@ def finalize_director_outputs(
             pre_refine_out = images_out
             report = report + f"\n\nimages_pre_refine: fallback to images ({exc})."
 
+    pre_counts = segment_frame_counts
+    if export_segments:
+        released_slots = sorted(
+            set(released_slots)
+            | set(released_output_slots(pre_refine_out, pre_counts))
+        )
+    if released_slots:
+        keep = [i for i in range(len(images_out)) if i not in set(released_slots)]
+        if keep:
+            images_out = [images_out[i] for i in keep]
+            pre_refine_out = [
+                pre_refine_out[i] for i in keep if i < len(pre_refine_out)
+            ] or pre_refine_out[-1:]
+            if segment_audios:
+                segment_audios = [segment_audios[i] for i in keep if i < len(segment_audios)]
+            if segment_frame_counts:
+                segment_frame_counts = [
+                    segment_frame_counts[i] for i in keep if i < len(segment_frame_counts)
+                ]
+
     split_for_audio = split_layout
     audio_frame_end = frame_count if not split_for_audio else None
     audio_mode = resolve_audio_mode(plan)
     use_generated = audio_mode == AUDIO_MODE_GENERATE
     # Prefer caller-provided export lengths (post continuity trim); else match IMAGE batches.
     if segment_frame_counts is None and segment_audios and split_for_audio:
-        segment_frame_counts = [int(s.shape[0]) for s in segment_outputs]
+        segment_frame_counts = [int(s.shape[0]) for s in images_out]
     audio_out, source_fallback = build_director_audio_outputs(
         plan,
         images_out,
@@ -468,6 +527,15 @@ def finalize_director_outputs(
         )
 
     report = report + "\n\n有问题联系作者：AI搅拌手  QQ交流群：551482703"
+
+    # 调色台（MiniMaxH3Grade）分段定位用：导出为合并视频时，附上 pin 相位
+    # 对齐裁切后的真实每段帧数（时间轴 frameCount 与导出帧数可能差数帧）。
+    if not split_layout and segment_frame_counts and len(segment_frame_counts) > 1:
+        report = report + "\n\n[grade-bounds] " + json.dumps(
+            {"segments": [int(c) for c in segment_frame_counts]},
+            ensure_ascii=False,
+        )
+        write_grade_bounds(int(frame_count), segment_frame_counts)
 
     fps_out = float(plan.frame_rate or 24.0)
     if block_final_images:

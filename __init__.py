@@ -15,6 +15,8 @@ from .nodes.director_groups import (
     MiniMaxH3DirectorGroupReferenceToVideo,
     MiniMaxH3DirectorGroupsCombine,
 )
+from .nodes.grade_node import MiniMaxH3Grade
+from .nodes.video_saver import MiniMaxH3VideoSaver
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3Director": MiniMaxH3Director,
@@ -28,6 +30,8 @@ NODE_CLASS_MAPPINGS = {
     # Must stay in NODE_CLASS_MAPPINGS: ComfyUI skips comfy_entrypoint when
     # NODE_CLASS_MAPPINGS is present (if/elif in load_custom_node).
     "MiniMaxH3DirectorGroupsCombine": MiniMaxH3DirectorGroupsCombine,
+    "MiniMaxH3Grade": MiniMaxH3Grade,
+    "MiniMaxH3VideoSaver": MiniMaxH3VideoSaver,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -39,6 +43,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3DirectorGroupImageToVideo": "MiniMax H3 Director Group (Image to Video)",
     "MiniMaxH3DirectorGroupReferenceToVideo": "MiniMax H3 Director Group (Reference to Video)",
     "MiniMaxH3DirectorGroupsCombine": "MiniMax H3 Director Groups Combine",
+    "MiniMaxH3Grade": "MiniMax H3 Grade (调色台)",
+    "MiniMaxH3VideoSaver": "MiniMax H3 Video Saver (流式落盘)",
 }
 
 WEB_DIRECTORY = "./web/js"
@@ -46,6 +52,17 @@ WEB_DIRECTORY = "./web/js"
 import logging
 
 _log = logging.getLogger("ComfyUI-MiniMaxH3-Director")
+
+try:
+    from .director.h3_motion_context import CONTINUITY_PIPELINE_ID, DIRECTOR_RELEASE
+
+    _log.info(
+        "MiniMax H3 Director loaded — release %s (pipeline %s)",
+        DIRECTOR_RELEASE,
+        CONTINUITY_PIPELINE_ID,
+    )
+except Exception as _release_exc:
+    _log.warning("MiniMax H3 Director release info unavailable: %s", _release_exc)
 
 try:
     from .director.http_routes import register_routes as _register_director_routes

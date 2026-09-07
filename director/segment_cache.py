@@ -18,7 +18,8 @@ import torch
 
 import folder_paths
 
-from .h3_motion_context import CONTINUITY_PIPELINE_ID
+from .h3_latent_continue import CONTINUE_PIPELINE_ID
+from .h3_motion_context import CONTINUITY_PIPELINE_ID, trim_context_prefix, trim_export_tail
 from .plan import DirectorPlan, SegmentPlan, resolve_ref_image_size
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.cache")
@@ -130,7 +131,23 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         "continuity": plan.continuity_enabled,
         "continuity_overlap": plan.continuity_overlap_frames if plan.continuity_enabled else 0,
         "continuity_from_prev": bool(getattr(seg, "continuity_from_prev", True)),
-        "continuity_pipeline": CONTINUITY_PIPELINE_ID,
+        "continuity_mode": (
+            str(getattr(plan, "continuity_mode", "guide") or "guide")
+            if plan.continuity_enabled
+            else "off"
+        ),
+        "continuity_redraw": (
+            round(float(getattr(plan, "continuity_redraw", 0.65) or 0.65), 2)
+            if plan.continuity_enabled
+            and str(getattr(plan, "continuity_mode", "guide") or "guide") == "continue"
+            else 0
+        ),
+        "continuity_pipeline": (
+            CONTINUE_PIPELINE_ID
+            if plan.continuity_enabled
+            and str(getattr(plan, "continuity_mode", "guide") or "guide") == "continue"
+            else CONTINUITY_PIPELINE_ID
+        ),
     }
 
 
@@ -146,6 +163,7 @@ def first_pass_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[s
         "sampler": str(getattr(plan, "sample_sampler", "") or ""),
         "shift_video": round(float(getattr(plan, "sample_shift_video", 12.0) or 12.0), 6),
         "shift_audio": round(float(getattr(plan, "sample_shift_audio", 3.0) or 3.0), 6),
+        "luma_compensate": bool(getattr(plan, "sample_luma_compensate", True)),
     })
     if linked:
         fp["steps"] = 0
@@ -165,6 +183,8 @@ def segment_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str,
     from .refine_pack import refine_fingerprint
 
     fp.update(refine_fingerprint(plan))
+    # 亮度漂移补偿影响成片画面（pre-export 帧与导出帧），必须参与指纹。
+    fp["luma_compensate"] = bool(getattr(plan, "sample_luma_compensate", True))
     return fp
 
 
@@ -594,6 +614,275 @@ def save_first_pass_cache(
             _safe_unlink(stray)
 
 
+def _trim_stale_first_pass_frames(
+    frames: torch.Tensor,
+    *,
+    plan: DirectorPlan,
+    handoff: dict[str, Any] | None,
+    match_len: int | None,
+) -> torch.Tensor | None:
+    """Match in-memory first-pass export: drop context prefix, then crop length."""
+    fps = float(getattr(plan, "frame_rate", 24) or 24)
+    trim_frames = int((handoff or {}).get("trim_frames") or 0)
+    export_len = int((handoff or {}).get("export_frames") or 0)
+    if trim_frames > 0:
+        if int(frames.shape[0]) <= trim_frames:
+            return None
+        frames, _ = trim_context_prefix(
+            frames, None, trim_frames, fps=fps, match_tail=True
+        )
+    if export_len > 0 and int(frames.shape[0]) > export_len:
+        frames = frames[:export_len]
+    want = int(match_len or 0)
+    extra = int(frames.shape[0]) - want if want > 0 else 0
+    if extra > 0:
+        frames, _ = trim_export_tail(frames, None, extra, fps=fps)
+    return frames
+
+
+def load_first_pass_frames_stale(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+    *,
+    match_len: int | None = None,
+) -> torch.Tensor | None:
+    """Load ``.pre.pt`` frames for unselected-segment pre-refine fill.
+
+    Stale-tolerant counterpart of :func:`load_first_pass_cache`: fingerprint
+    drift (different seed, sampling-knob churn) does NOT invalidate the fill,
+    so「选择运行」re-roll previews merge all-first-pass frames instead of
+    mixing a fresh first pass with cached refined renders. A different source
+    video still rejects (same rule as the final-cache fill). Never raises.
+
+    Disk ``.pre.pt`` is written before export trim; this reapplies
+    ``.pre.handoff.json`` (context prefix + export length) and optionally
+    matches the final-cache frame count after later phase-align tail trims.
+    """
+    if not node_id:
+        return None
+    root = _cache_root(node_id)
+    if root is None:
+        return None
+    idx = seg.index
+    frames_path = root / f"seg_{idx:04d}.pre.pt"
+    meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+    handoff_path = root / f"seg_{idx:04d}.pre.handoff.json"
+    if not frames_path.is_file():
+        return None
+    try:
+        if meta_path.is_file():
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = first_pass_cache_fingerprint(seg, plan)
+            if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
+                return None
+        loaded = torch.load(frames_path, map_location="cpu", weights_only=True)
+        if not isinstance(loaded, torch.Tensor) or loaded.numel() <= 0:
+            return None
+        frames = _frames_from_disk(loaded)
+        if frames is None:
+            return None
+        handoff = None
+        if handoff_path.is_file():
+            try:
+                data = json.loads(handoff_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    handoff = data
+            except Exception:
+                handoff = None
+        return _trim_stale_first_pass_frames(
+            frames, plan=plan, handoff=handoff, match_len=match_len
+        )
+    except Exception as exc:
+        log.debug("Segment %d first-pass stale frames skipped: %s", idx + 1, exc)
+    return None
+
+
+def load_resumable_segment_cache(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+) -> dict[str, Any] | None:
+    """Strict exact-match final cache for same-plan resume of a SELECTED segment.
+
+    Both the final fingerprint (identity + Refine knobs) and the first-pass
+    sampling-knob fingerprint (seed/cfg/sampler/steps/sigmas, stored in
+    ``.pre.meta.json``) must match exactly, so a changed seed or sampling
+    setting can never silently reuse an older render. Returns
+    ``{"frames", "audio", "av_latent", "handoff"}`` or None. Never raises.
+    """
+    if not node_id:
+        return None
+    root = _cache_root(node_id)
+    if root is None:
+        return None
+    idx = seg.index
+    meta_path = root / f"seg_{idx:04d}.meta.json"
+    tensor_path = root / f"seg_{idx:04d}.pt"
+    pre_meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+    if not meta_path.is_file() or not tensor_path.is_file():
+        return None
+    try:
+        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not isinstance(stored, dict) or stored != segment_cache_fingerprint(seg, plan):
+            return None
+        if not pre_meta_path.is_file():
+            # Legacy cache without first-pass sampling knobs (seed etc.) —
+            # cannot prove the render is reproducible, so never resume from it.
+            return None
+        stored_pre = json.loads(pre_meta_path.read_text(encoding="utf-8"))
+        if not isinstance(stored_pre, dict) or stored_pre != first_pass_cache_fingerprint(seg, plan):
+            return None
+        frames = _frames_from_disk(
+            torch.load(tensor_path, map_location="cpu", weights_only=True)
+        )
+        if frames is None:
+            return None
+        audio = load_segment_audio(node_id, seg, plan)
+        av_latent = load_segment_av_latent(node_id, seg, plan)
+        handoff = load_segment_handoff_meta(node_id, seg, plan)
+        from .refine_pack import refine_will_sample
+
+        if refine_will_sample(plan, seg) and not (handoff or {}).get("complete"):
+            # 确认挂起（只一采）写入的成片缓存内容=一采，不能证明二采已完成；
+            # 旧缓存无此标记同样不续跑——回落到“一采缓存命中→只补二采”路径。
+            return None
+        return {
+            "frames": frames,
+            "audio": audio,
+            "av_latent": av_latent,
+            "handoff": handoff,
+        }
+    except Exception as exc:
+        log.debug("Segment %d resumable cache check skipped: %s", idx + 1, exc)
+        return None
+
+
+def _frame_to_data_url(arr_u8) -> str:
+    """[H,W,C] uint8 numpy → data:image/jpeg;base64,…（前端预览用）。"""
+    import base64
+    import io
+
+    from PIL import Image
+
+    img = Image.fromarray(arr_u8)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=82)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def load_segment_cache_preview(
+    node_id: str | None,
+    index: int,
+    *,
+    max_frames: int = 12,
+) -> dict[str, Any] | None:
+    """Sample evenly spaced frames from a segment's disk cache for UI preview.
+
+    Tries the final render (``seg_XXXX.pt``) first, then the first-pass
+    (``seg_XXXX.pre.pt``). Returns ``{"frames": [...dataURL...], "count": N,
+    "kind": "final"|"pre"}`` or None when nothing is cached. Never raises.
+    """
+    if not node_id:
+        return None
+    try:
+        index = int(index)
+    except (TypeError, ValueError):
+        return None
+    if index < 0:
+        return None
+    try:
+        max_frames = max(1, min(24, int(max_frames)))
+    except (TypeError, ValueError):
+        max_frames = 12
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    if not root.is_dir():
+        return None
+    for kind in ("final", "pre"):
+        path = (
+            root / f"seg_{index:04d}.pt"
+            if kind == "final"
+            else root / f"seg_{index:04d}.pre.pt"
+        )
+        if not path.is_file():
+            continue
+        try:
+            tensor = torch.load(path, map_location="cpu", weights_only=True)
+        except Exception as exc:
+            log.debug("Segment %d %s preview load failed: %s", index, kind, exc)
+            continue
+        if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4 or int(tensor.shape[0]) <= 0:
+            continue
+        total = int(tensor.shape[0])
+        want = min(max_frames, total)
+        idxs = (
+            [int(round(i * (total - 1) / (want - 1))) for i in range(want)]
+            if want > 1
+            else [0]
+        )
+        frames: list[str] = []
+        for i in idxs:
+            f = tensor[i]
+            if f.dtype == torch.uint8:
+                arr = f.numpy()
+            else:
+                arr = f.float().clamp(0, 1).mul(255).round().clamp(0, 255).to(torch.uint8).numpy()
+            frames.append(_frame_to_data_url(arr))
+        if frames:
+            return {"frames": frames, "count": total, "kind": kind}
+    return None
+
+
+def first_pass_cache_miss_diff(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+) -> tuple[bool, list[str]]:
+    """``(files_exist, diff_keys)`` for a first-pass cache miss — report text only."""
+    if not node_id:
+        return False, []
+    root = _cache_root(node_id)
+    if root is None:
+        return False, []
+    idx = seg.index
+    meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+    latent_path = root / f"seg_{idx:04d}.pre.av.pt"
+    if not meta_path.is_file() or not latent_path.is_file():
+        return False, []
+    try:
+        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not isinstance(stored, dict):
+            return True, ["<invalid-meta>"]
+        return True, _fingerprint_diff_keys(stored, first_pass_cache_fingerprint(seg, plan))
+    except Exception:
+        return True, ["<unreadable-meta>"]
+
+
+def final_cache_miss_diff(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+) -> tuple[bool, list[str]]:
+    """``(files_exist, diff_keys)`` for a final-cache miss — report text only."""
+    if not node_id:
+        return False, []
+    root = _cache_root(node_id)
+    if root is None:
+        return False, []
+    idx = seg.index
+    meta_path = root / f"seg_{idx:04d}.meta.json"
+    tensor_path = root / f"seg_{idx:04d}.pt"
+    if not meta_path.is_file() or not tensor_path.is_file():
+        return False, []
+    try:
+        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not isinstance(stored, dict):
+            return True, ["<invalid-meta>"]
+        return True, _fingerprint_diff_keys(stored, segment_cache_fingerprint(seg, plan))
+    except Exception:
+        return True, ["<unreadable-meta>"]
+
+
 def load_first_pass_cache(
     node_id: str | None,
     seg: SegmentPlan,
@@ -714,7 +1003,12 @@ def inspect_first_pass_cache(
     node_id: str | None,
     plan: DirectorPlan,
 ) -> dict[str, Any]:
-    """Inspect first-pass cache files without loading their tensor payloads."""
+    """Inspect first-pass cache files without loading their tensor payloads.
+
+    Always walks the whole timeline so「选择运行」unselected slots stay visible.
+    ``final_cached_count`` is file presence only (``seg_XXXX.pt``), not a
+    fingerprint match — Refine knobs are not on this status request.
+    """
     current_seed = int(getattr(plan, "sample_seed", 0) or 0)
     result: dict[str, Any] = {
         "exists": False,
@@ -724,6 +1018,10 @@ def inspect_first_pass_cache(
         "segment_total": 0,
         "cached_count": 0,
         "matched_count": 0,
+        "selected_total": 0,
+        "selected_cached": 0,
+        "selected_matched": 0,
+        "final_cached_count": 0,
         "diff_keys": [],
         "segments": [],
     }
@@ -733,26 +1031,23 @@ def inspect_first_pass_cache(
     root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
     all_segments = list(getattr(plan, "segments", None) or [])
     run_indices = getattr(plan, "run_indices", None)
-    if run_indices is None:
-        selected = all_segments
-    else:
-        selected = [
-            all_segments[i]
-            for i in sorted(run_indices)
-            if 0 <= i < len(all_segments)
-        ]
-    result["segment_total"] = len(selected)
+    selected_set = frozenset(run_indices) if run_indices is not None else None
+    result["segment_total"] = len(all_segments)
 
     cached_seeds: set[int] = set()
     all_diffs: set[str] = set()
     rows: list[dict[str, Any]] = []
-    for seg in selected:
+    final_cached = 0
+    for seg in all_segments:
+        is_selected = selected_set is None or int(seg.index) in selected_set
         idx = int(seg.index)
         meta_path = root / f"seg_{idx:04d}.pre.meta.json"
         latent_path = root / f"seg_{idx:04d}.pre.av.pt"
         meta_exists = meta_path.is_file()
         latent_exists = latent_path.is_file()
         cache_exists = meta_exists and latent_exists
+        if (root / f"seg_{idx:04d}.pt").is_file():
+            final_cached += 1
         stored: Any = None
         read_error = ""
         if meta_exists:
@@ -773,6 +1068,12 @@ def inspect_first_pass_cache(
             if isinstance(stored, dict)
             else (["<invalid-meta>"] if meta_exists else ["<missing-cache>"])
         )
+        if not cache_exists:
+            status = "missing"
+        elif matches:
+            status = "valid"
+        else:
+            status = "mismatch"
         cached_seed = stored.get("seed") if isinstance(stored, dict) else None
         try:
             if cached_seed is not None:
@@ -786,6 +1087,8 @@ def inspect_first_pass_cache(
                 "segment": idx + 1,
                 "exists": cache_exists,
                 "matches": matches,
+                "status": status,
+                "selected": is_selected,
                 "cached_seed": cached_seed,
                 "diff_keys": diff,
                 "error": read_error,
@@ -794,6 +1097,8 @@ def inspect_first_pass_cache(
 
     cached_count = sum(1 for row in rows if row["exists"])
     matched_count = sum(1 for row in rows if row["matches"])
+    selected_rows = [row for row in rows if row["selected"]]
+    selected_total = len(selected_rows) if selected_set is not None else len(rows)
     total = len(rows)
     result.update(
         {
@@ -802,8 +1107,93 @@ def inspect_first_pass_cache(
             "cached_seeds": sorted(cached_seeds),
             "cached_count": cached_count,
             "matched_count": matched_count,
+            "selected_total": selected_total,
+            "selected_cached": sum(1 for row in selected_rows if row["exists"]),
+            "selected_matched": sum(1 for row in selected_rows if row["matches"]),
+            "final_cached_count": final_cached,
             "diff_keys": sorted(all_diffs),
             "segments": rows,
         }
     )
     return result
+
+
+def clear_segment_cache(
+    node_id: str | None,
+    kind: str = "final",
+    *,
+    index: int | None = None,
+) -> int:
+    """Delete cached segment files for this Director node.
+
+    ``kind``:
+      - ``first_pass``: only ``seg_XXXX.pre.*`` (一采)
+      - ``final``: everything except ``.pre.*`` (成片 / 二采，含 ``.audio.pt``)
+      - ``all``: both
+
+    ``index``: when given (0-based segment index), only files of that single
+    segment (``seg_XXXX.*``, both 一采 and 成片) are removed — ``kind`` is
+    ignored. Other segments' caches are left untouched, so their 段间衔接
+    state stays as-is for the user to judge manually.
+
+    Never creates the cache dir. Returns the number of files removed.
+    """
+    if not node_id:
+        return 0
+    if kind not in {"first_pass", "final", "all"}:
+        raise ValueError("kind must be first_pass, final or all")
+    if index is not None:
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            raise ValueError("index must be an integer or None")
+        if index < 0:
+            raise ValueError("index must be >= 0")
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    if not root.is_dir():
+        return 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+    removed = 0
+    if index is not None:
+        prefix = f"seg_{index:04d}."
+        for path in entries:
+            try:
+                if not path.is_file() or not path.name.startswith(prefix):
+                    continue
+            except OSError:
+                continue
+            is_pre = ".pre." in path.name
+            if kind == "first_pass" and not is_pre:
+                continue
+            if kind == "final" and is_pre:
+                continue
+            if _safe_unlink(path):
+                removed += 1
+        if removed:
+            log.info(
+                "Cleared segment %d %s cache for node %s (%d file(s)).",
+                index,
+                kind,
+                node_id,
+                removed,
+            )
+        return removed
+    for path in entries:
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        is_pre = ".pre." in path.name
+        if kind == "first_pass" and not is_pre:
+            continue
+        if kind == "final" and is_pre:
+            continue
+        if _safe_unlink(path):
+            removed += 1
+    if removed:
+        log.info("Cleared %s cache for node %s (%d file(s)).", kind, node_id, removed)
+    return removed
