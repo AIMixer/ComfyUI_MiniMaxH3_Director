@@ -2335,6 +2335,7 @@ class MiniMaxH3DirectorEditor {
                 }
                 return newBatchSegment({
                     ...(matched?.id ? { id: matched.id } : {}),
+                    frameRate: this.getFrameRate(),
                     durationSec: spec.durationSec ?? defaultDurationSec(taskKey),
                     prompt,
                     negativePrompt: matched?.negativePrompt ?? "",
@@ -4417,6 +4418,7 @@ class MiniMaxH3DirectorEditor {
     _resetBatchWorkspaceLive(taskKey) {
         const key = resolveTaskKey(taskKey || this.getTaskKey());
         this.timeline.segments = [newBatchSegment({
+            frameRate: this.getFrameRate(),
             durationSec: defaultDurationSec(key === "mixed" ? "t2v" : key),
             ...(key === "mixed" ? { taskType: "t2v" } : {}),
         })];
@@ -4496,7 +4498,7 @@ class MiniMaxH3DirectorEditor {
     ensureGenTimeline() {
         const key = this.getTaskKey();
         this.timeline.gen = this.timeline.gen || {};
-        const defFc = defaultFrameCount(key);
+        const defFc = defaultFrameCount(key, this.getFrameRate());
         if (!this.timeline.segments?.length || !sumFrameCounts(this.timeline.segments)) {
             this.timeline.segments = [{
                 id: uid(), start: 0, length: defFc, frameCount: defFc,
@@ -4522,7 +4524,7 @@ class MiniMaxH3DirectorEditor {
         let start = 0;
         const fixed = [];
         for (const seg of [...this.timeline.segments]) {
-            let fc = clamp(parseInt(seg.frameCount ?? seg.length, 10) || defaultFrameCount(key), minFc, MAX_GEN_FRAMES);
+            let fc = clamp(parseInt(seg.frameCount ?? seg.length, 10) || defaultFrameCount(key, this.getFrameRate()), minFc, MAX_GEN_FRAMES);
             fixed.push({
                 ...seg,
                 start,
@@ -4534,7 +4536,7 @@ class MiniMaxH3DirectorEditor {
             start += fc;
         }
         if (!fixed.length) {
-            const fc = defaultFrameCount(key);
+            const fc = defaultFrameCount(key, this.getFrameRate());
             fixed.push({
                 id: uid(), start: 0, length: fc, frameCount: fc,
                 prompt: "", taskType: "", refs: [], genImage: { imageFile: "" },
@@ -4765,7 +4767,7 @@ class MiniMaxH3DirectorEditor {
                     this._clearLiveRunSelection();
                 }
                 const key = this.getTaskKey();
-                const defFc = defaultFrameCount(key);
+                const defFc = defaultFrameCount(key, this.getFrameRate());
                 const keepPrompt = this.timeline.global?.prompt || "";
                 this.timeline.segments = [{
                     id: uid(),
@@ -5291,7 +5293,7 @@ class MiniMaxH3DirectorEditor {
                         : durationToClampedMiniMaxFrames(
                             Number.isFinite(raw)
                                 ? raw
-                                : preferredDurationSecFromFrames(fc || defaultFrameCount(key), this.getFrameRate()),
+                                : preferredDurationSecFromFrames(fc || defaultFrameCount(key, this.getFrameRate()), this.getFrameRate()),
                             this.getFrameRate(),
                         );
                     sec += resolved.durationSec;
@@ -10589,7 +10591,7 @@ class MiniMaxH3DirectorEditor {
             );
         }
         if (this.isGenMode() && this.isGlobalMode()) {
-            const defFc = this.timeline.gen?.defaultFrameCount ?? defaultFrameCount(this.getTaskKey());
+            const defFc = this.timeline.gen?.defaultFrameCount ?? defaultFrameCount(this.getTaskKey(), this.getFrameRate());
             if (this.genDefaultFc) this.genDefaultFc.value = defFc;
         }
 
@@ -10616,7 +10618,7 @@ class MiniMaxH3DirectorEditor {
             this.renderGenSrcSlot(this.genSegImg, liveSeg.genImage?.imageFile, t("panel.uploadSegmentSourceImage"));
         }
         if (this.isGenMode() && !this.isGlobalMode()) {
-            const fc = liveSeg.frameCount ?? liveSeg.length ?? defaultFrameCount(this.getTaskKey());
+            const fc = liveSeg.frameCount ?? liveSeg.length ?? defaultFrameCount(this.getTaskKey(), this.getFrameRate());
             if (this.genSegFc) this.genSegFc.value = fc;
         }
         if (this.isFl2vMode()) updateFl2vDetailUI(this);

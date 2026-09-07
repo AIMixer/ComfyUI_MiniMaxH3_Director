@@ -792,7 +792,7 @@ export function ensureImageBatchTimeline(editor) {
     if (!isVideoBatchTask(taskKey)) {
         editor.timeline.output.exportMode = "all";
     }
-    const defFc = defaultFrameCount(taskKey);
+    const defFc = defaultFrameCount(taskKey, batchFrameRate(editor));
     if (taskKey === "i2v") {
         editor.timeline.video = {
             fileName: "",
@@ -806,6 +806,7 @@ export function ensureImageBatchTimeline(editor) {
     }
     if (!editor.timeline.segments?.length) {
         editor.timeline.segments = [newBatchSegment({
+            frameRate: batchFrameRate(editor),
             durationSec: defaultDurationSec(taskKey === "mixed" ? "t2v" : taskKey),
             ...(taskKey === "mixed" ? { taskType: "t2v" } : {}),
         })];
@@ -850,7 +851,7 @@ export function normalizeImageBatchSegments(editor) {
     flushBatchPromptInputs(editor);
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
     const isVideo = isVideoBatchTask(taskKey);
-    const defFc = defaultFrameCount(taskKey);
+    const defFc = defaultFrameCount(taskKey, batchFrameRate(editor));
     const defSec = defaultDurationSec(taskKey);
     let start = 0;
     const segs = editor.timeline.segments || [];
@@ -858,7 +859,10 @@ export function normalizeImageBatchSegments(editor) {
     // same objects. Replacing with `{ ...seg }` orphans DOM writes and can
     // wipe group 5/6 prompts on the next sync/re-render.
     if (!segs.length) {
-        editor.timeline.segments = [newBatchSegment({ durationSec: defSec })];
+        editor.timeline.segments = [newBatchSegment({
+            frameRate: batchFrameRate(editor),
+            durationSec: defSec,
+        })];
     }
     for (const seg of editor.timeline.segments) {
         let fc = 1;
@@ -902,6 +906,7 @@ export function addImageBatchGroup(editor) {
         ? resolveSegmentTaskKey(prev, taskKey)
         : "";
     editor.timeline.segments.push(newBatchSegment({
+        frameRate: batchFrameRate(editor),
         durationSec: defaultDurationSec(followType || taskKey),
         negativePrompt: "",
         ...(followType ? { taskType: followType } : {}),
@@ -2388,7 +2393,7 @@ function renderBatchGroupPicker(editor, ctx) {
         const meta = document.createElement("span");
         meta.className = "bd-batch-pick-meta";
         if (isVideo) {
-            const sec = resolveSegmentDurationSec(seg, defaultFrameCount(key), batchFrameRate(editor));
+            const sec = resolveSegmentDurationSec(seg, defaultFrameCount(key, batchFrameRate(editor)), batchFrameRate(editor));
             meta.textContent = `${Number(sec).toFixed(1)}s`;
         } else {
             meta.textContent = `#${index + 1}`;
@@ -2631,7 +2636,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             const secRow = document.createElement("label");
             secRow.className = "bd-batch-fc";
             const fps = batchFrameRate(editor);
-            const curSec = resolveSegmentDurationSec(seg, defaultFrameCount(key), fps);
+            const curSec = resolveSegmentDurationSec(seg, defaultFrameCount(key, fps), fps);
             const { frames, durationSec: syncedSec } = durationToClampedMiniMaxFrames(curSec, fps);
             const playSec = framesToDurationSec(frames, fps);
             seg.durationSec = syncedSec;

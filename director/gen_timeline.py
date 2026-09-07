@@ -30,14 +30,6 @@ MIN_GEN_FRAMES = 1
 MIN_GEN_VIDEO_FRAMES = 4
 
 
-def _duration_to_minimax_frames(seconds: float, frame_rate: float) -> int:
-    """Convert a user-facing duration to MiniMax's aligned frame count."""
-    duration = max(0.1, float(seconds or 0.1))
-    fps = max(1.0, float(frame_rate or 24.0))
-    frames = max(5, int(round(duration * fps)))
-    return frames + (5 - frames % 17) % 17
-
-
 def is_gen_task_key(task_key: str) -> bool:
     return task_key in GEN_TASK_KEYS
 
@@ -96,6 +88,8 @@ def _segment_frame_count(
     duration = raw.get("durationSec") or raw.get("duration_sec")
     if is_video_batch_task_key(task_key) and duration is not None:
         try:
+            from .fl2v_timeline import _duration_to_minimax_frames
+
             fc = _duration_to_minimax_frames(float(duration), frame_rate)
         except (TypeError, ValueError):
             fc = int(raw.get("frameCount") or raw.get("frame_count") or raw.get("length") or default)

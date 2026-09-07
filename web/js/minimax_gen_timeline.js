@@ -303,9 +303,9 @@ export function defaultDurationSec(taskKey) {
     return 5;
 }
 
-export function defaultFrameCount(taskKey) {
+export function defaultFrameCount(taskKey, fps = 24) {
     if (isImageBatchTask(taskKey)) return 1;
-    return durationToMiniMaxFrames(defaultDurationSec(taskKey), 24);
+    return durationToMiniMaxFrames(defaultDurationSec(taskKey), Math.max(1, Number(fps) || 24));
 }
 
 export function minFrameCount(taskKey) {
@@ -409,16 +409,17 @@ export function resolveSegmentRefImageSize(seg, fallback) {
 export function newBatchSegment(overrides = {}) {
     const taskKey = resolveTaskKey(overrides.taskType || overrides.task_type || "");
     const isVideo = isVideoBatchTask(taskKey) || MIXED_SEGMENT_TASKS.has(taskKey);
+    const fps = Math.max(1, Number(overrides.frameRate ?? overrides.fps ?? 24) || 24);
     // durationSec is the user-facing source of truth; frameCount is derived by formula.
     let durationSec = defaultDurationSec(taskKey);
     if (overrides.durationSec != null && Number.isFinite(Number(overrides.durationSec))) {
         durationSec = Number(overrides.durationSec);
     } else if (overrides.frameCount != null || overrides.length != null) {
-        durationSec = preferredDurationSecFromFrames(overrides.frameCount ?? overrides.length, 24);
+        durationSec = preferredDurationSecFromFrames(overrides.frameCount ?? overrides.length, fps);
     }
     let fc = 1;
     if (isVideo) {
-        const resolved = durationToClampedMiniMaxFrames(durationSec, 24);
+        const resolved = durationToClampedMiniMaxFrames(durationSec, fps);
         durationSec = resolved.durationSec;
         fc = resolved.frames;
     }
@@ -440,7 +441,7 @@ export function newBatchSegment(overrides = {}) {
         genImage: { imageFile: "" },
         previewB64: "",
         previewFrames: [],
-        previewFps: 24,
+        previewFps: fps,
         ...overrides,
         length: fc,
         frameCount: fc,
