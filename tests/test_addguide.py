@@ -421,7 +421,7 @@ class ConditioningTests(unittest.TestCase):
                 self.conditioning._load_minimax_addguide_node()
         self.assertEqual(str(caught.exception), expected)
 
-    def test_picture_then_trimmed_audio_are_chained(self):
+    def test_same_frame_picture_and_audio_are_coalesced_into_one_addguide_call(self):
         calls = []
 
         class Output:
@@ -434,13 +434,77 @@ class ConditioningTests(unittest.TestCase):
                 calls.append((frame_idx, kwargs))
                 return Output([*positive, frame_idx])
 
-        audio = {"waveform": torch.zeros((1, 2, 400)), "sample_rate": 100}
+        audio = {
+            "waveform": torch.zeros((1, 2, 100)),
+            "sample_rate": 100,
+        }
+
         fake_audio_io = types.ModuleType("addguide_pkg.lib.audio_io")
         fake_audio_io.load_reference_audio = lambda path, cache=None: audio
         sys.modules["addguide_pkg.lib.audio_io"] = fake_audio_io
         sys.modules["addguide_pkg.director.timed_guides"] = timed
+
         original_loader = self.conditioning._load_minimax_addguide_node
         self.conditioning._load_minimax_addguide_node = lambda: FakeAddGuide
+
+        try:
+            pg = guide("pg", 48)
+            ag = audio_guide("ag", 48, duration=1.0)
+
+            result = self.conditioning.apply_minimax_timed_guides(
+                [],
+                object(),
+                vae="video-vae",
+                timed_guides=[pg],
+                audio_vae="audio-vae",
+                timed_audio_guides=[ag],
+                frame_count=124,
+            )
+        finally:
+            self.conditioning._load_minimax_addguide_node = original_loader
+
+        self.assertEqual(result, [48])
+        self.assertEqual(len(calls), 1)
+
+        frame_idx, kwargs = calls[0]
+
+        self.assertEqual(frame_idx, 48)
+        self.assertIn("image", kwargs)
+        self.assertIn("audio", kwargs)
+        self.assertEqual(kwargs["vae"], "video-vae")
+        self.assertEqual(kwargs["audio_vae"], "audio-vae")
+        self.assertIs(kwargs["image"], pg.tensor)
+        self.assertEqual(
+            kwargs["audio"]["waveform"].shape[-1],
+            100,
+        )
+
+    def test_picture_and_audio_are_chained_in_global_frame_order(self):
+        calls = []
+
+        class Output:
+            def __init__(self, positive):
+                self.args = (positive,)
+
+        class FakeAddGuide:
+            @staticmethod
+            def execute(positive, latent, frame_idx, **kwargs):
+                calls.append((frame_idx, kwargs))
+                return Output([*positive, frame_idx])
+
+        audio = {
+            "waveform": torch.zeros((1, 2, 400)),
+            "sample_rate": 100,
+        }
+
+        fake_audio_io = types.ModuleType("addguide_pkg.lib.audio_io")
+        fake_audio_io.load_reference_audio = lambda path, cache=None: audio
+        sys.modules["addguide_pkg.lib.audio_io"] = fake_audio_io
+        sys.modules["addguide_pkg.director.timed_guides"] = timed
+
+        original_loader = self.conditioning._load_minimax_addguide_node
+        self.conditioning._load_minimax_addguide_node = lambda: FakeAddGuide
+
         try:
             result = self.conditioning.apply_minimax_timed_guides(
                 [],
@@ -448,15 +512,33 @@ class ConditioningTests(unittest.TestCase):
                 vae="video-vae",
                 timed_guides=[guide("pg", 24)],
                 audio_vae="audio-vae",
-                timed_audio_guides=[audio_guide("a", 0), audio_guide("b", 48)],
+                timed_audio_guides=[
+                    audio_guide("a", 0),
+                    audio_guide("b", 48),
+                ],
                 frame_count=243,
             )
         finally:
             self.conditioning._load_minimax_addguide_node = original_loader
-        self.assertEqual(result, [24, 0, 48])
-        self.assertIn("image", calls[0][1])
-        self.assertEqual(calls[1][1]["audio"]["waveform"].shape[-1], 200)
-        self.assertEqual(calls[2][1]["audio"]["waveform"].shape[-1], 400)
+
+        self.assertEqual(result, [0, 24, 48])
+        self.assertEqual(
+            [frame for frame, _kwargs in calls],
+            [0, 24, 48],
+        )
+
+        self.assertEqual(
+            calls[0][1]["audio"]["waveform"].shape[-1],
+            200,
+        )
+
+        self.assertEqual(calls[1][1]["image"].shape[0], 1)
+        self.assertEqual(calls[1][1]["vae"], "video-vae")
+
+        self.assertEqual(
+            calls[2][1]["audio"]["waveform"].shape[-1],
+            400,
+        )
 
 
 if __name__ == "__main__":
