@@ -197,8 +197,13 @@ export function newFl2vShot(overrides = {}) {
 }
 
 function shotFrameCount(shot, fps = 24) {
-    const sec = clamp(Number(shot?.durationSec) || defaultDurationSec("fl2v"), minDurationSec(), maxDurationSec());
-    return clamp(durationToMiniMaxFrames(sec, fps), minFrameCount("fl2v"), MAX_GEN_FRAMES);
+    const rate = Math.max(1, Number(fps) || 24);
+    const sec = clamp(
+        Number(shot?.durationSec) || defaultDurationSec("fl2v"),
+        minDurationSec(rate),
+        maxDurationSec(rate),
+    );
+    return clamp(durationToMiniMaxFrames(sec, rate), minFrameCount("fl2v"), MAX_GEN_FRAMES);
 }
 
 /** Migrate legacy flat segments/keyframes → shots[]. */
@@ -253,7 +258,8 @@ export function migrateLegacyFl2vToShots(timeline) {
         }
         let durationSec = Number(s.durationSec);
         if (!(durationSec > 0)) {
-            const fc = parseInt(s.frameCount ?? s.length, 10) || defaultFrameCount("fl2v");
+            const fc = parseInt(s.frameCount ?? s.length, 10)
+                || defaultFrameCount("fl2v", Math.max(1, Number(timeline?.frameRate) || 24));
             // Absorb end-only span for nicer migrate.
             let totalFc = Math.max(minFrameCount("fl2v"), fc);
             if (endImage && !f.isEnd) {
@@ -268,7 +274,10 @@ export function migrateLegacyFl2vToShots(timeline) {
                     }
                 }
             }
-            durationSec = preferredDurationSecFromFrames(totalFc, 24);
+            durationSec = preferredDurationSecFromFrames(
+                totalFc,
+                Math.max(1, Number(timeline?.frameRate) || 24),
+            );
         }
         shots.push(newFl2vShot({
             id: s.id,

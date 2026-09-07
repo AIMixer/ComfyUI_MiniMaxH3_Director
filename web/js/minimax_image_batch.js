@@ -60,6 +60,10 @@ function clamp(n, lo, hi) {
     return Math.max(lo, Math.min(hi, n));
 }
 
+function batchFrameRate(editor) {
+    return Math.max(1, Number(editor?.getFrameRate?.() || editor?.timeline?.frameRate || 24) || 24);
+}
+
 function _refHasImage(r) {
     return !!(r?.imageFile || r?.imageB64);
 }
@@ -314,13 +318,13 @@ export function wireMediaDuration(mediaEl, durEl, onReady) {
  * User-facing seconds (1 decimal). durationSec is the source of truth when set;
  * only fall back to frames for legacy rows that never stored durationSec.
  */
-function resolveSegmentDurationSec(seg, defFc) {
+function resolveSegmentDurationSec(seg, defFc, fps = 24) {
     if (seg.durationSec != null && Number.isFinite(Number(seg.durationSec))) {
-        const { durationSec } = durationToClampedMiniMaxFrames(seg.durationSec, 24);
+        const { durationSec } = durationToClampedMiniMaxFrames(seg.durationSec, fps);
         return durationSec;
     }
     const fc = parseInt(seg.frameCount ?? seg.length ?? seg._videoFrameCount ?? defFc, 10) || defFc;
-    return preferredDurationSecFromFrames(fc, 24);
+    return preferredDurationSecFromFrames(fc, fps);
 }
 
 /** Apply seconds to a segment by index (avoids stale closures after normalize). */
@@ -328,12 +332,13 @@ function applyBatchSegmentDuration(editor, index, rawSec) {
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
     const seg = editor.timeline.segments?.[index];
     if (!seg || !isVideoBatchTask(taskKey)) return null;
+    const fps = batchFrameRate(editor);
     const clamped = clamp(
         Number(rawSec) || defaultDurationSec(taskKey),
-        minDurationSec(),
-        maxDurationSec(),
+        minDurationSec(fps),
+        maxDurationSec(fps),
     );
-    const { frames, durationSec } = durationToClampedMiniMaxFrames(clamped, 24);
+    const { frames, durationSec } = durationToClampedMiniMaxFrames(clamped, fps);
     seg.durationSec = durationSec;
     seg.frameCount = frames;
     seg.length = frames;
@@ -793,7 +798,7 @@ export function ensureImageBatchTimeline(editor) {
     if (!isVideoBatchTask(taskKey)) {
         editor.timeline.output.exportMode = "all";
     }
-    const defFc = defaultFrameCount(taskKey);
+    const defFc = defaultFrameCount(taskKey, batchFrameRate(editor));
     if (taskKey === "i2v") {
         editor.timeline.video = {
             fileName: "",
@@ -807,6 +812,7 @@ export function ensureImageBatchTimeline(editor) {
     }
     if (!editor.timeline.segments?.length) {
         editor.timeline.segments = [newBatchSegment({
+            frameRate: batchFrameRate(editor),
             durationSec: defaultDurationSec(taskKey === "mixed" ? "t2v" : taskKey),
             ...(taskKey === "mixed" ? { taskType: "t2v" } : {}),
         })];
@@ -818,8 +824,8 @@ export function ensureImageBatchTimeline(editor) {
     for (const seg of editor.timeline.segments) {
         if (isVideoBatchTask(taskKey)) {
             const { frames, durationSec } = durationToClampedMiniMaxFrames(
-                resolveSegmentDurationSec(seg, defFc),
-                24,
+                resolveSegmentDurationSec(seg, defFc, batchFrameRate(editor)),
+                batchFrameRate(editor),
             );
             seg.durationSec = durationSec;
             seg.frameCount = frames;
@@ -851,7 +857,7 @@ export function normalizeImageBatchSegments(editor) {
     flushBatchPromptInputs(editor);
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
     const isVideo = isVideoBatchTask(taskKey);
-    const defFc = defaultFrameCount(taskKey);
+    const defFc = defaultFrameCount(taskKey, batchFrameRate(editor));
     const defSec = defaultDurationSec(taskKey);
     let start = 0;
     const segs = editor.timeline.segments || [];
@@ -859,15 +865,18 @@ export function normalizeImageBatchSegments(editor) {
     // same objects. Replacing with `{ ...seg }` orphans DOM writes and can
     // wipe group 5/6 prompts on the next sync/re-render.
     if (!segs.length) {
-        editor.timeline.segments = [newBatchSegment({ durationSec: defSec })];
+        editor.timeline.segments = [newBatchSegment({
+            frameRate: batchFrameRate(editor),
+            durationSec: defSec,
+        })];
     }
     for (const seg of editor.timeline.segments) {
         let fc = 1;
         let durationSec;
         if (isVideo) {
             const resolved = durationToClampedMiniMaxFrames(
-                clamp(resolveSegmentDurationSec(seg, defFc) || defSec, minDurationSec(), maxDurationSec()),
-                24,
+                clamp(resolveSegmentDurationSec(seg, defFc, batchFrameRate(editor)) || defSec, minDurationSec(batchFrameRate(editor)), maxDurationSec(batchFrameRate(editor))),
+                batchFrameRate(editor),
             );
             fc = resolved.frames;
             durationSec = resolved.durationSec;
@@ -909,6 +918,7 @@ export function addImageBatchGroup(editor) {
         ? resolveSegmentTaskKey(prev, taskKey)
         : "";
     editor.timeline.segments.push(newBatchSegment({
+        frameRate: batchFrameRate(editor),
         durationSec: defaultDurationSec(followType || taskKey),
         negativePrompt: "",
         ...(followType ? { taskType: followType } : {}),
@@ -2517,7 +2527,7 @@ function renderBatchGroupPicker(editor, ctx) {
         const meta = document.createElement("span");
         meta.className = "bd-batch-pick-meta";
         if (isVideo) {
-            const sec = resolveSegmentDurationSec(seg, defaultFrameCount(key));
+            const sec = resolveSegmentDurationSec(seg, defaultFrameCount(key, batchFrameRate(editor)), batchFrameRate(editor));
             meta.textContent = `${Number(sec).toFixed(1)}s`;
         } else {
             meta.textContent = `#${index + 1}`;
@@ -2764,14 +2774,15 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         if (isVideo) {
             const secRow = document.createElement("label");
             secRow.className = "bd-batch-fc";
-            const curSec = resolveSegmentDurationSec(seg, defaultFrameCount(key));
-            const { frames, durationSec: syncedSec } = durationToClampedMiniMaxFrames(curSec, 24);
-            const playSec = framesToDurationSec(frames, 24);
+            const fps = batchFrameRate(editor);
+            const curSec = resolveSegmentDurationSec(seg, defaultFrameCount(key, fps), fps);
+            const { frames, durationSec: syncedSec } = durationToClampedMiniMaxFrames(curSec, fps);
+            const playSec = framesToDurationSec(frames, fps);
             seg.durationSec = syncedSec;
             seg.frameCount = frames;
             seg.length = frames;
             seg._videoFrameCount = frames;
-            secRow.innerHTML = `${t("batch.seconds")} <input type="number" data-batch-sec-index="${index}" data-batch-seg-id="${seg.id || ""}" min="${minDurationSec()}" max="${maxDurationSec()}" step="0.1" value="${seg.durationSec}" title="${t("batch.durationTooltip", { frames, play: playSec })}">`;
+            secRow.innerHTML = `${t("batch.seconds")} <input type="number" data-batch-sec-index="${index}" data-batch-seg-id="${seg.id || ""}" min="${minDurationSec(fps)}" max="${maxDurationSec(fps)}" step="0.1" value="${seg.durationSec}" title="${t("batch.durationTooltip", { frames, play: playSec })}">`;
             const secInput = secRow.querySelector("input");
             // Do not rewrite value/title while focused: frame snapping would
             // bounce 20.7↔20.5 and interrupt typing. Normalize on blur.
@@ -2781,7 +2792,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                 const updated = applyBatchSegmentDuration(editor, index, secInput.value);
                 if (!updated) return;
                 if (!secFocused) {
-                    const play = framesToDurationSec(updated.frameCount, 24);
+                    const play = framesToDurationSec(updated.frameCount, batchFrameRate(editor));
                     secInput.value = String(updated.durationSec);
                     secInput.title = t("batch.durationTooltip", {
                         frames: updated.frameCount,
