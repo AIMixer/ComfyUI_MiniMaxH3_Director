@@ -792,45 +792,54 @@ def execute_director_plan_core(
                 audio_mode != AUDIO_MODE_MUTE
                 and (prev_av is not None or prev_audio is not None)
             )
+            # 两种引导方式都先注入官方 Guide 关键帧（把上一段 AV 尾部作为视觉/音频条件钉在
+            # 上下文头部，H3 据此"续"真实帧）。这是画面与声音跨段连续的锚点——硬锁引导，
+            # 与 denoise_mask 相互独立（掩码只重映射目标行时间步，关键帧条件行始终被钉住）。
+            positive, trim_frames, prev_export_trim = apply_motion_context(
+                positive,
+                latent,
+                vae=vae,
+                context_length=context_n,
+                context_latent=prev_av,
+                context_frames=prev_tail,
+                # Always pass export audio so a canvas-mismatch fallback
+                # (Refine upscale) can still pin audio from the decoded tail.
+                context_audio=prev_audio,
+                audio_vae=audio_vae,
+                continue_audio=pin_audio,
+                # t2v/i2v/r2v/v2v/rv2v: context owns the head.
+                # fl2v keeps last_frame, marked so origin-shift retiming can move it.
+                keep_existing_keyframes=(seg.task_key == "fl2v"),
+                context_end_frame=prev_end_frame,
+                audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
+            )
             if is_continue_mode(plan):
+                # 引导+重绘：在官方 Guide 关键帧之上，把上一段尾巴写进下一段 latent 头部并加
+                # 软掩码，让接缝桥接帧按「重绘幅度」部分重画（越大越松、越重画；越小越接近
+                # 硬锁引导）。关键帧条件保证连续性，软掩码只放松桥接帧，避免硬锁长链的冻结/
+                # 跳动。音频已由上面的 Guide 条件钉住，这里 pin_audio=False / context_audio=None
+                # 不重复钉（音频掩码保持全 1，交由条件生成）。
                 from .h3_latent_continue import (
                     apply_latent_continue,
                     install_continue_prefix_remask,
                 )
 
-                latent, trim_frames, prev_export_trim = apply_latent_continue(
+                latent, _cont_trim, _cont_prev_trim = apply_latent_continue(
                     latent,
                     prev_av=prev_av,
                     prev_tail=prev_tail,
                     vae=vae,
                     context_length=context_n,
                     context_end_frame=prev_end_frame,
-                    pin_audio=pin_audio,
-                    context_audio=prev_audio,
+                    pin_audio=False,
+                    context_audio=None,
                     audio_vae=audio_vae,
                     audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
                     seam_min_mask=getattr(plan, "continuity_redraw", 0.65),
                 )
+                # 裁剪量以 Guide 的为准：两者同源（同一 context span），数值一致。
+                del _cont_trim, _cont_prev_trim
                 after_shift = install_continue_prefix_remask
-            else:
-                positive, trim_frames, prev_export_trim = apply_motion_context(
-                    positive,
-                    latent,
-                    vae=vae,
-                    context_length=context_n,
-                    context_latent=prev_av,
-                    context_frames=prev_tail,
-                    # Always pass export audio so a canvas-mismatch fallback
-                    # (Refine upscale) can still pin audio from the decoded tail.
-                    context_audio=prev_audio,
-                    audio_vae=audio_vae,
-                    continue_audio=pin_audio,
-                    # t2v/i2v/r2v/v2v/rv2v: context owns the head.
-                    # fl2v keeps last_frame, marked so origin-shift retiming can move it.
-                    keep_existing_keyframes=(seg.task_key == "fl2v"),
-                    context_end_frame=prev_end_frame,
-                    audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
-                )
             # Phase-align can pin a few frames before the previous export end.
             # Drop that orphaned tail so concat does not replay it at the seam.
             trimmed_prev_export = 0
@@ -988,7 +997,7 @@ def execute_director_plan_core(
             handoff_label = "guide+redraw" if is_continue_mode(plan) else "guide"
             task_hint = f"{task_hint} + {handoff_label} {trim_frames}f"
             remask_note = (
-                f"(redraw {float(getattr(plan, 'continuity_redraw', 0.65)):.2f}, no cond-pin) "
+                f"(redraw {float(getattr(plan, 'continuity_redraw', 0.65)):.2f} over Guide) "
                 if is_continue_mode(plan)
                 else ""
             )

@@ -2,8 +2,13 @@
 
 Writes the previous sampled MiniMax H3 AV tail into the next empty latent and
 builds a NestedTensor noise mask. Optional per-step prefix remask lives on a
-cloned MODEL after SigmaShift. Does not install h3_context_patches and must
-not be stacked with apply_motion_context.
+cloned MODEL after SigmaShift.
+
+「引导+重绘」模式下本模块与 ``apply_motion_context`` 叠加使用：后者注入官方 Guide
+关键帧（条件钉，负责跨段连续），本模块只在 latent 侧写尾巴 + 软掩码（让桥接帧按
+重绘幅度部分重画）。H3 的 denoise_mask 仅重映射目标行时间步，关键帧条件行始终被
+钉在 VISUAL_COND_TIMESTEP，二者相互独立、可安全叠加。本模块不安装 h3_context_patches
+（由 apply_motion_context 负责，全局只装一次）。
 """
 
 from __future__ import annotations
@@ -30,7 +35,8 @@ from .h3_motion_context import (
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.h3_latent_continue")
 
-CONTINUE_PIPELINE_ID = "minimax_h3_latent_continue_v3"
+# v4：「引导+重绘」改为在官方 Guide 关键帧之上叠加 latent 软掩码（v3 无关键帧、跨段断续）。
+CONTINUE_PIPELINE_ID = "minimax_h3_latent_continue_v4"
 PREFIX_STEPS_KEY = "_director_continue_prefix_steps"
 CONTINUE_SEAM_KEY = "_director_continue_seam_min"
 SEAM_TAPER_TOKENS = 4
@@ -286,7 +292,8 @@ def apply_latent_continue(
     out[CONTINUE_SEAM_KEY] = float(seam)
     log.info(
         "Director continue: wrote %d video tokens (%s, %df) + %d audio ticks; "
-        "prefix mask head=%.2f seam=%.2f (floor=%.2f, no cond-pin); "
+        "prefix mask head=%.2f seam=%.2f (floor=%.2f, latent-mask only; "
+        "continuity anchor comes from Guide keyframes); "
         "trim=%df prev_export_trim=%df",
         t_tail,
         video_src,

@@ -467,14 +467,20 @@ def apply_segment_refine(
     task_key = str(getattr(seg, "task_key", "") or "")
     from .segment_continuity import is_continue_mode
 
-    # Continue first-pass remask must not leak into refine (no guide re-pin).
-    if is_continue_mode(plan):
-        pin_frames = 0
-        note_parts.append("continue: no refine re-pin")
+    # 引导+重绘：首遍的软重绘 noise_mask 只是生成期控制，不随 refine/放大复用（画布变化后
+    # 形状也会失配）。连续性现在由 Guide 关键帧提供（与硬锁引导同一路径），故保留
+    # pin_frames 让 upscale 的 _repin_after_upscale 重新钉运动上下文，但丢弃首遍 latent
+    # mask，避免陈旧重绘掩码泄漏进二遍。
+    continue_mode = is_continue_mode(plan)
+    if continue_mode:
+        note_parts.append("continue: guide re-pin, drop redraw mask")
 
     # Same-size refine keeps any first-pass mask so a continuity lock still holds.
-    # No continuity → drop stray masks so refine can touch the whole clip.
-    work = dict(samples) if pin_frames > 0 else _latent_without_mask(samples)
+    # 引导+重绘：首遍 mask 丢弃（改由 Guide 条件钉）；无连续性：丢弃杂散 mask。
+    if pin_frames > 0 and not continue_mode:
+        work = dict(samples)
+    else:
+        work = _latent_without_mask(samples)
     refine_positive = positive
     last_ok = samples
     try:
