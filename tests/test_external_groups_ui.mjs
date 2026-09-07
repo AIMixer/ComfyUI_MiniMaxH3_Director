@@ -4,6 +4,23 @@ import vm from "node:vm";
 
 const batchSource = fs.readFileSync("web/js/minimax_image_batch.js", "utf8");
 const timelineSource = fs.readFileSync("web/js/minimax_timeline.js", "utf8");
+
+// The visible prompt surface is a contenteditable token editor. Keep all
+// interactive descendants out of the card-selection click path so clicking
+// them cannot select/re-render the card underneath and steal focus.
+const cardClick = batchSource.match(/card\.onclick = \(e\) => \{[\s\S]*?\n        \};/)[0];
+for (const selector of [
+    '[contenteditable="true"]',
+    ".bd-token-wrap",
+    ".bd-token-editor",
+    "button",
+    "input",
+    "textarea",
+    "select",
+]) {
+    assert.ok(cardClick.includes(selector), `batch card click guard must exclude ${selector}`);
+}
+
 const noop = () => {};
 const context = vm.createContext({
     resolveTaskKey: (value) => value,

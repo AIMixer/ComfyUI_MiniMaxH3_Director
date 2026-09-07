@@ -2660,7 +2660,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         if (runSelectOn && runEnabled) card.classList.add("run-on");
         if (runSelectOn && !runEnabled) card.classList.add("run-skipped");
         card.onclick = (e) => {
-            if (e.target.closest?.("button, input, textarea, select, .bd-batch-ref, .bd-batch-audio, .bd-batch-video, .bd-batch-src, .bd-r2v-section, .bd-r2v-play, .bd-fl2v-slot, .bd-fl2v-slot-wrap, .x, video, audio")) {
+            if (e.target.closest?.('button, input, textarea, select, [contenteditable="true"], .bd-token-wrap, .bd-token-editor, .bd-batch-ref, .bd-batch-audio, .bd-batch-video, .bd-batch-src, .bd-r2v-section, .bd-r2v-play, .bd-fl2v-slot, .bd-fl2v-slot-wrap, .x, video, audio')) {
                 return;
             }
             selectBatchGroup(editor, index);
