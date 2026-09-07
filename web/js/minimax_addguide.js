@@ -286,12 +286,18 @@ function displayTime(frame) {
 /** Prompt @ menu entries. Anchors are plain timing prose, not Picture tokens. */
 export function getAddGuidePromptMentions(seg) {
     normalizeAddGuideSegment(seg);
-    const count = Math.max(1, Number.parseInt(seg?.frameCount ?? seg?.length, 10) || 1);
+
+    const count = Math.max(
+        1,
+        Number.parseInt(seg?.frameCount ?? seg?.length, 10) || 1,
+    );
     const last = count - 1;
     const items = [];
-    const append = (name, frame, ref) => {
+
+    const appendPicture = (name, frame, ref) => {
         const image = imageRef(ref);
         if (!image) return;
+
         items.push({
             kind: "guide",
             label: `${name} · F${frame} · ${displayTime(frame)}`,
@@ -299,22 +305,59 @@ export function getAddGuidePromptMentions(seg) {
             thumb: viewUrl(image),
         });
     };
-    append(t("addguide.first"), 0, startRef(seg));
-    const guides = [...(seg.timedGuides || [])].sort((a, b) => Number(a.frameIndex) - Number(b.frameIndex));
+
+    const appendAudio = (name, frame, ref) => {
+        const audio = audioRef(ref);
+        if (!audio) return;
+
+        items.push({
+            kind: "audio",
+            label: `${name} · F${frame} · ${displayTime(frame)}`,
+            tag: `At ${displayTime(frame)},`,
+            thumb: "",
+        });
+    };
+
+    appendPicture(
+        t("addguide.first"),
+        0,
+        startRef(seg),
+    );
+
+    const guides = [...(seg.timedGuides || [])]
+        .sort((a, b) => Number(a.frameIndex) - Number(b.frameIndex));
+
     guides.forEach((guide, index) => {
         const frame = Number(guide.frameIndex);
         if (!Number.isInteger(frame)) return;
-        append(
+
+        appendPicture(
             t("addguide.guide", { n: index + 1 }),
             frame,
             guide.image,
         );
     });
-    append(
+
+    const audioGuides = [...(seg.timedAudioGuides || [])]
+        .sort((a, b) => Number(a.frameIndex) - Number(b.frameIndex));
+
+    audioGuides.forEach((guide, index) => {
+        const frame = Number(guide.frameIndex);
+        if (!Number.isInteger(frame)) return;
+
+        appendAudio(
+            t("addguide.audioGuide", { n: index + 1 }),
+            frame,
+            guide.audio,
+        );
+    });
+
+    appendPicture(
         t("addguide.last"),
         last,
         endRef(seg),
     );
+
     return items;
 }
 

@@ -2214,7 +2214,6 @@ class MiniMaxH3DirectorEditor {
         this.updateExternalGroupsBanner();
         if (resolveTaskKey(this.getTaskKey?.() || this.taskTypeWidget?.value) === "addguide") {
             this._externalGroupsSyncSig = null;
-            this.renderImageBatchGroups?.();
             return;
         }
         // Keep any in-progress Director textarea edits before rebuilding from graph.
