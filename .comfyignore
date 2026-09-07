@@ -1,0 +1,11 @@
+# Keep the published archive to runtime + docs users need.
+.github/
+.cursor/
+*.cursor*
+_seam_probe/
+_seam_probe_*/
+.minimax_seg_cache/
+.bernini_seg_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/

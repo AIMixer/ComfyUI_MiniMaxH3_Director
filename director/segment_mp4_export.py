@@ -202,3 +202,30 @@ def copy_segment_mp4_suffix(
             exc,
         )
         return None
+
+
+def is_released_poster(tensor, expected_frames: int) -> bool:
+    """True when IMAGE slot was replaced by a 1-frame stand-in after mp4 flush."""
+    if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
+        return False
+    expected = int(expected_frames or 0)
+    got = int(tensor.shape[0])
+    return expected > 1 and got < expected
+
+
+def released_output_slots(segment_outputs: list, frame_counts: list[int] | None) -> list[int]:
+    """Indexes whose IMAGE slot is a poster; full clip is already on disk."""
+    counts = frame_counts or []
+    out: list[int] = []
+    for pos, tensor in enumerate(segment_outputs):
+        expected = int(counts[pos]) if pos < len(counts) else 0
+        if is_released_poster(tensor, expected):
+            out.append(pos)
+            continue
+        if not isinstance(tensor, torch.Tensor) or tensor.ndim != 4:
+            out.append(pos)
+            continue
+        # 1x1 / odd-tiny leftovers encode to H.264 that Movies & TV rejects (0x80004005).
+        if int(tensor.shape[1]) < 2 or int(tensor.shape[2]) < 2:
+            out.append(pos)
+    return out

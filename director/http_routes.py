@@ -543,7 +543,6 @@ async def minimax_first_pass_cache_status(request):
             height=int(body.get("height") or 480),
             ref_max_size=int(body.get("ref_max_size") or 864),
         )
-        plan.sample_seed = int(body.get("seed") or 0)
         plan.sample_cfg = float(body.get("cfg") or 1.0)
         plan.sample_steps = int(body.get("steps") or 25)
         plan.sample_sampler = str(body.get("sampler") or "")
@@ -592,7 +591,7 @@ async def minimax_first_pass_cache_status(request):
 
 
 async def minimax_clear_segment_cache(request):
-    """Delete cached segment files for a Director node (一采 / 二采 / all)."""
+    """Delete first-pass (.pre.*) or final segment cache files."""
     try:
         body = await request.json()
     except Exception as exc:
@@ -602,7 +601,7 @@ async def minimax_clear_segment_cache(request):
     if not re.fullmatch(r"\d+", node_id):
         return web.Response(status=400, text="Invalid Director node id.")
 
-    kind = str(body.get("kind") or "all").strip().lower()
+    kind = str(body.get("kind") or "final").strip().lower()
     if kind not in {"first_pass", "final", "all"}:
         return web.Response(status=400, text="kind must be first_pass, final or all.")
 

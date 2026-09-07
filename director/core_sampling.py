@@ -53,6 +53,7 @@ def sample_single_stage(
     phase_name: str = "sample",
     sigmas=None,
     apply_shift: bool = True,
+    after_shift=None,
 ):
     import torch
     from comfy_extras.nodes_custom_sampler import (
@@ -86,6 +87,11 @@ def sample_single_stage(
             model_use, str(scheduler), int(steps), denoise_use
         )
         sigma_t = _unpack_node_output(sigma_out)[0]
+
+    if callable(after_shift):
+        remasked = after_shift(model_use, latent, sigma_t)
+        if remasked is not None:
+            model_use = remasked
 
     sampler_obj = _unpack_node_output(KSamplerSelect.execute(str(sampler_name)))[0]
     noise_obj = _unpack_node_output(RandomNoise.execute(int(seed)))[0]

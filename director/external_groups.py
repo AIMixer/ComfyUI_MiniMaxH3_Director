@@ -289,6 +289,12 @@ def validate_external_group_inputs(
     if not i2v and not r2v:
         return task_key, None, None
 
+    if task_key == "mixed":
+        raise ValueError(
+            "MiniMax H3 Director: mixed mode does not use i2v_groups / r2v_groups. "
+            "Switch task_type back to t2v / i2v / fl2v / r2v, or disconnect the Group input."
+        )
+
     if i2v:
         if task_key not in I2V_FAMILY:
             raise ValueError(
@@ -602,11 +608,17 @@ def build_plan_from_external_groups(
     raw["totalFrames"] = total
     raw["editMode"] = "segment"
 
-    from .segment_continuity import resolve_continuity_settings
+    from .segment_continuity import (
+        resolve_continuity_mode,
+        resolve_continuity_redraw,
+        resolve_continuity_settings,
+    )
 
     continuity_enabled, continuity_overlap = resolve_continuity_settings(
         timeline, segment_count=len(segments)
     )
+    continuity_mode = resolve_continuity_mode(timeline)
+    continuity_redraw = resolve_continuity_redraw(timeline)
 
     return DirectorPlan(
         frame_rate=fps,
@@ -629,5 +641,7 @@ def build_plan_from_external_groups(
         run_indices=run_indices,
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        continuity_mode=continuity_mode,
+        continuity_redraw=continuity_redraw,
         global_ref_audios=list(common_audios_raw) if family == "r2v" else [],
     )

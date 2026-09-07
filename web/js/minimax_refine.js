@@ -372,6 +372,8 @@ const CACHE_DIFF_LABELS = {
     source_video: "源视频",
     continuity: "段间连续性",
     continuity_overlap: "上下文帧数",
+    continuity_mode: "引导方式",
+    continuity_redraw: "重绘幅度",
     cfg: "CFG",
     steps: "一采步数",
     sampler: "一采采样器",
@@ -494,7 +496,7 @@ function renderCacheStatus(node, data, kind = "normal") {
 }
 
 async function refreshFirstPassCacheStatus(node) {
-    if (!isRefineNode(node) || !boolWidgetValue(node, "confirm_first_pass")) return;
+    if (!isRefineNode(node)) return;
     ensureFirstPassCacheUI(node);
     const director = connectedDirector(node);
     if (!director) {
@@ -503,7 +505,7 @@ async function refreshFirstPassCacheStatus(node) {
     }
     const seq = (node._mmxCacheStatusSeq || 0) + 1;
     node._mmxCacheStatusSeq = seq;
-    renderCacheStatus(node, "正在检查一采缓存…", "muted");
+    renderCacheStatus(node, "正在检查分段缓存…", "muted");
     try {
         const response = await api.fetchApi("/minimax/director/first_pass_cache_status", {
             method: "POST",
@@ -566,7 +568,6 @@ function refreshCacheStatusForDirector(director, delay = 120) {
     for (const node of graphNodes()) {
         if (
             isRefineNode(node)
-            && boolWidgetValue(node, "confirm_first_pass")
             && connectedDirector(node) === director
         ) {
             scheduleCacheStatusRefresh(node, delay);
@@ -635,6 +636,7 @@ function ensureFirstPassCacheUI(node) {
         root, body, refresh, widget, clearFirstPassBtn, clearFinalBtn,
     };
 }
+
 function syncRefineWidgetVisibility(node) {
     const mode = readMode(node);
     const upscale = mode === "upscale";
@@ -663,9 +665,8 @@ function syncRefineWidgetVisibility(node) {
     setWidgetVisible(node, "seed_mode", !latentOnly);
     setWidgetVisible(node, "target_width", false);
     setWidgetVisible(node, "target_height", false);
-    const confirm = boolWidgetValue(node, "confirm_first_pass");
-    if (confirm) ensureFirstPassCacheUI(node);
-    setWidgetVisible(node, CACHE_STATUS_WIDGET, confirm);
+    ensureFirstPassCacheUI(node);
+    setWidgetVisible(node, CACHE_STATUS_WIDGET, true);
     if (needsCanvas && !follow && !custom) syncRefineComputedSize(node);
     try {
         const size = node.computeSize?.();
@@ -692,6 +693,7 @@ function hookWidget(node, name, fn) {
     };
 }
 
+
 function installRefineResolutionUI(node) {
     const onAspect = () => {
         const aspectW = widgetByName(node, "aspect_ratio");
@@ -717,9 +719,7 @@ function installRefineResolutionUI(node) {
     });
     hookWidget(node, "confirm_first_pass", () => {
         syncRefineWidgetVisibility(node);
-        if (boolWidgetValue(node, "confirm_first_pass")) {
-            scheduleCacheStatusRefresh(node, 0);
-        }
+        scheduleCacheStatusRefresh(node, 0);
     });
     if (!node._mmxRefineOnWidgetChanged) {
         node._mmxRefineOnWidgetChanged = true;
@@ -740,7 +740,7 @@ function refreshRefineNode(node) {
     installRefineResolutionUI(node);
     migrateRefineWidgets(node);
     syncRefineWidgetVisibility(node);
-    if (boolWidgetValue(node, "confirm_first_pass")) scheduleCacheStatusRefresh(node);
+    scheduleCacheStatusRefresh(node);
 }
 
 function refreshAllRefineNodes() {
@@ -757,6 +757,7 @@ function scheduleRefineRefresh(node) {
     setTimeout(() => refreshRefineNode(node), 80);
     setTimeout(() => refreshRefineNode(node), 250);
 }
+
 
 app.registerExtension({
     name: "ComfyUI.MiniMaxH3DirectorRefine",
@@ -818,7 +819,7 @@ app.registerExtension({
 
 api.addEventListener?.("executed", () => {
     for (const node of graphNodes()) {
-        if (isRefineNode(node) && boolWidgetValue(node, "confirm_first_pass")) {
+        if (isRefineNode(node)) {
             scheduleCacheStatusRefresh(node, 250);
         }
     }
