@@ -1077,6 +1077,13 @@ def execute_director_plan_core(
         first_pass_gpu = None
         pre_export = None
         run_refine = will_refine and not hold_after_first
+        # In "confirm first pass" mode the next operation is a full VAE
+        # decode of the same latent.  On 12 GB cards, keeping the sampled
+        # UNet resident forces that decode to page through host RAM for many
+        # minutes.  The model is no longer needed until the user queues the
+        # separate second pass, so release it before the preview/cache decode.
+        if hold_after_first:
+            cleanup_segment_vram(enabled=True, unload_models=True)
         if will_refine:
             cached_frames = pre_cache.get("frames") if skip_first_sample else None
             if isinstance(cached_frames, torch.Tensor) and cached_frames.numel() > 0:

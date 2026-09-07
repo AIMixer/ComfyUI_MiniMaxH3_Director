@@ -1,0 +1,2133 @@
+{
+  "id": "minimax-h3-director-t2v",
+  "revision": 0,
+  "last_node_id": 27,
+  "last_link_id": 38,
+  "nodes": [
+    {
+      "id": 2,
+      "type": "CLIPLoader",
+      "pos": [
+        -720,
+        220
+      ],
+      "size": [
+        360,
+        106
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "clip_name",
+          "localized_name": "CLIP名称",
+          "name": "clip_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "clip_name"
+          }
+        },
+        {
+          "label": "type",
+          "localized_name": "类型",
+          "name": "type",
+          "type": "COMBO",
+          "widget": {
+            "name": "type"
+          }
+        },
+        {
+          "label": "device",
+          "localized_name": "设备",
+          "name": "device",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "device"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "CLIP",
+          "localized_name": "CLIP",
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            16
+          ]
+        }
+      ],
+      "title": "CLIP (minimax / Qwen3-VL)",
+      "properties": {
+        "Node name for S&R": "CLIPLoader",
+        "models": [
+          {
+            "name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+            "directory": "text_encoders"
+          }
+        ],
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {
+            "clip_name": true,
+            "type": true,
+            "device": true
+          }
+        }
+      },
+      "widgets_values": [
+        "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "minimax",
+        "default"
+      ],
+      "widgets_values_named": {
+        "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "type": "minimax",
+        "device": "default"
+      }
+    },
+    {
+      "id": 3,
+      "type": "VAELoader",
+      "pos": [
+        -720,
+        380
+      ],
+      "size": [
+        360,
+        58
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "vae_name",
+          "localized_name": "vae名称",
+          "name": "vae_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "vae_name"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "VAE",
+          "localized_name": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            15
+          ]
+        }
+      ],
+      "title": "Video VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "minimax_h3_video_vae_fp16.safetensors",
+            "directory": "vae"
+          }
+        ],
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {
+            "vae_name": true
+          }
+        }
+      },
+      "widgets_values": [
+        "minimax_h3_video_vae_fp16.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+      }
+    },
+    {
+      "id": 4,
+      "type": "VAELoader",
+      "pos": [
+        -720,
+        500
+      ],
+      "size": [
+        360,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "vae_name",
+          "localized_name": "vae名称",
+          "name": "vae_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "vae_name"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "VAE",
+          "localized_name": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            13
+          ]
+        }
+      ],
+      "title": "Audio VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "minimax_h3_audio_vae_fp32.safetensors",
+            "directory": "vae"
+          }
+        ],
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {
+            "vae_name": true
+          }
+        }
+      },
+      "widgets_values": [
+        "minimax_h3_audio_vae_fp32.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+      }
+    },
+    {
+      "id": 6,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        906.8179931640625,
+        343.6641540527344
+      ],
+      "size": [
+        280,
+        126
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "图像",
+          "localized_name": "图像",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 17
+        },
+        {
+          "label": "音频",
+          "localized_name": "音频",
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 18
+        },
+        {
+          "label": "批次管理",
+          "localized_name": "批次管理",
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "localized_name": "vae",
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "label": "帧率",
+          "localized_name": "帧率",
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          },
+          "link": 19
+        },
+        {
+          "label": "循环次数",
+          "localized_name": "循环次数",
+          "name": "loop_count",
+          "type": "INT",
+          "widget": {
+            "name": "loop_count"
+          },
+          "link": null
+        },
+        {
+          "label": "文件名前缀",
+          "localized_name": "文件名前缀",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": null
+        },
+        {
+          "label": "格式",
+          "localized_name": "格式",
+          "name": "format",
+          "type": "COMBO",
+          "widget": {
+            "name": "format"
+          },
+          "link": null
+        },
+        {
+          "label": "乒乓播放",
+          "localized_name": "乒乓播放",
+          "name": "pingpong",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "pingpong"
+          },
+          "link": null
+        },
+        {
+          "label": "保存输出",
+          "localized_name": "保存输出",
+          "name": "save_output",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "save_output"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "CreateVideo",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {
+            "fps": true,
+            "bit_depth": true
+          }
+        }
+      },
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "视频/MiniMax-H3/%date:yyyy-MM-dd%/MiniMax-H3视频",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true
+      },
+      "widgets_values_named": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "视频/MiniMax-H3/%date:yyyy-MM-dd%/MiniMax-H3视频",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true
+      },
+      "title": "VHS 快速导出（与 1143 相同）"
+    },
+    {
+      "id": 8,
+      "type": "PreviewAny",
+      "pos": [
+        906.3310546875,
+        91.73081970214844
+      ],
+      "size": [
+        640,
+        200
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "source",
+          "localized_name": "源",
+          "name": "source",
+          "type": "*",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "label": "STRING",
+          "localized_name": "字符串",
+          "name": "STRING",
+          "type": "STRING"
+        }
+      ],
+      "title": "多段连续运行报告",
+      "properties": {
+        "Node name for S&R": "PreviewAny",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 16,
+      "type": "ModelAttentionBackend",
+      "pos": [
+        394.3090515136719,
+        -170.26904296875
+      ],
+      "size": [
+        357.1148376464844,
+        26
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "模型",
+          "name": "model",
+          "type": "MODEL",
+          "link": 36
+        },
+        {
+          "label": "attention",
+          "localized_name": "注意力",
+          "name": "attention",
+          "type": "COMBO",
+          "widget": {
+            "name": "attention"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            23,
+            29
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ModelAttentionBackend",
+        "cnr_id": "comfy-kitchen",
+        "ver": "1.0"
+      },
+      "title": "快速注意力｜comfy kitchen（与 1143 相同）",
+      "widgets_values": [
+        "comfy kitchen attention"
+      ],
+      "widgets_values_named": {
+        "attention": "comfy kitchen attention"
+      }
+    },
+    {
+      "id": 19,
+      "type": "UpscaleModelLoader",
+      "pos": [
+        -1612.1768798828125,
+        1032.757080078125
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "model_name",
+          "localized_name": "模型名称",
+          "name": "model_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "model_name"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "UPSCALE_MODEL",
+          "localized_name": "放大模型",
+          "name": "UPSCALE_MODEL",
+          "type": "UPSCALE_MODEL",
+          "links": [
+            25
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UpscaleModelLoader",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "4x-UltraSharp.pth"
+      ],
+      "widgets_values_named": {
+        "model_name": "4x-UltraSharp.pth"
+      }
+    },
+    {
+      "id": 17,
+      "type": "PathchSageAttentionKJ",
+      "title": "已停用：Sage Attention（改用 1143 快速注意力）",
+      "pos": [
+        105.66401672363281,
+        -182.46041870117188
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": null
+        },
+        {
+          "label": "sage_attention",
+          "localized_name": "sage_attention",
+          "name": "sage_attention",
+          "type": "COMBO",
+          "widget": {
+            "name": "sage_attention"
+          }
+        },
+        {
+          "label": "allow_compile",
+          "localized_name": "allow_compile",
+          "name": "allow_compile",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "allow_compile"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PathchSageAttentionKJ",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "sageattn3",
+        true
+      ],
+      "widgets_values_named": {
+        "sage_attention": "sageattn3",
+        "allow_compile": true
+      }
+    },
+    {
+      "id": 22,
+      "type": "PathchSageAttentionKJ",
+      "pos": [
+        -1965.6260986328125,
+        1119.370849609375
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 31
+        },
+        {
+          "label": "sage_attention",
+          "localized_name": "sage_attention",
+          "name": "sage_attention",
+          "type": "COMBO",
+          "widget": {
+            "name": "sage_attention"
+          }
+        },
+        {
+          "label": "allow_compile",
+          "localized_name": "allow_compile",
+          "name": "allow_compile",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "allow_compile"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            27
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PathchSageAttentionKJ",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "sageattn3",
+        true
+      ],
+      "widgets_values_named": {
+        "sage_attention": "sageattn3",
+        "allow_compile": true
+      },
+      "title": "已停用：旧 FL2VA 二采 Sigma 链（改为复用 Singularity）"
+    },
+    {
+      "id": 27,
+      "type": "MiniMaxH3TurboLoRA",
+      "pos": [
+        -567.4475138809595,
+        -556.8441123325275
+      ],
+      "size": [
+        421.523046875,
+        118.1103286743164
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 37
+        },
+        {
+          "label": "lora_name",
+          "localized_name": "lora_name",
+          "name": "lora_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "lora_name"
+          },
+          "link": null
+        },
+        {
+          "label": "strength_model",
+          "localized_name": "strength",
+          "name": "strength",
+          "type": "FLOAT",
+          "widget": {
+            "name": "strength"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "low_vram",
+          "name": "low_vram",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "low_vram"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            38
+          ]
+        }
+      ],
+      "title": "已禁用：600-step Turbo LoRA（稳定版只保留一条 Turbo）",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3TurboLoRA",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "minimax_h3_turbo_v4_step600_ema.safetensors",
+        0,
+        false
+      ],
+      "widgets_values_named": {
+        "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors",
+        "strength": 0,
+        "low_vram": false
+      }
+    },
+    {
+      "id": 13,
+      "type": "MarkdownNote",
+      "pos": [
+        -623.3428955078125,
+        1033.3223876953125
+      ],
+      "size": [
+        300,
+        512
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Note: Size Settings Reference",
+      "properties": {
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "| megapixels | Aspect | Output (multiple=32) |\n|---|---|---|\n| 0.2 | 16:9 | 608 x 352 |\n| 0.3 | 16:9 | 736 x 416 |\n| 0.4 | 16:9 | 864 x 480 |\n| 0.5 | 16:9 | 960 x 544 |\n| 0.6 | 16:9 | 1056 x 608 |\n| 0.7 | 16:9 | 1152 x 640 |\n| 0.8 | 16:9 | 1216 x 672 |\n| 0.9 | 16:9 | 1280 x 736 |\n| 0.98 | 16:9 | 1344 x 768 |\n| 1.0 | 16:9 | 1376 x 768 |\n| 1.2 | 16:9 | 1504 x 832 |\n| 1.5 | 16:9 | 1664 x 928 |\n| 1.8 | 16:9 | 1824 x 1024 |\n| 2.0 | 16:9 | 1920 x 1088 |\n"
+      ],
+      "widgets_values_named": {
+        "text": "| megapixels | Aspect | Output (multiple=32) |\n|---|---|---|\n| 0.2 | 16:9 | 608 x 352 |\n| 0.3 | 16:9 | 736 x 416 |\n| 0.4 | 16:9 | 864 x 480 |\n| 0.5 | 16:9 | 960 x 544 |\n| 0.6 | 16:9 | 1056 x 608 |\n| 0.7 | 16:9 | 1152 x 640 |\n| 0.8 | 16:9 | 1216 x 672 |\n| 0.9 | 16:9 | 1280 x 736 |\n| 0.98 | 16:9 | 1344 x 768 |\n| 1.0 | 16:9 | 1376 x 768 |\n| 1.2 | 16:9 | 1504 x 832 |\n| 1.5 | 16:9 | 1664 x 928 |\n| 1.8 | 16:9 | 1824 x 1024 |\n| 2.0 | 16:9 | 1920 x 1088 |\n"
+      },
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 26,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        -57.85206373405515,
+        -492.0136287467803
+      ],
+      "size": [
+        407.0257568359375,
+        118.1103286743164
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "模型",
+          "name": "model",
+          "type": "MODEL",
+          "link": 38
+        },
+        {
+          "label": "lora_name",
+          "localized_name": "LoRA名称",
+          "name": "lora_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "lora_name"
+          },
+          "link": null
+        },
+        {
+          "label": "strength_model",
+          "localized_name": "模型强度",
+          "name": "strength_model",
+          "type": "FLOAT",
+          "widget": {
+            "name": "strength_model"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            36
+          ]
+        }
+      ],
+      "title": "已禁用：电影 LoRA（稳定版只保留一条 Turbo）",
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "Minimax H3真实电影质感V0.1（解决张量报错）.safetensors",
+        0
+      ],
+      "widgets_values_named": {
+        "lora_name": "Minimax H3真实电影质感V0.1（解决张量报错）.safetensors",
+        "strength_model": 0
+      }
+    },
+    {
+      "id": 14,
+      "type": "MarkdownNote",
+      "pos": [
+        -812.7235717773438,
+        662.2625732421875
+      ],
+      "size": [
+        473.34405517578125,
+        304.1041564941406
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "温馨提示",
+      "properties": {
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "MiniMaxH3导演台插件地址：https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director\n\n如果使用r2v\\v2v\\rv2v，需要将底膜换成ref2va\n\n如果使用t2v\\i2v\\fl2v，需要将底膜换成fl2va\n\n视频教程：https://www.bilibili.com/video/BV1Tquc6gERB/\n\n粉丝福利：点击\"右上角自己的头像\">邀请码>填写邀请码：【zedwxo2q】送1000RH币\n"
+      ],
+      "widgets_values_named": {
+        "text": "MiniMaxH3导演台插件地址：https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director\n\n如果使用r2v\\v2v\\rv2v，需要将底膜换成ref2va\n\n如果使用t2v\\i2v\\fl2v，需要将底膜换成fl2va\n\n视频教程：https://www.bilibili.com/video/BV1Tquc6gERB/\n\n粉丝福利：点击\"右上角自己的头像\">邀请码>填写邀请码：【zedwxo2q】送1000RH币\n"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 21,
+      "type": "UNETLoader",
+      "pos": [
+        -1962.5322265625,
+        840.039306640625
+      ],
+      "size": [
+        264.9772033691406,
+        82
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "unet_name",
+          "localized_name": "UNet名称",
+          "name": "unet_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "unet_name"
+          }
+        },
+        {
+          "label": "weight_dtype",
+          "localized_name": "数据类型",
+          "name": "weight_dtype",
+          "type": "COMBO",
+          "widget": {
+            "name": "weight_dtype"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            30
+          ]
+        }
+      ],
+      "title": "已停用：旧 FL2VA 二采 Sigma 链（改为复用 Singularity）",
+      "properties": {
+        "Node name for S&R": "UNETLoader",
+        "models": [
+          {
+            "name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+            "directory": "diffusion_models"
+          }
+        ],
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {
+            "weight_dtype": true,
+            "unet_name": true
+          }
+        }
+      },
+      "widgets_values": [
+        "minimax_h3_fl2va_int8_convrot.safetensors",
+        "default"
+      ],
+      "widgets_values_named": {
+        "unet_name": "minimax_h3_fl2va_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    {
+      "id": 24,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        -1967.9559326171875,
+        971.7431030273438
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "模型",
+          "name": "model",
+          "type": "MODEL",
+          "link": 30
+        },
+        {
+          "label": "lora_name",
+          "localized_name": "LoRA名称",
+          "name": "lora_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "lora_name"
+          }
+        },
+        {
+          "label": "strength_model",
+          "localized_name": "模型强度",
+          "name": "strength_model",
+          "type": "FLOAT",
+          "widget": {
+            "name": "strength_model"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            31
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        1
+      ],
+      "widgets_values_named": {
+        "lora_name": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        "strength_model": 1
+      },
+      "title": "已停用：旧 FL2VA 二采 Sigma 链（改为复用 Singularity）"
+    },
+    {
+      "id": 20,
+      "type": "BasicScheduler",
+      "pos": [
+        -1623.9946633279267,
+        838.571116913363
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "模型",
+          "name": "model",
+          "type": "MODEL",
+          "link": 29
+        },
+        {
+          "label": "scheduler",
+          "localized_name": "调度器",
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          }
+        },
+        {
+          "label": "steps",
+          "localized_name": "步数",
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "label": "denoise",
+          "localized_name": "降噪",
+          "name": "denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "SIGMAS",
+          "localized_name": "Sigmas",
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            26
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BasicScheduler",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "simple",
+        3,
+        0.3
+      ],
+      "widgets_values_named": {
+        "scheduler": "simple",
+        "steps": 3,
+        "denoise": 0.3
+      }
+    },
+    {
+      "id": 23,
+      "type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+      "pos": [
+        -1971.8382568359375,
+        1263.5340576171875
+      ],
+      "size": [
+        357.1148376464844,
+        26
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 4,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 27
+        }
+      ],
+      "outputs": [
+        {
+          "label": "model",
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "title": "已停用：旧 FL2VA 二采 Sigma 链（改为复用 Singularity）"
+    },
+    {
+      "id": 18,
+      "type": "MiniMaxH3DirectorRefine",
+      "pos": [
+        -1289.0350341796875,
+        922.3190307617188
+      ],
+      "size": [
+        271.0581970214844,
+        466
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "refine_model",
+          "localized_name": "refine_model",
+          "name": "refine_model",
+          "shape": 7,
+          "type": "MODEL",
+          "link": null
+        },
+        {
+          "label": "sigmas",
+          "localized_name": "sigmas",
+          "name": "sigmas",
+          "shape": 7,
+          "type": "SIGMAS",
+          "link": 26
+        },
+        {
+          "label": "upscale_model",
+          "localized_name": "upscale_model",
+          "name": "upscale_model",
+          "shape": 7,
+          "type": "UPSCALE_MODEL",
+          "link": 25
+        },
+        {
+          "label": "mode",
+          "localized_name": "mode",
+          "name": "mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "mode"
+          }
+        },
+        {
+          "label": "upscale_method",
+          "localized_name": "upscale_method",
+          "name": "upscale_method",
+          "type": "COMBO",
+          "widget": {
+            "name": "upscale_method"
+          }
+        },
+        {
+          "label": "latent_upscale_model",
+          "localized_name": "latent_upscale_model",
+          "name": "latent_upscale_model",
+          "type": "COMBO",
+          "widget": {
+            "name": "latent_upscale_model"
+          }
+        },
+        {
+          "label": "sampler",
+          "localized_name": "sampler",
+          "name": "sampler",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler"
+          }
+        },
+        {
+          "label": "passes",
+          "localized_name": "passes",
+          "name": "passes",
+          "type": "INT",
+          "widget": {
+            "name": "passes"
+          }
+        },
+        {
+          "label": "seed_mode",
+          "localized_name": "seed_mode",
+          "name": "seed_mode",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "seed_mode"
+          }
+        },
+        {
+          "label": "aspect_ratio",
+          "localized_name": "aspect_ratio",
+          "name": "aspect_ratio",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "aspect_ratio"
+          }
+        },
+        {
+          "label": "megapixels",
+          "localized_name": "megapixels",
+          "name": "megapixels",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "megapixels"
+          }
+        },
+        {
+          "label": "width",
+          "localized_name": "width",
+          "name": "width",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "label": "height",
+          "localized_name": "height",
+          "name": "height",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          }
+        },
+        {
+          "label": "skip_fl2v",
+          "localized_name": "skip_fl2v",
+          "name": "skip_fl2v",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "skip_fl2v"
+          }
+        },
+        {
+          "label": "confirm_first_pass",
+          "localized_name": "confirm_first_pass",
+          "name": "confirm_first_pass",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "confirm_first_pass"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "refine",
+          "localized_name": "refine",
+          "name": "refine",
+          "type": "MMX_DIR_REFINE",
+          "links": [
+            24
+          ]
+        },
+        {
+          "label": "width",
+          "localized_name": "width",
+          "name": "width",
+          "type": "INT"
+        },
+        {
+          "label": "height",
+          "localized_name": "height",
+          "name": "height",
+          "type": "INT"
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3DirectorRefine",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "upscale",
+        "h3_latent",
+        "minimax_h3_latent_upscaler_3d_fp32.pth",
+        "euler",
+        1,
+        "inherit",
+        "9:16 (竖屏)",
+        0.7,
+        640,
+        1152,
+        false,
+        false
+      ],
+      "widgets_values_named": {
+        "mode": "upscale",
+        "upscale_method": "h3_latent",
+        "latent_upscale_model": "minimax_h3_latent_upscaler_3d_fp32.pth",
+        "sampler": "euler",
+        "passes": 1,
+        "seed_mode": "inherit",
+        "aspect_ratio": "9:16 (竖屏)",
+        "megapixels": 0.7,
+        "width": 640,
+        "height": 1152,
+        "skip_fl2v": false,
+        "confirm_first_pass": false
+      },
+      "title": "逐段 H3 Latent 放大 + 二采（保留段间接续）"
+    },
+    {
+      "id": 12,
+      "type": "MiniMaxH3Director",
+      "pos": [
+        -286.5319840588335,
+        46.004664195597776
+      ],
+      "size": [
+        1013.6587524414062,
+        1991.5615234375
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 23
+        },
+        {
+          "label": "video_vae",
+          "localized_name": "video_vae",
+          "name": "video_vae",
+          "type": "VAE",
+          "link": 15
+        },
+        {
+          "label": "audio_vae",
+          "localized_name": "audio_vae",
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 13
+        },
+        {
+          "label": "clip",
+          "localized_name": "clip",
+          "name": "clip",
+          "type": "CLIP",
+          "link": 16
+        },
+        {
+          "label": "i2v_groups",
+          "localized_name": "i2v_groups",
+          "name": "i2v_groups",
+          "shape": 7,
+          "type": "MMX_DIR_GROUP"
+        },
+        {
+          "label": "r2v_groups",
+          "localized_name": "r2v_groups",
+          "name": "r2v_groups",
+          "shape": 7,
+          "type": "MMX_DIR_GROUP"
+        },
+        {
+          "label": "refine",
+          "localized_name": "refine",
+          "name": "refine",
+          "shape": 7,
+          "type": "MMX_DIR_REFINE",
+          "link": 24
+        },
+        {
+          "label": "sigmas",
+          "localized_name": "sigmas",
+          "name": "sigmas",
+          "shape": 7,
+          "type": "SIGMAS"
+        },
+        {
+          "label": "task_type",
+          "localized_name": "task_type",
+          "name": "task_type",
+          "type": "COMBO",
+          "widget": {
+            "name": "task_type"
+          }
+        },
+        {
+          "label": "global_prompt",
+          "localized_name": "global_prompt",
+          "name": "global_prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "global_prompt"
+          }
+        },
+        {
+          "label": "bd_grp_sample",
+          "localized_name": "bd_grp_sample",
+          "name": "bd_grp_sample",
+          "type": "BDGROUP",
+          "widget": {
+            "name": "bd_grp_sample"
+          }
+        },
+        {
+          "label": "cfg",
+          "localized_name": "cfg",
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          }
+        },
+        {
+          "label": "seed",
+          "localized_name": "seed",
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          }
+        },
+        {
+          "label": "frame_rate",
+          "localized_name": "frame_rate",
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          }
+        },
+        {
+          "label": "width",
+          "localized_name": "width",
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "label": "height",
+          "localized_name": "height",
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          }
+        },
+        {
+          "label": "ref_max_size",
+          "localized_name": "ref_max_size",
+          "name": "ref_max_size",
+          "type": "INT",
+          "widget": {
+            "name": "ref_max_size"
+          }
+        },
+        {
+          "label": "total_frames",
+          "localized_name": "total_frames",
+          "name": "total_frames",
+          "type": "INT",
+          "widget": {
+            "name": "total_frames"
+          }
+        },
+        {
+          "label": "timeline_data",
+          "localized_name": "timeline_data",
+          "name": "timeline_data",
+          "type": "STRING",
+          "widget": {
+            "name": "timeline_data"
+          }
+        },
+        {
+          "label": "bd_grp_advanced",
+          "localized_name": "bd_grp_advanced",
+          "name": "bd_grp_advanced",
+          "shape": 7,
+          "type": "BDGROUP",
+          "widget": {
+            "name": "bd_grp_advanced"
+          }
+        },
+        {
+          "label": "steps",
+          "localized_name": "steps",
+          "name": "steps",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "label": "sampler",
+          "localized_name": "sampler",
+          "name": "sampler",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler"
+          }
+        },
+        {
+          "label": "scheduler",
+          "localized_name": "scheduler",
+          "name": "scheduler",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          }
+        },
+        {
+          "label": "shift_video",
+          "localized_name": "shift_video",
+          "name": "shift_video",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "shift_video"
+          }
+        },
+        {
+          "label": "shift_audio",
+          "localized_name": "shift_audio",
+          "name": "shift_audio",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "shift_audio"
+          }
+        },
+        {
+          "label": "bd_grp_perf",
+          "localized_name": "bd_grp_perf",
+          "name": "bd_grp_perf",
+          "shape": 7,
+          "type": "BDGROUP",
+          "widget": {
+            "name": "bd_grp_perf"
+          }
+        },
+        {
+          "label": "clear_vram_between_segments",
+          "localized_name": "clear_vram_between_segments",
+          "name": "clear_vram_between_segments",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "clear_vram_between_segments"
+          }
+        },
+        {
+          "label": "export_source_images",
+          "localized_name": "export_source_images",
+          "name": "export_source_images",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "export_source_images"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "images",
+          "localized_name": "images",
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            17
+          ]
+        },
+        {
+          "label": "audio",
+          "localized_name": "audio",
+          "name": "audio",
+          "shape": 6,
+          "type": "AUDIO",
+          "links": [
+            18
+          ]
+        },
+        {
+          "label": "fps",
+          "localized_name": "fps",
+          "name": "fps",
+          "type": "FLOAT",
+          "links": [
+            19
+          ]
+        },
+        {
+          "label": "frame_count",
+          "localized_name": "frame_count",
+          "name": "frame_count",
+          "type": "INT"
+        },
+        {
+          "label": "source_images",
+          "localized_name": "source_images",
+          "name": "source_images",
+          "shape": 6,
+          "type": "IMAGE"
+        },
+        {
+          "label": "report",
+          "localized_name": "report",
+          "name": "report",
+          "type": "STRING",
+          "links": [
+            20
+          ]
+        },
+        {
+          "label": "images_pre_refine",
+          "localized_name": "images_pre_refine",
+          "name": "images_pre_refine",
+          "shape": 6,
+          "type": "IMAGE"
+        }
+      ],
+      "title": "MiniMax H3 导演台｜多段连续・H3 放大二采・1143同模型快速版",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3Director",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {
+            "shift_audio": true,
+            "seed": true,
+            "shift_video": true,
+            "export_source_images": true,
+            "cfg": true,
+            "global_prompt": true,
+            "timeline_data": true,
+            "bd_grp_sample": true,
+            "frame_rate": true,
+            "steps": true,
+            "total_frames": true,
+            "sampler": true,
+            "bd_grp_perf": true,
+            "scheduler": true,
+            "clear_vram_between_segments": true,
+            "width": true,
+            "ref_max_size": true,
+            "bd_grp_advanced": true,
+            "task_type": true,
+            "height": true
+          }
+        }
+      },
+      "widgets_values": [
+        "r2v — 参考主体生视频(Reference to Video)",
+        "subject_definitions:\n\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\n",
+        "采样设置",
+        1,
+        666,
+        "fixed",
+        24,
+        640,
+        1152,
+        1152,
+        243,
+        "{\"version\":5,\"editMode\":\"segment\",\"totalFrames\":243,\"frameRate\":24,\"video\":{\"fileName\":\"\",\"videoFile\":\"\",\"subfolder\":\"\",\"type\":\"input\",\"frames\":[],\"frameMap\":[],\"sourceFrameCount\":248,\"deletedSourceRanges\":[]},\"videoClips\":[],\"global\":{\"taskType\":\"r2v — 参考主体生视频(Reference to Video)\",\"prompt\":\"subject_definitions:\\n\\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\\n\",\"refs\":[{\"index\":0,\"imageFile\":\"Krea2-20260906125141_00001_.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"}],\"referenceVideo\":{\"videoFile\":\"\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},\"continuousReference\":false,\"genImage\":{\"imageFile\":\"\"},\"sourceWidth\":768,\"sourceHeight\":1024,\"refAudios\":[],\"refVideos\":[],\"commonEnabled\":true,\"commonCollapsed\":false},\"output\":{\"mode\":\"fixed\",\"aspectRatio\":\"9:16 (竖屏)\",\"megapixels\":0.7,\"multiple\":32,\"longEdge\":1152,\"width\":640,\"height\":1152,\"maxExportFrames\":0,\"exportMode\":\"all\",\"audioMode\":\"generate\",\"exportSourceImages\":false,\"refImageSize\":\"match\",\"continuityEnabled\":true,\"continuityOverlapFrames\":22,\"continuityMode\":\"continue\",\"continuityRedraw\":0.65},\"runSelectEnabled\":false,\"runSelection\":[],\"segments\":[{\"id\":\"mt0slveqtpanc\",\"start\":0,\"length\":243,\"frameCount\":243,\"durationSec\":10,\"prompt\":\"subject_definitions:\\n\\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\\n\\nsummary:\\n\\n[reference generation] A 10-second single-shot continuous take in a violent, cinematic sci-fi meets Chinese sword immortal look: far in the distance a colossal alien warship breaks in two, the rear half catches fire and plunges toward the horizon, the moment of impact triggers a blinding explosion and a massive shockwave ring expanding outward, the blast wave crosses the vast field and reaches the camera position after a realistic delay, hitting <Subject 1> who stands calm on the right side of the frame with her sword aimed at the wreck, her expression cold and serene, the shockwave tearing through her hair, ribbon, sleeves, and the fabric of her hanfu, the camera trembling slightly with the impact, firelight glowing on her face, followed by debris raining down and smoke billowing on the horizon, shot on vintage 35mm film with natural matte skin and visible grain, no cut and no shot change.\\n\\nretention_analysis:\\n\\n<Subject 1> (appears in [Shot 1]): fully_preserved — her face, blood streak, hairpin, ribbon, celestial hanfu, sword, extended arm posture, and right-side placement remain fully consistent with <Picture 1>. <Picture 1> (identity & composition anchor): fully_preserved — the opening frame matches the reference composition exactly, followed by only subtle breathing and micro-movement, no re-framing, no subject repositioning. Key: her spatial relationship with the distant ship and the frame edge never changes; the ship, smoke, debris, blast wave, and dark ships stay as background scenery; the shockwave always arrives AFTER the explosion, and debris falls AFTER the shockwave passes.\\n\\ndetailed_description:\\n\\n[Shot 1] Vintage 35mm film cinematic quality with real destructive impact and correct telephoto perspective: the warship is located far away in the distant background, yet its colossal scale makes it fill a large part of the sky, compressed by a long telephoto lens so it appears flattened against the horizon, maintaining a believable distance while still reading as enormous; shot on analog film stock, fine visible grain across the whole frame, natural matte skin texture with subtle pores and soft highlights, gentle halation bleeding around the firelight, slight chromatic aberration at the edges, muted analog color grading of warm reds and golds with cool blue shadows, no glossy plastic look, no over-smoothed skin; the scene carries overwhelming kinetic force — the physics are strictly correct: first the warship breaks in two, the rear half catches fire and begins falling at a steep angle toward the horizon, it impacts the ground in a blinding white flash, a massive fireball erupts upward, the shockwave ring expands outward FROM the impact point, traveling across the field at a visible speed with a realistic delay of several seconds before reaching the camera position, the blast wind hits the heroine: her hair, ribbon, and sheer sleeves are whipped violently backward, the layers of her hanfu flutter and snap in the blast wind, dust and debris streaking past the lens, the camera itself trembling and shuddering with the impact, the light of the distant fireball reflecting on her face; warm firelight from the blast mixed with cold blue alien light, drifting smoke and flying debris, shallow depth of field with the subject in sharp focus and the distant blast softly blurred, soft low-contrast film tone; the camera holds a locked position with only impact vibration, no re-framing, no shot change; single continuous shot, no cut, no jump cut, the heroine is the only figure in focus, the falling ship and blast remain living scenery, nothing enters the foreground.\\n\\n0.00–2.00s: hold the <Picture 1> composition — she stands still with her sword extended, taking one slow, quiet breath; far in the distance the warship cracks apart along its centerline, the rear half separates and catches fire, beginning its descent toward the horizon, flames trailing, her white ribbon and sleeves drifting gently in the wind, no shockwave yet.\\n\\n2.00–4.00s: the rear half of the warship plummets at steep angle, impacts the horizon in a blinding white flash, a massive fireball erupts upward followed by a column of black smoke, secondary explosions ripple through the wreckage, debris scatters outward from the impact zone; still no shockwave has reached her, the delay is physically correct, the explosion is still distant.\\n\\n4.00–6.50s: the shockwave ring becomes visible expanding outward FROM the impact point, racing across the flat field at tremendous speed, kicking up dust and grass as it travels, the leading edge of the blast wave crossing the vast distance, approaching the camera; she remains still, her gaze fixed on the distant destruction, the wind from the shockwave not yet reaching her, a low rumble building in the distance.\\n\\n6.50–8.50s: the shockwave arrives — the blast wind hits her full force, her hair, ribbon, and sheer sleeves whipped violently backward, the layers of her hanfu flutter and snap and ripple, dust and debris streaking past the lens, the camera trembling and shuddering with the impact, her expression remains cold and serene, she holds her ground, the firelight from the distant explosion reflecting across her face, the sword in her extended arm catching the glow.\\n\\n8.50–10.00s: the shockwave passes, her hair and sleeves settling back into place, she slowly lowers her extended arm, the sword sweeping a small arc down to her side, the blade catching the fading firelight, debris and embers drift downward through the sky, smoke billows on the horizon where the warship fell, secondary fires crackling in the distance, her cold gaze holding to the final moment as the clip closes; she remains silent throughout, her lips only moving naturally with breathing, producing no recognizable speech.\\n\\noverall_soundscape: A deep distant crack as the warship splits, a thunderous roar as the rear half falls, a blinding silent flash followed by a deafening explosion upon impact, a rolling low rumble as the shockwave expands across the field, a terrifying delay of silence across the vast distance, then a violent whoosh as the blast wind hits the camera, the rush of air tearing through silk and hair, the camera shaking, debris raining down, crackling fire and embers fading into the final seconds.\\n\\nnon_diegetic_music: N/A\",\"negativePrompt\":\"\",\"taskType\":\"\",\"refs\":[],\"refAudios\":[],\"refVideos\":[],\"genImage\":{\"imageFile\":\"\",\"fileName\":\"\"},\"startImage\":null,\"endImage\":null,\"continuityFromPrev\":false,\"refImageSize\":\"max\"}],\"timelineMode\":\"prompt_batch\",\"width\":640,\"height\":1152,\"refMaxSize\":1152,\"gen\":{\"defaultFrameCount\":124},\"keyframes\":[{\"id\":\"mtl7jgds01e0k\",\"imageFile\":\"Krea2-2ST-20260903120616_00001_.png\",\"width\":3840,\"height\":2160,\"start\":0,\"length\":124,\"frameCount\":124,\"durationSec\":5,\"prompt\":\"I2VA: The image serves as the first frame. The video (5 seconds) starts from this exact Dunhuang feitian apsara frame and brings it slowly to life.\\n\\nsubject_definitions:\\n is the character reference image (first frame: a Dunhuang feitian apsara hovering above a sea of clouds under a moonlit sky, realistic cinematic texture with hazy mist, vermilion-and-indigo silk dress, a multicolored scarf in jade green, coral red, gold and pale blue circling her body twice and trailing behind, gold jewelry and a pearl necklace, holding a pipa lute, one hand scattering flower petals, petals and golden dust floating), the first frame locks all appearance, outfit, pose, lighting and composition.\\n\\nsummary:\\n[reference generation] Target video (5 seconds): the first frame slowly comes to life. The apsara stays in her hovering pose; the four-colored scarf and wide sheer sleeves sway and ripple gently in the wind, her hair drifts lightly, the translucent white robe edges float softly within the mist; the hand scattering petals lowers slowly, petals continue falling, one finger plucks a pipa string once; the clouds drift slowly, golden dust floats in the moonlight, lotus petal edges tremble slightly; the camera pushes in extremely slowly, the misty haze and soft light stay throughout, the frame calm and dreamy.\\n\\nretention_analysis:\\n (character reference): fully_preserved - the figure's face, hairstyle and ornaments, vermilion-and-indigo dress, four-colored scarf, gold jewelry and pearl necklace, pipa, pose, moonlight, cloud sea background and hazy mist fully preserved throughout; only the scarf, sheer robe, hair, petals, clouds and light dust move naturally and slowly, composition and figure position stay without drifting.\\n\\ndetailed_description:\\nRealistic cinematic texture with a hazy misty finish, moonlit sea of clouds, cold silver moonlight mixed with warm golden glow from below the clouds, shallow depth of field, unhurried rhythm.\\n[Shot 1] At 00:00.000, medium-wide shot, fixed camera, identical to the first frame: the apsara hovers in the upper center, her body on a diagonal, the scarf circling twice and trailing toward the lower left, lotus flowers and petals scattered in the foreground, golden dust suspended, the misty cloud sea and moon behind her. In the opening second only the finest motion occurs: the scarf edges rise and fall softly, hair tips drift, dust moves slowly, petals descend slowly, the camera has not moved yet.\\n[Shot 2] At 00:02.000, motion unfolds gradually: the four-colored scarf begins to sway in slow waves, the wide sheer sleeves ripple with the air current, the pale robe edges float within the mist; the petal-scattering hand lowers at a slow pace, the last petal leaving the fingertips; one finger plucks a pipa string gently and the string trembles; lotus petal edges quiver, the clouds drift, the moonlight shifts faintly through the haze; the camera starts an extremely slow push-in with very small movement.\\n[Shot 3] At 00:04.000, motion settles into a steady state: the scarf keeps swaying slowly at the same rhythm, hair and robe keep drifting lightly, petals and dust keep falling and floating, she holds her hovering pose and expression, the pipa rests against her shoulder without further movement; the camera stops, the mist and light stay stable, until 5.00 seconds.\\n\\noverall_soundscape:\\nA soft high-altitude wind throughout, faint rustling of the silk scarf, one short plucked note of the pipa, the petals falling almost silent, the clouds silent; distant faint bells and strings barely audible; no dialogue, no other noise.\\n\\nnon_diegetic_music:\\nVery light ethereal string ambient music, slow and low in the mix; a gentle one-beat rise at the pipa pluck, then settling softly with the calm frame at the end.\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false}],\"durationSec\":5,\"shots\":[{\"id\":\"mtl7jgds01e0k\",\"durationSec\":5,\"prompt\":\"I2VA: The image serves as the first frame. The video (5 seconds) starts from this exact Dunhuang feitian apsara frame and brings it slowly to life.\\n\\nsubject_definitions:\\n is the character reference image (first frame: a Dunhuang feitian apsara hovering above a sea of clouds under a moonlit sky, realistic cinematic texture with hazy mist, vermilion-and-indigo silk dress, a multicolored scarf in jade green, coral red, gold and pale blue circling her body twice and trailing behind, gold jewelry and a pearl necklace, holding a pipa lute, one hand scattering flower petals, petals and golden dust floating), the first frame locks all appearance, outfit, pose, lighting and composition.\\n\\nsummary:\\n[reference generation] Target video (5 seconds): the first frame slowly comes to life. The apsara stays in her hovering pose; the four-colored scarf and wide sheer sleeves sway and ripple gently in the wind, her hair drifts lightly, the translucent white robe edges float softly within the mist; the hand scattering petals lowers slowly, petals continue falling, one finger plucks a pipa string once; the clouds drift slowly, golden dust floats in the moonlight, lotus petal edges tremble slightly; the camera pushes in extremely slowly, the misty haze and soft light stay throughout, the frame calm and dreamy.\\n\\nretention_analysis:\\n (character reference): fully_preserved - the figure's face, hairstyle and ornaments, vermilion-and-indigo dress, four-colored scarf, gold jewelry and pearl necklace, pipa, pose, moonlight, cloud sea background and hazy mist fully preserved throughout; only the scarf, sheer robe, hair, petals, clouds and light dust move naturally and slowly, composition and figure position stay without drifting.\\n\\ndetailed_description:\\nRealistic cinematic texture with a hazy misty finish, moonlit sea of clouds, cold silver moonlight mixed with warm golden glow from below the clouds, shallow depth of field, unhurried rhythm.\\n[Shot 1] At 00:00.000, medium-wide shot, fixed camera, identical to the first frame: the apsara hovers in the upper center, her body on a diagonal, the scarf circling twice and trailing toward the lower left, lotus flowers and petals scattered in the foreground, golden dust suspended, the misty cloud sea and moon behind her. In the opening second only the finest motion occurs: the scarf edges rise and fall softly, hair tips drift, dust moves slowly, petals descend slowly, the camera has not moved yet.\\n[Shot 2] At 00:02.000, motion unfolds gradually: the four-colored scarf begins to sway in slow waves, the wide sheer sleeves ripple with the air current, the pale robe edges float within the mist; the petal-scattering hand lowers at a slow pace, the last petal leaving the fingertips; one finger plucks a pipa string gently and the string trembles; lotus petal edges quiver, the clouds drift, the moonlight shifts faintly through the haze; the camera starts an extremely slow push-in with very small movement.\\n[Shot 3] At 00:04.000, motion settles into a steady state: the scarf keeps swaying slowly at the same rhythm, hair and robe keep drifting lightly, petals and dust keep falling and floating, she holds her hovering pose and expression, the pipa rests against her shoulder without further movement; the camera stops, the mist and light stay stable, until 5.00 seconds.\\n\\noverall_soundscape:\\nA soft high-altitude wind throughout, faint rustling of the silk scarf, one short plucked note of the pipa, the petals falling almost silent, the clouds silent; distant faint bells and strings barely audible; no dialogue, no other noise.\\n\\nnon_diegetic_music:\\nVery light ethereal string ambient music, slow and low in the mix; a gentle one-beat rise at the pipa pluck, then settling softly with the calm frame at the end.\",\"negativePrompt\":\"bad video\",\"startImage\":{\"imageFile\":\"Krea2-2ST-20260903120616_00001_.png\",\"width\":3840,\"height\":2160},\"endImage\":null,\"continuityFromPrev\":false}],\"liveTaePreview\":false,\"batchDetailMode\":\"solo\",\"batchWorkspaces\":{\"r2v\":{\"selectedIndex\":0,\"editMode\":\"segment\",\"runSelectEnabled\":false,\"runSelection\":[],\"segments\":[{\"id\":\"mt0slveqtpanc\",\"start\":0,\"length\":243,\"frameCount\":243,\"durationSec\":10,\"prompt\":\"subject_definitions:\\n\\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\\n\\nsummary:\\n\\n[reference generation] A 10-second single-shot continuous take in a violent, cinematic sci-fi meets Chinese sword immortal look: far in the distance a colossal alien warship breaks in two, the rear half catches fire and plunges toward the horizon, the moment of impact triggers a blinding explosion and a massive shockwave ring expanding outward, the blast wave crosses the vast field and reaches the camera position after a realistic delay, hitting <Subject 1> who stands calm on the right side of the frame with her sword aimed at the wreck, her expression cold and serene, the shockwave tearing through her hair, ribbon, sleeves, and the fabric of her hanfu, the camera trembling slightly with the impact, firelight glowing on her face, followed by debris raining down and smoke billowing on the horizon, shot on vintage 35mm film with natural matte skin and visible grain, no cut and no shot change.\\n\\nretention_analysis:\\n\\n<Subject 1> (appears in [Shot 1]): fully_preserved — her face, blood streak, hairpin, ribbon, celestial hanfu, sword, extended arm posture, and right-side placement remain fully consistent with <Picture 1>. <Picture 1> (identity & composition anchor): fully_preserved — the opening frame matches the reference composition exactly, followed by only subtle breathing and micro-movement, no re-framing, no subject repositioning. Key: her spatial relationship with the distant ship and the frame edge never changes; the ship, smoke, debris, blast wave, and dark ships stay as background scenery; the shockwave always arrives AFTER the explosion, and debris falls AFTER the shockwave passes.\\n\\ndetailed_description:\\n\\n[Shot 1] Vintage 35mm film cinematic quality with real destructive impact and correct telephoto perspective: the warship is located far away in the distant background, yet its colossal scale makes it fill a large part of the sky, compressed by a long telephoto lens so it appears flattened against the horizon, maintaining a believable distance while still reading as enormous; shot on analog film stock, fine visible grain across the whole frame, natural matte skin texture with subtle pores and soft highlights, gentle halation bleeding around the firelight, slight chromatic aberration at the edges, muted analog color grading of warm reds and golds with cool blue shadows, no glossy plastic look, no over-smoothed skin; the scene carries overwhelming kinetic force — the physics are strictly correct: first the warship breaks in two, the rear half catches fire and begins falling at a steep angle toward the horizon, it impacts the ground in a blinding white flash, a massive fireball erupts upward, the shockwave ring expands outward FROM the impact point, traveling across the field at a visible speed with a realistic delay of several seconds before reaching the camera position, the blast wind hits the heroine: her hair, ribbon, and sheer sleeves are whipped violently backward, the layers of her hanfu flutter and snap in the blast wind, dust and debris streaking past the lens, the camera itself trembling and shuddering with the impact, the light of the distant fireball reflecting on her face; warm firelight from the blast mixed with cold blue alien light, drifting smoke and flying debris, shallow depth of field with the subject in sharp focus and the distant blast softly blurred, soft low-contrast film tone; the camera holds a locked position with only impact vibration, no re-framing, no shot change; single continuous shot, no cut, no jump cut, the heroine is the only figure in focus, the falling ship and blast remain living scenery, nothing enters the foreground.\\n\\n0.00–2.00s: hold the <Picture 1> composition — she stands still with her sword extended, taking one slow, quiet breath; far in the distance the warship cracks apart along its centerline, the rear half separates and catches fire, beginning its descent toward the horizon, flames trailing, her white ribbon and sleeves drifting gently in the wind, no shockwave yet.\\n\\n2.00–4.00s: the rear half of the warship plummets at steep angle, impacts the horizon in a blinding white flash, a massive fireball erupts upward followed by a column of black smoke, secondary explosions ripple through the wreckage, debris scatters outward from the impact zone; still no shockwave has reached her, the delay is physically correct, the explosion is still distant.\\n\\n4.00–6.50s: the shockwave ring becomes visible expanding outward FROM the impact point, racing across the flat field at tremendous speed, kicking up dust and grass as it travels, the leading edge of the blast wave crossing the vast distance, approaching the camera; she remains still, her gaze fixed on the distant destruction, the wind from the shockwave not yet reaching her, a low rumble building in the distance.\\n\\n6.50–8.50s: the shockwave arrives — the blast wind hits her full force, her hair, ribbon, and sheer sleeves whipped violently backward, the layers of her hanfu flutter and snap and ripple, dust and debris streaking past the lens, the camera trembling and shuddering with the impact, her expression remains cold and serene, she holds her ground, the firelight from the distant explosion reflecting across her face, the sword in her extended arm catching the glow.\\n\\n8.50–10.00s: the shockwave passes, her hair and sleeves settling back into place, she slowly lowers her extended arm, the sword sweeping a small arc down to her side, the blade catching the fading firelight, debris and embers drift downward through the sky, smoke billows on the horizon where the warship fell, secondary fires crackling in the distance, her cold gaze holding to the final moment as the clip closes; she remains silent throughout, her lips only moving naturally with breathing, producing no recognizable speech.\\n\\noverall_soundscape: A deep distant crack as the warship splits, a thunderous roar as the rear half falls, a blinding silent flash followed by a deafening explosion upon impact, a rolling low rumble as the shockwave expands across the field, a terrifying delay of silence across the vast distance, then a violent whoosh as the blast wind hits the camera, the rush of air tearing through silk and hair, the camera shaking, debris raining down, crackling fire and embers fading into the final seconds.\\n\\nnon_diegetic_music: N/A\",\"negativePrompt\":\"\",\"taskType\":\"\",\"refs\":[],\"refAudios\":[],\"refVideos\":[],\"genImage\":{\"imageFile\":\"\",\"fileName\":\"\"},\"continuityFromPrev\":false,\"refImageSize\":\"max\",\"referenceVideo\":{\"videoFile\":\"\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},\"_videoFrameCount\":243,\"previewFps\":24}],\"globalCommon\":{\"commonEnabled\":true,\"commonCollapsed\":false,\"prompt\":\"subject_definitions:\\n\\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\\n\",\"refs\":[{\"index\":0,\"imageFile\":\"Krea2-20260906125141_00001_.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"}],\"refAudios\":[],\"refVideos\":[]},\"output\":{\"continuityEnabled\":true,\"continuityOverlapFrames\":22}}}}",
+        "高级采样",
+        4,
+        "euler",
+        "simple",
+        6,
+        3,
+        false,
+        "一采 Sigma 精修",
+        false,
+        1,
+        0.7,
+        0,
+        "cosine",
+        false,
+        true,
+        ""
+      ],
+      "widgets_values_named": {
+        "task_type": "r2v — 参考主体生视频(Reference to Video)",
+        "global_prompt": "subject_definitions:\n\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\n",
+        "bd_grp_sample": "采样设置",
+        "cfg": 1,
+        "seed": 666,
+        "control_after_generate": "fixed",
+        "frame_rate": 24,
+        "width": 640,
+        "height": 1152,
+        "ref_max_size": 1152,
+        "total_frames": 243,
+        "timeline_data": "{\"version\":5,\"editMode\":\"segment\",\"totalFrames\":243,\"frameRate\":24,\"video\":{\"fileName\":\"\",\"videoFile\":\"\",\"subfolder\":\"\",\"type\":\"input\",\"frames\":[],\"frameMap\":[],\"sourceFrameCount\":248,\"deletedSourceRanges\":[]},\"videoClips\":[],\"global\":{\"taskType\":\"r2v — 参考主体生视频(Reference to Video)\",\"prompt\":\"subject_definitions:\\n\\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\\n\",\"refs\":[{\"index\":0,\"imageFile\":\"Krea2-20260906125141_00001_.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"}],\"referenceVideo\":{\"videoFile\":\"\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},\"continuousReference\":false,\"genImage\":{\"imageFile\":\"\"},\"sourceWidth\":768,\"sourceHeight\":1024,\"refAudios\":[],\"refVideos\":[],\"commonEnabled\":true,\"commonCollapsed\":false},\"output\":{\"mode\":\"fixed\",\"aspectRatio\":\"9:16 (竖屏)\",\"megapixels\":0.7,\"multiple\":32,\"longEdge\":1152,\"width\":640,\"height\":1152,\"maxExportFrames\":0,\"exportMode\":\"all\",\"audioMode\":\"generate\",\"exportSourceImages\":false,\"refImageSize\":\"match\",\"continuityEnabled\":true,\"continuityOverlapFrames\":22},\"runSelectEnabled\":false,\"runSelection\":[],\"segments\":[{\"id\":\"mt0slveqtpanc\",\"start\":0,\"length\":243,\"frameCount\":243,\"durationSec\":10,\"prompt\":\"subject_definitions:\\n\\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\\n\\nsummary:\\n\\n[reference generation] A 10-second single-shot continuous take in a violent, cinematic sci-fi meets Chinese sword immortal look: far in the distance a colossal alien warship breaks in two, the rear half catches fire and plunges toward the horizon, the moment of impact triggers a blinding explosion and a massive shockwave ring expanding outward, the blast wave crosses the vast field and reaches the camera position after a realistic delay, hitting <Subject 1> who stands calm on the right side of the frame with her sword aimed at the wreck, her expression cold and serene, the shockwave tearing through her hair, ribbon, sleeves, and the fabric of her hanfu, the camera trembling slightly with the impact, firelight glowing on her face, followed by debris raining down and smoke billowing on the horizon, shot on vintage 35mm film with natural matte skin and visible grain, no cut and no shot change.\\n\\nretention_analysis:\\n\\n<Subject 1> (appears in [Shot 1]): fully_preserved — her face, blood streak, hairpin, ribbon, celestial hanfu, sword, extended arm posture, and right-side placement remain fully consistent with <Picture 1>. <Picture 1> (identity & composition anchor): fully_preserved — the opening frame matches the reference composition exactly, followed by only subtle breathing and micro-movement, no re-framing, no subject repositioning. Key: her spatial relationship with the distant ship and the frame edge never changes; the ship, smoke, debris, blast wave, and dark ships stay as background scenery; the shockwave always arrives AFTER the explosion, and debris falls AFTER the shockwave passes.\\n\\ndetailed_description:\\n\\n[Shot 1] Vintage 35mm film cinematic quality with real destructive impact and correct telephoto perspective: the warship is located far away in the distant background, yet its colossal scale makes it fill a large part of the sky, compressed by a long telephoto lens so it appears flattened against the horizon, maintaining a believable distance while still reading as enormous; shot on analog film stock, fine visible grain across the whole frame, natural matte skin texture with subtle pores and soft highlights, gentle halation bleeding around the firelight, slight chromatic aberration at the edges, muted analog color grading of warm reds and golds with cool blue shadows, no glossy plastic look, no over-smoothed skin; the scene carries overwhelming kinetic force — the physics are strictly correct: first the warship breaks in two, the rear half catches fire and begins falling at a steep angle toward the horizon, it impacts the ground in a blinding white flash, a massive fireball erupts upward, the shockwave ring expands outward FROM the impact point, traveling across the field at a visible speed with a realistic delay of several seconds before reaching the camera position, the blast wind hits the heroine: her hair, ribbon, and sheer sleeves are whipped violently backward, the layers of her hanfu flutter and snap in the blast wind, dust and debris streaking past the lens, the camera itself trembling and shuddering with the impact, the light of the distant fireball reflecting on her face; warm firelight from the blast mixed with cold blue alien light, drifting smoke and flying debris, shallow depth of field with the subject in sharp focus and the distant blast softly blurred, soft low-contrast film tone; the camera holds a locked position with only impact vibration, no re-framing, no shot change; single continuous shot, no cut, no jump cut, the heroine is the only figure in focus, the falling ship and blast remain living scenery, nothing enters the foreground.\\n\\n0.00–2.00s: hold the <Picture 1> composition — she stands still with her sword extended, taking one slow, quiet breath; far in the distance the warship cracks apart along its centerline, the rear half separates and catches fire, beginning its descent toward the horizon, flames trailing, her white ribbon and sleeves drifting gently in the wind, no shockwave yet.\\n\\n2.00–4.00s: the rear half of the warship plummets at steep angle, impacts the horizon in a blinding white flash, a massive fireball erupts upward followed by a column of black smoke, secondary explosions ripple through the wreckage, debris scatters outward from the impact zone; still no shockwave has reached her, the delay is physically correct, the explosion is still distant.\\n\\n4.00–6.50s: the shockwave ring becomes visible expanding outward FROM the impact point, racing across the flat field at tremendous speed, kicking up dust and grass as it travels, the leading edge of the blast wave crossing the vast distance, approaching the camera; she remains still, her gaze fixed on the distant destruction, the wind from the shockwave not yet reaching her, a low rumble building in the distance.\\n\\n6.50–8.50s: the shockwave arrives — the blast wind hits her full force, her hair, ribbon, and sheer sleeves whipped violently backward, the layers of her hanfu flutter and snap and ripple, dust and debris streaking past the lens, the camera trembling and shuddering with the impact, her expression remains cold and serene, she holds her ground, the firelight from the distant explosion reflecting across her face, the sword in her extended arm catching the glow.\\n\\n8.50–10.00s: the shockwave passes, her hair and sleeves settling back into place, she slowly lowers her extended arm, the sword sweeping a small arc down to her side, the blade catching the fading firelight, debris and embers drift downward through the sky, smoke billows on the horizon where the warship fell, secondary fires crackling in the distance, her cold gaze holding to the final moment as the clip closes; she remains silent throughout, her lips only moving naturally with breathing, producing no recognizable speech.\\n\\noverall_soundscape: A deep distant crack as the warship splits, a thunderous roar as the rear half falls, a blinding silent flash followed by a deafening explosion upon impact, a rolling low rumble as the shockwave expands across the field, a terrifying delay of silence across the vast distance, then a violent whoosh as the blast wind hits the camera, the rush of air tearing through silk and hair, the camera shaking, debris raining down, crackling fire and embers fading into the final seconds.\\n\\nnon_diegetic_music: N/A\",\"negativePrompt\":\"\",\"taskType\":\"\",\"refs\":[],\"refAudios\":[],\"refVideos\":[],\"genImage\":{\"imageFile\":\"\",\"fileName\":\"\"},\"startImage\":null,\"endImage\":null,\"continuityFromPrev\":false,\"refImageSize\":\"max\"}],\"timelineMode\":\"prompt_batch\",\"width\":640,\"height\":1152,\"refMaxSize\":1152,\"gen\":{\"defaultFrameCount\":124},\"keyframes\":[{\"id\":\"mtl7jgds01e0k\",\"imageFile\":\"Krea2-2ST-20260903120616_00001_.png\",\"width\":3840,\"height\":2160,\"start\":0,\"length\":124,\"frameCount\":124,\"durationSec\":5,\"prompt\":\"I2VA: The image serves as the first frame. The video (5 seconds) starts from this exact Dunhuang feitian apsara frame and brings it slowly to life.\\n\\nsubject_definitions:\\n is the character reference image (first frame: a Dunhuang feitian apsara hovering above a sea of clouds under a moonlit sky, realistic cinematic texture with hazy mist, vermilion-and-indigo silk dress, a multicolored scarf in jade green, coral red, gold and pale blue circling her body twice and trailing behind, gold jewelry and a pearl necklace, holding a pipa lute, one hand scattering flower petals, petals and golden dust floating), the first frame locks all appearance, outfit, pose, lighting and composition.\\n\\nsummary:\\n[reference generation] Target video (5 seconds): the first frame slowly comes to life. The apsara stays in her hovering pose; the four-colored scarf and wide sheer sleeves sway and ripple gently in the wind, her hair drifts lightly, the translucent white robe edges float softly within the mist; the hand scattering petals lowers slowly, petals continue falling, one finger plucks a pipa string once; the clouds drift slowly, golden dust floats in the moonlight, lotus petal edges tremble slightly; the camera pushes in extremely slowly, the misty haze and soft light stay throughout, the frame calm and dreamy.\\n\\nretention_analysis:\\n (character reference): fully_preserved - the figure's face, hairstyle and ornaments, vermilion-and-indigo dress, four-colored scarf, gold jewelry and pearl necklace, pipa, pose, moonlight, cloud sea background and hazy mist fully preserved throughout; only the scarf, sheer robe, hair, petals, clouds and light dust move naturally and slowly, composition and figure position stay without drifting.\\n\\ndetailed_description:\\nRealistic cinematic texture with a hazy misty finish, moonlit sea of clouds, cold silver moonlight mixed with warm golden glow from below the clouds, shallow depth of field, unhurried rhythm.\\n[Shot 1] At 00:00.000, medium-wide shot, fixed camera, identical to the first frame: the apsara hovers in the upper center, her body on a diagonal, the scarf circling twice and trailing toward the lower left, lotus flowers and petals scattered in the foreground, golden dust suspended, the misty cloud sea and moon behind her. In the opening second only the finest motion occurs: the scarf edges rise and fall softly, hair tips drift, dust moves slowly, petals descend slowly, the camera has not moved yet.\\n[Shot 2] At 00:02.000, motion unfolds gradually: the four-colored scarf begins to sway in slow waves, the wide sheer sleeves ripple with the air current, the pale robe edges float within the mist; the petal-scattering hand lowers at a slow pace, the last petal leaving the fingertips; one finger plucks a pipa string gently and the string trembles; lotus petal edges quiver, the clouds drift, the moonlight shifts faintly through the haze; the camera starts an extremely slow push-in with very small movement.\\n[Shot 3] At 00:04.000, motion settles into a steady state: the scarf keeps swaying slowly at the same rhythm, hair and robe keep drifting lightly, petals and dust keep falling and floating, she holds her hovering pose and expression, the pipa rests against her shoulder without further movement; the camera stops, the mist and light stay stable, until 5.00 seconds.\\n\\noverall_soundscape:\\nA soft high-altitude wind throughout, faint rustling of the silk scarf, one short plucked note of the pipa, the petals falling almost silent, the clouds silent; distant faint bells and strings barely audible; no dialogue, no other noise.\\n\\nnon_diegetic_music:\\nVery light ethereal string ambient music, slow and low in the mix; a gentle one-beat rise at the pipa pluck, then settling softly with the calm frame at the end.\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false}],\"durationSec\":5,\"shots\":[{\"id\":\"mtl7jgds01e0k\",\"durationSec\":5,\"prompt\":\"I2VA: The image serves as the first frame. The video (5 seconds) starts from this exact Dunhuang feitian apsara frame and brings it slowly to life.\\n\\nsubject_definitions:\\n is the character reference image (first frame: a Dunhuang feitian apsara hovering above a sea of clouds under a moonlit sky, realistic cinematic texture with hazy mist, vermilion-and-indigo silk dress, a multicolored scarf in jade green, coral red, gold and pale blue circling her body twice and trailing behind, gold jewelry and a pearl necklace, holding a pipa lute, one hand scattering flower petals, petals and golden dust floating), the first frame locks all appearance, outfit, pose, lighting and composition.\\n\\nsummary:\\n[reference generation] Target video (5 seconds): the first frame slowly comes to life. The apsara stays in her hovering pose; the four-colored scarf and wide sheer sleeves sway and ripple gently in the wind, her hair drifts lightly, the translucent white robe edges float softly within the mist; the hand scattering petals lowers slowly, petals continue falling, one finger plucks a pipa string once; the clouds drift slowly, golden dust floats in the moonlight, lotus petal edges tremble slightly; the camera pushes in extremely slowly, the misty haze and soft light stay throughout, the frame calm and dreamy.\\n\\nretention_analysis:\\n (character reference): fully_preserved - the figure's face, hairstyle and ornaments, vermilion-and-indigo dress, four-colored scarf, gold jewelry and pearl necklace, pipa, pose, moonlight, cloud sea background and hazy mist fully preserved throughout; only the scarf, sheer robe, hair, petals, clouds and light dust move naturally and slowly, composition and figure position stay without drifting.\\n\\ndetailed_description:\\nRealistic cinematic texture with a hazy misty finish, moonlit sea of clouds, cold silver moonlight mixed with warm golden glow from below the clouds, shallow depth of field, unhurried rhythm.\\n[Shot 1] At 00:00.000, medium-wide shot, fixed camera, identical to the first frame: the apsara hovers in the upper center, her body on a diagonal, the scarf circling twice and trailing toward the lower left, lotus flowers and petals scattered in the foreground, golden dust suspended, the misty cloud sea and moon behind her. In the opening second only the finest motion occurs: the scarf edges rise and fall softly, hair tips drift, dust moves slowly, petals descend slowly, the camera has not moved yet.\\n[Shot 2] At 00:02.000, motion unfolds gradually: the four-colored scarf begins to sway in slow waves, the wide sheer sleeves ripple with the air current, the pale robe edges float within the mist; the petal-scattering hand lowers at a slow pace, the last petal leaving the fingertips; one finger plucks a pipa string gently and the string trembles; lotus petal edges quiver, the clouds drift, the moonlight shifts faintly through the haze; the camera starts an extremely slow push-in with very small movement.\\n[Shot 3] At 00:04.000, motion settles into a steady state: the scarf keeps swaying slowly at the same rhythm, hair and robe keep drifting lightly, petals and dust keep falling and floating, she holds her hovering pose and expression, the pipa rests against her shoulder without further movement; the camera stops, the mist and light stay stable, until 5.00 seconds.\\n\\noverall_soundscape:\\nA soft high-altitude wind throughout, faint rustling of the silk scarf, one short plucked note of the pipa, the petals falling almost silent, the clouds silent; distant faint bells and strings barely audible; no dialogue, no other noise.\\n\\nnon_diegetic_music:\\nVery light ethereal string ambient music, slow and low in the mix; a gentle one-beat rise at the pipa pluck, then settling softly with the calm frame at the end.\",\"negativePrompt\":\"bad video\",\"startImage\":{\"imageFile\":\"Krea2-2ST-20260903120616_00001_.png\",\"width\":3840,\"height\":2160},\"endImage\":null,\"continuityFromPrev\":false}],\"liveTaePreview\":false,\"batchDetailMode\":\"solo\",\"batchWorkspaces\":{\"r2v\":{\"selectedIndex\":0,\"editMode\":\"segment\",\"runSelectEnabled\":false,\"runSelection\":[],\"segments\":[{\"id\":\"mt0slveqtpanc\",\"start\":0,\"length\":243,\"frameCount\":243,\"durationSec\":10,\"prompt\":\"subject_definitions:\\n\\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\\n\\nsummary:\\n\\n[reference generation] A 10-second single-shot continuous take in a violent, cinematic sci-fi meets Chinese sword immortal look: far in the distance a colossal alien warship breaks in two, the rear half catches fire and plunges toward the horizon, the moment of impact triggers a blinding explosion and a massive shockwave ring expanding outward, the blast wave crosses the vast field and reaches the camera position after a realistic delay, hitting <Subject 1> who stands calm on the right side of the frame with her sword aimed at the wreck, her expression cold and serene, the shockwave tearing through her hair, ribbon, sleeves, and the fabric of her hanfu, the camera trembling slightly with the impact, firelight glowing on her face, followed by debris raining down and smoke billowing on the horizon, shot on vintage 35mm film with natural matte skin and visible grain, no cut and no shot change.\\n\\nretention_analysis:\\n\\n<Subject 1> (appears in [Shot 1]): fully_preserved — her face, blood streak, hairpin, ribbon, celestial hanfu, sword, extended arm posture, and right-side placement remain fully consistent with <Picture 1>. <Picture 1> (identity & composition anchor): fully_preserved — the opening frame matches the reference composition exactly, followed by only subtle breathing and micro-movement, no re-framing, no subject repositioning. Key: her spatial relationship with the distant ship and the frame edge never changes; the ship, smoke, debris, blast wave, and dark ships stay as background scenery; the shockwave always arrives AFTER the explosion, and debris falls AFTER the shockwave passes.\\n\\ndetailed_description:\\n\\n[Shot 1] Vintage 35mm film cinematic quality with real destructive impact and correct telephoto perspective: the warship is located far away in the distant background, yet its colossal scale makes it fill a large part of the sky, compressed by a long telephoto lens so it appears flattened against the horizon, maintaining a believable distance while still reading as enormous; shot on analog film stock, fine visible grain across the whole frame, natural matte skin texture with subtle pores and soft highlights, gentle halation bleeding around the firelight, slight chromatic aberration at the edges, muted analog color grading of warm reds and golds with cool blue shadows, no glossy plastic look, no over-smoothed skin; the scene carries overwhelming kinetic force — the physics are strictly correct: first the warship breaks in two, the rear half catches fire and begins falling at a steep angle toward the horizon, it impacts the ground in a blinding white flash, a massive fireball erupts upward, the shockwave ring expands outward FROM the impact point, traveling across the field at a visible speed with a realistic delay of several seconds before reaching the camera position, the blast wind hits the heroine: her hair, ribbon, and sheer sleeves are whipped violently backward, the layers of her hanfu flutter and snap in the blast wind, dust and debris streaking past the lens, the camera itself trembling and shuddering with the impact, the light of the distant fireball reflecting on her face; warm firelight from the blast mixed with cold blue alien light, drifting smoke and flying debris, shallow depth of field with the subject in sharp focus and the distant blast softly blurred, soft low-contrast film tone; the camera holds a locked position with only impact vibration, no re-framing, no shot change; single continuous shot, no cut, no jump cut, the heroine is the only figure in focus, the falling ship and blast remain living scenery, nothing enters the foreground.\\n\\n0.00–2.00s: hold the <Picture 1> composition — she stands still with her sword extended, taking one slow, quiet breath; far in the distance the warship cracks apart along its centerline, the rear half separates and catches fire, beginning its descent toward the horizon, flames trailing, her white ribbon and sleeves drifting gently in the wind, no shockwave yet.\\n\\n2.00–4.00s: the rear half of the warship plummets at steep angle, impacts the horizon in a blinding white flash, a massive fireball erupts upward followed by a column of black smoke, secondary explosions ripple through the wreckage, debris scatters outward from the impact zone; still no shockwave has reached her, the delay is physically correct, the explosion is still distant.\\n\\n4.00–6.50s: the shockwave ring becomes visible expanding outward FROM the impact point, racing across the flat field at tremendous speed, kicking up dust and grass as it travels, the leading edge of the blast wave crossing the vast distance, approaching the camera; she remains still, her gaze fixed on the distant destruction, the wind from the shockwave not yet reaching her, a low rumble building in the distance.\\n\\n6.50–8.50s: the shockwave arrives — the blast wind hits her full force, her hair, ribbon, and sheer sleeves whipped violently backward, the layers of her hanfu flutter and snap and ripple, dust and debris streaking past the lens, the camera trembling and shuddering with the impact, her expression remains cold and serene, she holds her ground, the firelight from the distant explosion reflecting across her face, the sword in her extended arm catching the glow.\\n\\n8.50–10.00s: the shockwave passes, her hair and sleeves settling back into place, she slowly lowers her extended arm, the sword sweeping a small arc down to her side, the blade catching the fading firelight, debris and embers drift downward through the sky, smoke billows on the horizon where the warship fell, secondary fires crackling in the distance, her cold gaze holding to the final moment as the clip closes; she remains silent throughout, her lips only moving naturally with breathing, producing no recognizable speech.\\n\\noverall_soundscape: A deep distant crack as the warship splits, a thunderous roar as the rear half falls, a blinding silent flash followed by a deafening explosion upon impact, a rolling low rumble as the shockwave expands across the field, a terrifying delay of silence across the vast distance, then a violent whoosh as the blast wind hits the camera, the rush of air tearing through silk and hair, the camera shaking, debris raining down, crackling fire and embers fading into the final seconds.\\n\\nnon_diegetic_music: N/A\",\"negativePrompt\":\"\",\"taskType\":\"\",\"refs\":[],\"refAudios\":[],\"refVideos\":[],\"genImage\":{\"imageFile\":\"\",\"fileName\":\"\"},\"continuityFromPrev\":false,\"refImageSize\":\"max\",\"referenceVideo\":{\"videoFile\":\"\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},\"_videoFrameCount\":243,\"previewFps\":24}],\"globalCommon\":{\"commonEnabled\":true,\"commonCollapsed\":false,\"prompt\":\"subject_definitions:\\n\\n<Subject 1> is from <Picture 1>: a beautiful young female sword immortal with cool elegant composure — clear cold eyes with long lashes, flawless pale skin with a single streak of blood on her cheek, soft coral lips, a subtle floral huadian mark on her forehead, wind-torn dark hair with a jade hairpin and white ribbon trailing, wearing a flowing ethereal celestial hanfu of sheer pale silk and misty white gauze, layered translucent sleeves drifting like clouds, silver thread embroidery on the collar, a slim moon-white sash with tassels, standing on the right side of the frame with her right arm extended across the frame, the slender Chinese jian sword with a red tassel aimed at a massive alien warship; the background — a colossal alien warship far away in the distance, still enormous on the horizon, breaking into two halves and plunging toward the earth, flames and black smoke trailing from the rear half, debris raining down, dark ships hovering beyond — remains the fixed background of <Picture 1>, with the composition and subject placement fully locked.\\n\",\"refs\":[{\"index\":0,\"imageFile\":\"Krea2-20260906125141_00001_.png\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"}],\"refAudios\":[],\"refVideos\":[]},\"output\":{\"continuityEnabled\":true,\"continuityOverlapFrames\":22}}}}",
+        "bd_grp_advanced": "高级采样",
+        "steps": 4,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "shift_video": 6,
+        "shift_audio": 3,
+        "export_source_images": false,
+        "bd_grp_sigma_refiner": "一采 Sigma 精修",
+        "sigma_refiner_enabled": false,
+        "sigma_refiner_extra_steps": 1,
+        "sigma_refiner_start_at_sigma": 0.7,
+        "sigma_refiner_end_at_sigma": 0,
+        "sigma_refiner_spacing": "cosine",
+        "bd_grp_perf": false,
+        "clear_vram_between_segments": true,
+        "minimax_director_ui": ""
+      }
+    },
+    {
+      "id": 25,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        -552.7732333967726,
+        -196.96376123920373
+      ],
+      "size": [
+        407.0257568359375,
+        118.1103286743164
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "model",
+          "localized_name": "模型",
+          "name": "model",
+          "type": "MODEL",
+          "link": 33
+        },
+        {
+          "label": "lora_name",
+          "localized_name": "LoRA名称",
+          "name": "lora_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "lora_name"
+          }
+        },
+        {
+          "label": "strength_model",
+          "localized_name": "模型强度",
+          "name": "strength_model",
+          "type": "FLOAT",
+          "widget": {
+            "name": "strength_model"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            37
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {}
+        }
+      },
+      "widgets_values": [
+        "minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors",
+        1
+      ],
+      "widgets_values_named": {
+        "lora_name": "minimax_h3_ref2v_lightx2v_turbo_4step_v0.1_resized_avg_rank_20_bf16.safetensors",
+        "strength_model": 1
+      }
+    },
+    {
+      "id": 1,
+      "type": "UNETLoader",
+      "pos": [
+        -720,
+        80
+      ],
+      "size": [
+        360,
+        82
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "unet_name",
+          "localized_name": "UNet名称",
+          "name": "unet_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "unet_name"
+          }
+        },
+        {
+          "label": "weight_dtype",
+          "localized_name": "数据类型",
+          "name": "weight_dtype",
+          "type": "COMBO",
+          "widget": {
+            "name": "weight_dtype"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "MODEL",
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            33
+          ]
+        }
+      ],
+      "title": "MiniMax H3 UNET",
+      "properties": {
+        "Node name for S&R": "UNETLoader",
+        "models": [
+          {
+            "name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+            "directory": "diffusion_models"
+          }
+        ],
+        "ue_properties": {
+          "version": "7.0.1",
+          "widget_ue_connectable": {
+            "weight_dtype": true,
+            "unet_name": true
+          }
+        }
+      },
+      "widgets_values": [
+        "Minimax-h3_Singularity_ref2va_v1.3_int8.safetensors",
+        "default"
+      ],
+      "widgets_values_named": {
+        "unet_name": "Minimax-h3_Singularity_ref2va_v1.3_int8.safetensors",
+        "weight_dtype": "default"
+      }
+    }
+  ],
+  "links": [
+    [
+      13,
+      4,
+      0,
+      12,
+      2,
+      "VAE"
+    ],
+    [
+      15,
+      3,
+      0,
+      12,
+      1,
+      "VAE"
+    ],
+    [
+      16,
+      2,
+      0,
+      12,
+      3,
+      "CLIP"
+    ],
+    [
+      17,
+      12,
+      0,
+      6,
+      0,
+      "IMAGE"
+    ],
+    [
+      18,
+      12,
+      1,
+      6,
+      1,
+      "AUDIO"
+    ],
+    [
+      19,
+      12,
+      2,
+      6,
+      4,
+      "FLOAT"
+    ],
+    [
+      20,
+      12,
+      5,
+      8,
+      0,
+      "STRING"
+    ],
+    [
+      23,
+      16,
+      0,
+      12,
+      0,
+      "MODEL"
+    ],
+    [
+      24,
+      18,
+      0,
+      12,
+      6,
+      "MMX_DIR_REFINE"
+    ],
+    [
+      25,
+      19,
+      0,
+      18,
+      2,
+      "UPSCALE_MODEL"
+    ],
+    [
+      26,
+      20,
+      0,
+      18,
+      1,
+      "SIGMAS"
+    ],
+    [
+      27,
+      22,
+      0,
+      23,
+      0,
+      "MODEL"
+    ],
+    [
+      29,
+      16,
+      0,
+      20,
+      0,
+      "MODEL"
+    ],
+    [
+      30,
+      21,
+      0,
+      24,
+      0,
+      "MODEL"
+    ],
+    [
+      31,
+      24,
+      0,
+      22,
+      0,
+      "MODEL"
+    ],
+    [
+      33,
+      1,
+      0,
+      25,
+      0,
+      "MODEL"
+    ],
+    [
+      36,
+      26,
+      0,
+      16,
+      0,
+      "MODEL"
+    ],
+    [
+      37,
+      25,
+      0,
+      27,
+      0,
+      "MODEL"
+    ],
+    [
+      38,
+      27,
+      0,
+      26,
+      0,
+      "MODEL"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "模型加载 (MiniMax H3)",
+      "bounding": [
+        -760,
+        40,
+        440,
+        560
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "MiniMax H3 Director",
+      "bounding": [
+        -320,
+        40,
+        1120,
+        960
+      ],
+      "color": "#8A8",
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "输出",
+      "bounding": [
+        860,
+        40,
+        760,
+        760
+      ],
+      "color": "#b58",
+      "flags": {}
+    },
+    {
+      "id": 4,
+      "title": "加速模块（用就开启，不用就可以关掉）",
+      "bounding": [
+        70.31246948242188,
+        -284.7879333496094,
+        700.2926025390625,
+        240.56150817871094
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 5,
+      "title": "二采模块（用就开启，不用就可以关掉）",
+      "bounding": [
+        -2003.2806396484375,
+        767.3196411132812,
+        1016.3786010742188,
+        566.3331298828125
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 6,
+      "title": "加速lora（开启后开8步，关闭后开20/25步）",
+      "bounding": [
+        -651.9522705078125,
+        -287.9877624511719,
+        700.2926025390625,
+        240.56150817871094
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "links_added_by_ue": [],
+    "note": "MiniMax H3 Director · multi-segment continuity · H3 latent upscale + second pass",
+    "xzgGroups": {},
+    "ue_links": [],
+    "0246.VERSION": [
+      0,
+      0,
+      4
+    ],
+    "pixaromaGroups": [],
+    "frontendVersion": "1.23.0",
+    "ds": {
+      "scale": 0.7247295000000088,
+      "offset": [
+        1013.4727023265796,
+        852.7095300925073
+      ]
+    }
+  },
+  "version": 0.4
+}
