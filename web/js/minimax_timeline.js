@@ -2158,30 +2158,78 @@ class MiniMaxH3DirectorEditor {
     }
 
     updateExternalGroupsBanner() {
-        const el = this.externalGroupsMsgEl || this.root?.querySelector('[data-r="external-groups-msg"]');
-        if (!el) return;
+        const el = this.externalGroupsMsgEl
+            || this.root?.querySelector('[data-r="external-groups-msg"]');
+
         const i2v = this.hasExternalI2vGroups();
         const r2v = this.hasExternalR2vGroups();
-        const taskKey = resolveTaskKey(this.getTaskKey?.() || this.taskTypeWidget?.value);
-        const active = taskKey !== "addguide" && (i2v || r2v);
+        const connected = i2v || r2v;
+
+        const taskKey = resolveTaskKey(
+            this.getTaskKey?.() || this.taskTypeWidget?.value,
+        );
+
+        const isAddGuide = taskKey === "addguide";
+
+        if (isAddGuide) {
+            if (el) {
+                el.textContent = "";
+                el.classList.add("hidden");
+            }
+
+            this.root?.classList.remove("bd-external-groups");
+
+            if (this.isR2vBatch?.()) setR2vToolbar(this, true);
+            else if (this.isFl2vMode?.()) setFl2vToolbar(this, true);
+            else {
+                updateR2vToolbarBtns(this);
+                updateFl2vToolbarBtns(this);
+            }
+
+            const notice = this.batchI2vNotice;
+            if (!notice) return;
+
+            if (connected) {
+                notice.textContent = t("batch.notice.addguideExternal");
+                notice.classList.add("visible");
+            } else {
+                notice.textContent = "";
+                notice.classList.remove("visible");
+            }
+
+            return;
+        }
+
+        if (!el) return;
+
+        const active = connected;
+
         el.classList.toggle("hidden", !active);
         this.root?.classList.toggle("bd-external-groups", active);
-        // Refresh add/delete visibility when external wiring toggles.
+
         if (this.isR2vBatch?.()) setR2vToolbar(this, true);
         else if (this.isFl2vMode?.()) setFl2vToolbar(this, true);
         else {
             updateR2vToolbarBtns(this);
             updateFl2vToolbarBtns(this);
         }
+
         if (!active) {
             el.textContent = "";
             return;
         }
+
         const specs = collectExternalGroupSpecs(this);
         const n = specs?.length || 0;
-        const base = i2v ? t("external.i2vActive") : t("external.r2vActive");
-        const count = n > 0 ? ` (${t("external.groupCount", { n })})` : "";
-        el.textContent = `${base}${count} ${t("external.durationHint")}`;
+        const base = i2v
+            ? t("external.i2vActive")
+            : t("external.r2vActive");
+        const count = n > 0
+            ? ` (${t("external.groupCount", { n })})`
+            : "";
+
+        el.textContent =
+            `${base}${count} ${t("external.durationHint")}`;
     }
 
     /**

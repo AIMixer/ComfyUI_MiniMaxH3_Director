@@ -202,6 +202,34 @@ export function getTimedAudioGuideRanges(seg) {
     });
 }
 
+export function hasAddGuideAudioTimingConflict(seg) {
+    normalizeAddGuideSegment(seg);
+
+    const frameCount = Math.max(
+        1,
+        Number.parseInt(seg?.frameCount ?? seg?.length, 10) || 1,
+    );
+
+    const guides = [...(seg?.timedAudioGuides || [])]
+        .filter((guide) => {
+            const start = Number(guide.frameIndex);
+            const durationSec = Number(audioRef(guide.audio)?.durationSec || 0);
+            return Number.isInteger(start) && durationSec > 0;
+        })
+        .sort((a, b) => Number(a.frameIndex) - Number(b.frameIndex));
+
+    return guides.some((guide, index) => {
+        const start = Number(guide.frameIndex);
+        const durationSec = Number(audioRef(guide.audio)?.durationSec || 0);
+        const sourceEnd = start + durationSec * H3_NATIVE_FPS;
+        const limit = index + 1 < guides.length
+            ? Number(guides[index + 1].frameIndex)
+            : frameCount;
+
+        return Number.isFinite(limit) && sourceEnd > limit + 1e-6;
+    });
+}
+
 export function validateAddGuideSegment(seg) {
     normalizeAddGuideSegment(seg);
     const generalErrors = [];
@@ -454,11 +482,57 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
     const validation = validateAddGuideSegment(seg);
     const count = Math.max(1, Number.parseInt(seg.frameCount ?? seg.length, 10) || 1);
     const last = count - 1;
-    const selectedId = seg._selectedGuideId || seg.timedGuides[0]?.id || "";
+    const selectableGuideIds = new Set([
+        ...(seg.timedGuides || []).map((guide) => guide.id),
+        ...(seg.timedAudioGuides || []).map((guide) => guide.id),
+    ]);
+
+    const selectedId = selectableGuideIds.has(seg._selectedGuideId)
+        ? seg._selectedGuideId
+        : (
+            seg.timedGuides[0]?.id
+            || seg.timedAudioGuides[0]?.id
+            || ""
+        );
+
     seg._selectedGuideId = selectedId;
 
     const root = document.createElement("section");
     root.className = "bd-addguide";
+
+    const applyGuideSelection = (guideId) => {
+        const id = String(guideId || "");
+        seg._selectedGuideId = id;
+
+        root.querySelectorAll(".bd-ag-guide-card").forEach((cardEl) => {
+            cardEl.classList.toggle(
+                "selected",
+                cardEl.dataset.guideId === id,
+            );
+        });
+
+        root.querySelectorAll(".bd-ag-audio-card").forEach((cardEl) => {
+            cardEl.classList.toggle(
+                "selected",
+                cardEl.dataset.guideId === id,
+            );
+        });
+
+        root.querySelectorAll(".bd-ag-marker").forEach((marker) => {
+            const markerId = marker.dataset.guideId || "";
+            marker.classList.toggle(
+                "selected",
+                !!markerId && markerId === id,
+            );
+        });
+
+        root.querySelectorAll(".bd-ag-audio-handle").forEach((handle) => {
+            handle.classList.toggle(
+                "selected",
+                handle.dataset.audioHandle === id,
+            );
+        });
+    };
 
     const timeline = document.createElement("div");
     timeline.className = "bd-ag-timeline";
@@ -508,14 +582,13 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         const marker = addMarker(Number.isInteger(original) ? original : 0, guideLabel, "guide", guide);
         marker.onclick = (event) => {
             event.stopPropagation();
-            seg._selectedGuideId = guide.id;
-            editor.renderImageBatchGroups?.();
+            applyGuideSelection(guide.id);
         };
         marker.onpointerdown = (event) => {
             event.preventDefault();
             event.stopPropagation();
             marker.setPointerCapture?.(event.pointerId);
-            seg._selectedGuideId = guide.id;
+            applyGuideSelection(guide.id);
             const previous = Number(guide.frameIndex);
             const previousError = frameError(seg, guide, previous);
             const input = [...root.querySelectorAll("[data-guide-frame]")]
@@ -594,10 +667,19 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         handle.className = "bd-ag-audio-handle";
         handle.dataset.audioHandle = guide.id;
         handle.title = `${label} · F${guide.frameIndex} · ${displayTime(guide.frameIndex)}`;
-        if (validation.audioErrors.has(guide.id)) handle.classList.add("invalid");
+
+        if (guide.id === selectedId) {
+            handle.classList.add("selected");
+        }
+
+        if (validation.audioErrors.has(guide.id)) {
+            handle.classList.add("invalid");
+        }
         handle.onpointerdown = (event) => {
             event.preventDefault();
             event.stopPropagation();
+            applyGuideSelection(guide.id);
+
             handle.setPointerCapture?.(event.pointerId);
             const previous = Number(guide.frameIndex);
             let error = "";
@@ -614,7 +696,9 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
                     .find((element) => element.dataset.audioGuideTime === guide.id);
                 if (input) input.value = String(pending);
                 if (time) time.textContent = displayTime(pending);
+
                 updateAudioTimeline();
+                updateAudioTimingWarning();
             };
             const up = () => {
                 handle.removeEventListener("pointermove", move);
@@ -631,6 +715,26 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         timeline.appendChild(handle);
     });
     updateAudioTimeline();
+
+    const audioTimingWarning = document.createElement("div");
+    audioTimingWarning.className = "bd-ag-audio-warning hidden";
+
+    const updateAudioTimingWarning = () => {
+        const conflict = hasAddGuideAudioTimingConflict(seg);
+
+        audioTimingWarning.textContent = conflict
+            ? t("addguide.audioTimingWarning")
+            : "";
+
+        audioTimingWarning.classList.toggle("hidden", !conflict);
+    };
+
+    updateAudioTimingWarning();
+
+    // Warning belongs to the timeline overlay layer.
+    // It must not participate in the AddGuide flex layout or change container height.
+    timeline.appendChild(audioTimingWarning);
+
     root.appendChild(timeline);
 
     const strip = document.createElement("div");
@@ -650,11 +754,11 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
             ref: imageRef(guide.image),
             selected: guide.id === selectedId,
             onUpload: () => {
-                seg._selectedGuideId = guide.id;
+                applyGuideSelection(guide.id);
                 handlers.upload?.("guide", guide.id);
             },
             onExisting: () => {
-                seg._selectedGuideId = guide.id;
+                applyGuideSelection(guide.id);
                 handlers.pick?.("guide", guide.id);
             },
             onClear: () => {
@@ -664,7 +768,10 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
             onDelete: () => {
                 seg.timedGuides = seg.timedGuides.filter((item) => item.id !== guide.id);
                 if (seg._selectedGuideId === guide.id) {
-                    seg._selectedGuideId = seg.timedGuides[0]?.id || "";
+                    seg._selectedGuideId =
+                        seg.timedGuides[0]?.id
+                        || seg.timedAudioGuides[0]?.id
+                        || "";
                 }
                 commitEditor(editor);
             },
@@ -674,13 +781,7 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         // Selection is visual-only. Rebuilding here replaces a just-focused frame
         // input before the user can type, so update cards/markers in place.
         wrap.onclick = () => {
-            seg._selectedGuideId = guide.id;
-            root.querySelectorAll(".bd-ag-guide-card").forEach((guideCard) => {
-                guideCard.classList.toggle("selected", guideCard.dataset.guideId === guide.id);
-            });
-            root.querySelectorAll(".bd-ag-marker").forEach((marker) => {
-                marker.classList.toggle("selected", marker.dataset.guideId === guide.id);
-            });
+            applyGuideSelection(guide.id);
         };
         const frameRow = document.createElement("div");
         frameRow.className = "bd-ag-frame-row";
@@ -797,7 +898,17 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         const error = validation.audioErrors.get(guide.id) || "";
         const cardEl = document.createElement("div");
         cardEl.className = "bd-ag-audio-card";
+        cardEl.dataset.guideId = guide.id;
+
+        cardEl.classList.toggle(
+            "selected",
+            guide.id === selectedId,
+        );
         cardEl.classList.toggle("invalid", !!error);
+
+        cardEl.onclick = () => {
+            applyGuideSelection(guide.id);
+        };
         const head = document.createElement("div");
         head.className = "bd-ag-slot-head";
         const title = document.createElement("b");
@@ -809,7 +920,22 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         remove.title = t("addguide.deleteAudioGuide");
         remove.onclick = (event) => {
             event.stopPropagation();
-            seg.timedAudioGuides = seg.timedAudioGuides.filter((item) => item.id !== guide.id);
+
+            seg.timedAudioGuides =
+                seg.timedAudioGuides.filter(
+                    (item) => item.id !== guide.id,
+                );
+
+            if (seg._selectedGuideId === guide.id) {
+                seg._selectedGuideId =
+                    seg.timedGuides[0]?.id
+                    || seg.timedAudioGuides[0]?.id
+                    || "";
+            }
+
+            updateAudioTimeline();
+            updateAudioTimingWarning();
+
             commitEditor(editor);
         };
         head.append(title, remove);
@@ -837,9 +963,16 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
             audio.onloadedmetadata = () => {
                 const seconds = Number(audio.duration);
                 if (!Number.isFinite(seconds) || seconds <= 0) return;
+
                 guide.audio.durationSec = seconds;
-                duration.textContent = t("addguide.audioDuration", { seconds: seconds.toFixed(3) });
+
+                duration.textContent = t(
+                    "addguide.audioDuration",
+                    { seconds: seconds.toFixed(3) },
+                );
+
                 updateAudioTimeline();
+                updateAudioTimingWarning();
             };
             audio.onended = () => { play.textContent = "▶"; };
             preview.onclick = (event) => {
@@ -861,7 +994,12 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
             clear.onclick = (event) => {
                 event.stopPropagation();
                 audio.pause?.();
+
                 guide.audio = null;
+
+                updateAudioTimeline();
+                updateAudioTimingWarning();
+
                 commitEditor(editor);
             };
             mediaRow.append(preview, clear);
@@ -900,8 +1038,13 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
         const step = (delta) => {
             const candidate = Number(guide.frameIndex) + delta;
             if (audioFrameError(seg, guide, candidate)) return;
+
             guide.frameIndex = candidate;
             sortTimedAudioGuides(seg);
+
+            updateAudioTimeline();
+            updateAudioTimingWarning();
+
             commitEditor(editor);
         };
         minus.disabled = !!audioFrameError(seg, guide, Number(guide.frameIndex) - 1);
@@ -917,7 +1060,12 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
                 return;
             }
             guide.frameIndex = candidate;
+            delete guide._frameDraft;
             sortTimedAudioGuides(seg);
+
+            updateAudioTimeline();
+            updateAudioTimingWarning();
+
             commitEditor(editor);
         };
         input.oninput = () => {
@@ -960,12 +1108,21 @@ export function appendAddGuideEditor(card, editor, seg, index, handlers = {}) {
     addAudio.onclick = (event) => {
         event.stopPropagation();
         if (nextAudioFrame == null) return;
-        seg.timedAudioGuides.push({
+
+        const guide = {
             id: uid().replace("guide_", "audio_guide_"),
             frameIndex: nextAudioFrame,
             audio: null,
-        });
+        };
+
+        seg.timedAudioGuides.push(guide);
+        seg._selectedGuideId = guide.id;
+
         sortTimedAudioGuides(seg);
+
+        updateAudioTimeline();
+        updateAudioTimingWarning();
+
         commitEditor(editor);
     };
     audioStrip.appendChild(addAudio);
@@ -990,6 +1147,7 @@ export const ADDGUIDE_STYLES = `
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-addguide .bd-token-wrap{flex:0 0 auto;min-height:96px;height:auto;overflow:visible}
 .bd-wrap.bd-batch-fill .bd-batch-list.bd-batch-solo .bd-batch-addguide .bd-token-editor{flex:0 0 auto;min-height:96px;height:110px;max-height:none;overflow:auto;resize:vertical}
 .bd-addguide{--ag-panel:#0d131b;--ag-card:#111923;--ag-line:#2d3b4d;--ag-muted:#8fa0b5;display:flex;flex-direction:column;gap:10px;min-width:0;padding:2px 4px 4px}
+.bd-ag-audio-warning{position:absolute;left:0;right:0;bottom:-13px;z-index:8;height:14px;margin:0;padding:0;border:0;background:transparent;color:#e7b85a;font-size:10px;font-weight:500;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}.bd-ag-audio-warning.hidden{display:none}
 .bd-ag-warning{font-size:10px;color:#8d9aaa;line-height:1.45}.bd-ag-warning.invalid,.bd-ag-error{color:#ff7b7b}.bd-ag-error{min-height:15px;font-size:10px;line-height:15px;text-align:center}.bd-ag-error:empty{visibility:hidden}
 .bd-ag-timeline{position:relative;height:112px;margin:0 8px 2px;background:transparent;border:0;overflow:visible}
 .bd-ag-rail{position:absolute;left:0;right:0;top:24px;height:65px;box-sizing:border-box;border:1px solid #46556d;border-radius:9px}.bd-ag-rail:after{content:"";position:absolute;left:0;right:0;top:31px;border-top:1px solid #46556d}
@@ -998,7 +1156,7 @@ export const ADDGUIDE_STYLES = `
 .bd-ag-marker{position:absolute;top:29px;z-index:5;transform:translateX(-50%);width:9px;height:27px;padding:0;border-radius:2px;border:1px solid #62a8ff;background:#326b9c;color:transparent;cursor:ew-resize}.bd-ag-marker:after{content:attr(data-label);position:absolute;left:13px;top:2px;color:#d3e6fb;font-size:10px;font-weight:400;white-space:nowrap;pointer-events:none}.bd-ag-marker.at-start{transform:none}.bd-ag-marker.at-end{transform:translateX(-100%)}
 .bd-ag-marker.endpoint{top:27px;width:27px;height:27px;cursor:default;border-radius:5px;border-color:#808b9b;background:#303844;color:#fff;font-size:12px}.bd-ag-marker.endpoint:after{display:none}.bd-ag-marker.endpoint.at-end{transform:translateX(-100%)}.bd-ag-marker.selected{box-shadow:0 0 0 2px #ffcc66}.bd-ag-marker.invalid{border-color:#ff4f5f;background:#681f2a;color:#fff}
 .bd-ag-audio-bar{position:absolute;top:62px;height:20px;min-width:2px;z-index:3;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:2px 7px;box-sizing:border-box;border-radius:3px;background:#397c66;color:#dff9ef;font-size:10px;line-height:16px;pointer-events:none}
-.bd-ag-audio-handle{position:absolute;top:57px;width:9px;height:31px;z-index:6;transform:translateX(-50%);padding:0;border:1px solid #8ee0bf;border-radius:2px;background:#2c584b;cursor:ew-resize}.bd-ag-audio-handle.invalid{border-color:#ff5968;background:#762632}
+.bd-ag-audio-handle{position:absolute;top:57px;width:9px;height:31px;z-index:6;transform:translateX(-50%);padding:0;border:1px solid #8ee0bf;border-radius:2px;background:#2c584b;cursor:ew-resize}.bd-ag-audio-handle.selected{box-shadow:0 0 0 2px #ffcc66}.bd-ag-audio-handle.invalid{border-color:#ff5968;background:#762632}
 .bd-ag-strip,.bd-ag-audio-strip{display:flex;gap:16px;overflow-x:auto;padding:2px 2px 12px;align-items:flex-start;scrollbar-width:auto;scrollbar-color:#3b4757 #141b24}.bd-ag-strip::-webkit-scrollbar,.bd-ag-audio-strip::-webkit-scrollbar{height:10px}.bd-ag-strip::-webkit-scrollbar-track,.bd-ag-audio-strip::-webkit-scrollbar-track{background:#141b24}.bd-ag-strip::-webkit-scrollbar-thumb,.bd-ag-audio-strip::-webkit-scrollbar-thumb{background:#3b4757;border-radius:5px}
 .bd-ag-slot{position:relative;display:flex;flex:0 0 274px;height:244px;box-sizing:border-box;flex-direction:column;gap:7px;padding:10px;border:1px solid var(--ag-line);border-radius:12px;background:linear-gradient(160deg,#121b26,#0e151e);box-shadow:0 4px 12px rgba(0,0,0,.16);min-width:0}.bd-ag-slot.selected{border-color:#ffcc66;box-shadow:0 0 0 1px rgba(255,204,102,.3)}.bd-ag-slot.invalid{border-color:#ff5968}
 .bd-ag-slot-head{display:flex;align-items:center;justify-content:space-between;gap:6px;min-height:23px}.bd-ag-slot-head>b{font-size:13px;color:#e7ecf5;font-weight:650}.bd-ag-guide-delete{width:22px;height:22px;padding:0;border:0;border-radius:4px;background:rgba(0,0,0,.78);color:#ff8a8a;font-size:18px;font-weight:700;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}.bd-ag-guide-delete:hover{background:rgba(160,30,30,.95);color:#fff}
@@ -1006,7 +1164,7 @@ export const ADDGUIDE_STYLES = `
 .bd-ag-actions{display:flex}.bd-ag-actions button{width:100%;height:100%;font-size:11px;padding:5px 7px;border:1px solid #3a495c;border-radius:6px;background:#141d27;color:#d1dbe7}.bd-ag-actions button:hover{border-color:#6584aa;background:#1a2735}
 .bd-ag-frame-row{display:grid;grid-template-columns:52px 120px minmax(62px,1fr);gap:7px;align-items:center;min-height:31px}.bd-ag-frame-label{color:#aab6c7;font-size:11px;text-align:right;white-space:nowrap}.bd-ag-frame-controls{display:grid;grid-template-columns:28px 56px 28px;gap:4px}.bd-ag-frame-controls input{width:100%;min-width:0;text-align:center}.bd-ag-frame-controls input.invalid{border-color:#ff5968;color:#ff8c96}.bd-ag-frame-controls button{padding:2px}.bd-ag-time{text-align:left;color:#c1cede;font-size:11px;white-space:nowrap}
 .bd-ag-add{flex:0 0 274px;height:244px;box-sizing:border-box;border:1px dashed #55789f;border-radius:12px;background:linear-gradient(160deg,#111d29,#0d1720);color:#9dceff;font-size:13px;font-weight:700}.bd-ag-add:hover{border-color:#7db4ef;background:#142536}.bd-ag-add:disabled{opacity:.4}
-.bd-ag-audio-card{position:relative;display:flex;flex:0 0 274px;height:178px;box-sizing:border-box;flex-direction:column;gap:7px;padding:10px;border:1px solid var(--ag-line);border-radius:12px;background:linear-gradient(160deg,#121b26,#0e151e);box-shadow:0 4px 12px rgba(0,0,0,.16);min-width:0}.bd-ag-audio-card.invalid{border-color:#ff5968}.bd-ag-audio-delete,.bd-ag-audio-clear{width:22px;height:22px;padding:0;border:0;border-radius:4px;background:rgba(0,0,0,.78);color:#ff8a8a;font-size:17px;font-weight:700;line-height:1;cursor:pointer}.bd-ag-audio-delete:hover,.bd-ag-audio-clear:hover{background:rgba(160,30,30,.95);color:#fff}
+.bd-ag-audio-card{position:relative;display:flex;flex:0 0 274px;height:178px;box-sizing:border-box;flex-direction:column;gap:7px;padding:10px;border:1px solid var(--ag-line);border-radius:12px;background:linear-gradient(160deg,#121b26,#0e151e);box-shadow:0 4px 12px rgba(0,0,0,.16);min-width:0}.bd-ag-audio-card.selected{border-color:#ffcc66;box-shadow:0 0 0 1px rgba(255,204,102,.3)}.bd-ag-audio-card.invalid{border-color:#ff5968}.bd-ag-audio-delete,.bd-ag-audio-clear{width:22px;height:22px;padding:0;border:0;border-radius:4px;background:rgba(0,0,0,.78);color:#ff8a8a;font-size:17px;font-weight:700;line-height:1;cursor:pointer}.bd-ag-audio-delete:hover,.bd-ag-audio-clear:hover{background:rgba(160,30,30,.95);color:#fff}
 .bd-ag-audio-empty{display:grid;grid-template-columns:1fr 1fr;gap:10px;min-height:64px;align-items:center}.bd-ag-audio-empty button{height:40px;border:1px solid #3b5264;border-radius:7px;background:#13202b;color:#cbe4ee}.bd-ag-audio-empty button:hover{border-color:#69a99b;background:#172b30}.bd-ag-audio-row{display:grid;grid-template-columns:minmax(0,1fr) 26px;gap:8px;align-items:center}.bd-ag-audio-element{display:none}.bd-ag-audio-preview{display:flex;align-items:center;gap:10px;min-width:0;min-height:64px;padding:9px 11px;text-align:left;border:1px solid #466276;border-radius:9px;background:linear-gradient(135deg,#0d1720,#102029);color:#e6edf7;cursor:pointer}.bd-ag-audio-preview:hover{border-color:#70b9a4;background:#122833}.bd-ag-audio-play{font-size:21px;color:#8ee0bf}.bd-ag-audio-details{display:flex;min-width:0;flex-direction:column;gap:4px;font-size:10px}.bd-ag-audio-details span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bd-ag-audio-frame-row{grid-template-columns:52px 120px minmax(62px,1fr)}.bd-ag-audio-frame-controls{grid-template-columns:28px 56px 28px}.bd-ag-add-audio{height:178px;border-color:#4f8876;color:#9de7ce}
 `;

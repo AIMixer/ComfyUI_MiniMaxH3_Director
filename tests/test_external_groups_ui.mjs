@@ -75,9 +75,40 @@ for (const mode of ["addguide", "mixed", "t2v"]) {
             const before = JSON.stringify(editor.timeline);
             methods.syncExternalGroupsTimeline.call(editor);
             methods.writeExternalGroupPrompt.call(editor, 0, "changed draft");
-            assert.equal(warningRefreshes, 1, "connection sync must refresh the warning");
+            assert.equal(warningRefreshes, 0, "AddGuide external sync must not rebuild the editor DOM");
             assert.equal(JSON.stringify(editor.timeline), before);
-            assert.equal(editor.externalGroupsMsgEl.classList.contains("hidden"), true);
+
+            assert.equal(
+                editor.externalGroupsMsgEl.classList.contains("hidden"),
+                true,
+            );
+
+            assert.equal(
+                editor.externalGroupsMsgEl.textContent,
+                "",
+            );
+
+            assert.equal(
+                editor.root.classList.contains("bd-external-groups"),
+                false,
+            );
+
+            assert.equal(
+                editor.batchI2vNotice.classList.contains("visible"),
+                connected,
+            );
+
+            if (connected) {
+                assert.equal(
+                    editor.batchI2vNotice.textContent,
+                    "batch.notice.addguideExternal",
+                );
+            } else {
+                assert.equal(
+                    editor.batchI2vNotice.textContent,
+                    "",
+                );
+            }
         }
     }
 }
