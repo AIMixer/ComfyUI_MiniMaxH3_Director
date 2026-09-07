@@ -560,6 +560,31 @@ async def minimax_first_pass_cache_status(request):
         )
 
 
+async def minimax_clear_segment_cache(request):
+    """Delete first-pass (.pre.*) or final segment cache files."""
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return web.Response(status=400, text=f"Invalid JSON: {exc}")
+
+    node_id = str(body.get("node_id") or "").strip()
+    if not re.fullmatch(r"\d+", node_id):
+        return web.Response(status=400, text="Invalid Director node id.")
+
+    kind = str(body.get("kind") or "final").strip().lower()
+    if kind not in {"first_pass", "final", "all"}:
+        return web.Response(status=400, text="kind must be first_pass, final or all.")
+
+    try:
+        from .segment_cache import clear_segment_cache
+
+        removed = clear_segment_cache(node_id, kind=kind)
+        return web.json_response({"removed": removed, "kind": kind})
+    except Exception as exc:
+        log.warning("MiniMax H3 Director clear segment cache failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
 def _register_route(routes, method: str, path: str, handler) -> None:
     if hasattr(routes, "add_route"):
         routes.add_route(method, path, handler)
@@ -605,6 +630,12 @@ def register_routes() -> bool:
         "POST",
         "/minimax/director/first_pass_cache_status",
         minimax_first_pass_cache_status,
+    )
+    _register_route(
+        routes,
+        "POST",
+        "/minimax/director/clear_segment_cache",
+        minimax_clear_segment_cache,
     )
     from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
 

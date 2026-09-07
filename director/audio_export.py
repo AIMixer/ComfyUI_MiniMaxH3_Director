@@ -45,7 +45,8 @@ def resolve_audio_mode(plan) -> str:
     """Return generate | source | mute from timeline.output.audioMode.
 
     ``source`` is honored for v2v/rv2v (source-video extract) and r2v
-    (per-segment reference audio). Other tasks treat it as generate.
+    (per-segment reference audio). Other tasks (including mixed) treat it
+    as generate.
     """
     out = (getattr(plan, "raw", None) or {}).get("output") or {}
     raw = str(out.get("audioMode") or out.get("audio_mode") or AUDIO_MODE_GENERATE).strip().lower()
@@ -421,7 +422,12 @@ def build_director_audio_outputs(
         for i, tensor in enumerate(images_out):
             gen = segment_audios[i] if i < len(segment_audios) else None
             if _audio_has_samples(gen):
-                n_frames = int(getattr(tensor, "shape", [0])[0] or 0)
+                if segment_frame_counts is not None and i < len(segment_frame_counts):
+                    n_frames = int(segment_frame_counts[i] or 0)
+                else:
+                    n_frames = 0
+                if n_frames <= 0:
+                    n_frames = int(getattr(tensor, "shape", [0])[0] or 0)
                 sr = int(gen.get("sample_rate") or SILENT_SAMPLE_RATE)
                 outputs.append(
                     _pad_or_trim_audio_to_frames(gen, frame_count=n_frames, fps=fps, sample_rate=sr)
@@ -471,7 +477,12 @@ def build_director_audio_outputs(
                 extracted = None
                 source_fallback = "silent"
             audio = _coerce_audio_output(extracted, sample_rate=silent_sample_rate)
-            n_frames = int(getattr(tensor, "shape", [0])[0] or seg.frame_count or 0)
+            if segment_frame_counts is not None and i < len(segment_frame_counts):
+                n_frames = int(segment_frame_counts[i] or 0)
+            else:
+                n_frames = 0
+            if n_frames <= 0:
+                n_frames = int(getattr(tensor, "shape", [0])[0] or seg.frame_count or 0)
             sr = int(audio.get("sample_rate") or silent_sample_rate)
             outputs.append(
                 _pad_or_trim_audio_to_frames(
