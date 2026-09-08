@@ -1064,6 +1064,19 @@ const STYLES = `
 .bd-live-sample-badge{position:absolute;left:10px;bottom:10px;padding:3px 8px;border-radius:999px;background:rgba(0,0,0,.75);color:#cfcfcf;font-size:11px;pointer-events:none}
 .bd-live-sample-badge.hidden{display:none!important}
 .bd-main>.bd-live-sample{margin:0 0 4px}
+.bd-output .bd-btn-live-audio{background:#222;border-color:#333;color:#aaa;white-space:nowrap;height:29px;min-height:29px;padding:4px 12px;margin-left:6px}
+.bd-output .bd-btn-live-audio:hover{background:#2a2a2a;border-color:#555;color:#ddd}
+.bd-output .bd-btn-live-audio.active{background:#16283a;color:#5bc8ff;border-color:#5bc8ff;box-shadow:0 0 0 1px rgba(91,200,255,.35)}
+.bd-output .bd-btn-live-audio:disabled{opacity:.4;cursor:not-allowed}
+.bd-live-audio{width:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;padding:8px 12px;background:linear-gradient(165deg,#1a1a1a 0%,#121212 100%);border:1px solid #333;border-radius:10px;flex-shrink:0;margin:0 0 4px}
+.bd-live-audio.hidden{display:none!important}
+.bd-live-audio-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.bd-live-audio-head b{color:#f0f0f0;font-size:12px;font-weight:650;letter-spacing:.02em}
+.bd-live-audio-head .bd-meta{color:#888;font-size:11px}
+.bd-live-audio-body{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.bd-live-audio-play{background:#222;border:1px solid #444;color:#ddd;border-radius:6px;padding:4px 14px;font-size:12px;cursor:pointer;white-space:nowrap}
+.bd-live-audio-play:hover{background:#2a2a2a;border-color:#666}
+.bd-live-audio-step{color:#5bc8ff;font-size:11px}
 .bd-run-select-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:10px;color:#aaa}
 .bd-run-select-all-wrap{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#aaa;cursor:pointer;user-select:none;margin-left:2px}
 .bd-run-select-all-wrap.hidden{display:none!important}
@@ -1879,6 +1892,7 @@ function parseTimeline(raw, totalFrames, fps) {
         runSelectEnabled: false,
         runSelection: [],
         liveTaePreview: false,
+        liveAudioPreview: false,
         batchDetailMode: "solo",
         segments: [{ id: uid(), start: 0, length: total, prompt: "", taskType: "", refs: [], refAudios: [], referenceVideo: {} }],
     };
@@ -1985,6 +1999,8 @@ function parseTimeline(raw, totalFrames, fps) {
         data.runSelection = Array.isArray(data.runSelection) ? data.runSelection.map((i) => parseInt(i, 10)).filter((i) => i >= 0) : [];
         // Default off when missing. Explicit true keeps in-node TAE + segment playback.
         data.liveTaePreview = data.liveTaePreview === true || data.live_tae_preview === true;
+        // In-sampling audio preview (manual listen). Default off; generate-audio only.
+        data.liveAudioPreview = data.liveAudioPreview === true || data.live_audio_preview === true;
         const detailMode = data.batchDetailMode ?? data.batch_detail_mode;
         data.batchDetailMode = detailMode === "all" ? "all" : "solo";
         if (data.timelineMode === "fl2v" || resolveTaskKey(data.global?.taskType || "") === "fl2v") {
@@ -2894,7 +2910,8 @@ class MiniMaxH3DirectorEditor {
                     </span>
                 </span>
             </span>
-            <button type="button" class="bd-btn bd-btn-live-preview" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>`;
+            <button type="button" class="bd-btn bd-btn-live-preview" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>
+            <button type="button" class="bd-btn bd-btn-live-audio" data-a="live-audio-preview" data-i18n="toolbar.liveAudioPreview" data-i18n-title="tooltip.liveAudioPreview">音频预览</button>`;
         this.mainBody.appendChild(outputBar);
         this.outputBarEl = outputBar;
 
@@ -2918,6 +2935,32 @@ class MiniMaxH3DirectorEditor {
         this.liveSampleBadge = liveSample.querySelector('[data-r="live-sample-badge"]');
         this.liveSampleMeta = liveSample.querySelector('[data-r="live-sample-meta"]');
         this._liveSampleHost = "main";
+
+        // Independent in-sampling audio preview bar (manual listen). Kept separate
+        // from the video .bd-live-sample panel because that panel only shows for
+        // v2v-family tasks, while t2v (text-to-video) is the main audio-generation case.
+        const liveAudio = document.createElement("div");
+        liveAudio.className = "bd-live-audio hidden";
+        liveAudio.setAttribute("data-r", "live-audio");
+        liveAudio.innerHTML = `
+            <div class="bd-live-audio-head">
+                <b data-i18n="liveSample.audioTitle">音频试听</b>
+                <span class="bd-meta" data-r="live-audio-meta" data-i18n="liveSample.audioIdle">开启「音频预览」后，采样后期可点 ▶ 试听当前步生成的音频</span>
+            </div>
+            <div class="bd-live-audio-body">
+                <button type="button" class="bd-btn bd-live-audio-play" data-r="live-audio-play" data-i18n="liveSample.audioPlay">▶ 试听</button>
+                <span class="bd-meta bd-live-audio-step" data-r="live-audio-step"></span>
+                <audio class="bd-r2v-media" data-r="live-audio-tag" preload="auto"></audio>
+            </div>`;
+        this.mainBody.appendChild(liveAudio);
+        this.liveAudioEl = liveAudio;
+        this.liveAudioTag = liveAudio.querySelector('[data-r="live-audio-tag"]');
+        this.liveAudioPlay = liveAudio.querySelector('[data-r="live-audio-play"]');
+        this.liveAudioMeta = liveAudio.querySelector('[data-r="live-audio-meta"]');
+        this.liveAudioStep = liveAudio.querySelector('[data-r="live-audio-step"]');
+        if (this.liveAudioTag && this.liveAudioPlay) {
+            bindR2vMediaPlayback(this.liveAudioTag, this.liveAudioPlay);
+        }
 
         const bottom = document.createElement("div");
         bottom.className = "bd-split";
@@ -3259,10 +3302,13 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="play"]', () => this.togglePlay());
         bind('[data-a="loop"]', () => this.toggleLoop());
         bind('[data-a="live-tae-preview"]', () => this.toggleLiveTaePreview());
+        bind('[data-a="live-audio-preview"]', () => this.toggleLiveAudioPreview());
         bind('[data-a="frame-prev"]', () => this.stepFrame(-1));
         bind('[data-a="frame-next"]', () => this.stepFrame(1));
         this.refreshLiveTaePreviewButton();
         this.updateLiveSamplePanel();
+        this.refreshLiveAudioPreviewButton();
+        this.updateLiveAudioBar();
 
         this.seekBar.oninput = () => {
             this.seekToFrame(+this.seekBar.value, { fromUi: true });
@@ -3467,7 +3513,12 @@ class MiniMaxH3DirectorEditor {
         this.outMaxFrames.onchange = () => this.onOutputField("maxExportFrames", +this.outMaxFrames.value);
         this.outExportMode.onchange = () => this.onOutputField("exportMode", this.outExportMode.value);
         if (this.outAudioMode) {
-            this.outAudioMode.onchange = () => this.onOutputField("audioMode", this.outAudioMode.value);
+            this.outAudioMode.onchange = () => {
+                this.onOutputField("audioMode", this.outAudioMode.value);
+                // Audio preview availability follows the audio mode (generate only).
+                this.refreshLiveAudioPreviewButton?.();
+                this.updateLiveAudioBar?.();
+            };
         }
         if (this.exportSourceImagesCb) {
             this.exportSourceImagesCb.onchange = () => {
@@ -6003,6 +6054,8 @@ class MiniMaxH3DirectorEditor {
         this.refreshLoopButtonTitle?.();
         this.refreshLiveTaePreviewButton?.();
         this.updateLiveSamplePanel?.();
+        this.refreshLiveAudioPreviewButton?.();
+        this.updateLiveAudioBar?.();
         this.syncTimelineZoomUI?.();
         this.syncExternalGroupsTimeline?.();
         updateFl2vDetailUI?.(this);
@@ -6147,6 +6200,9 @@ class MiniMaxH3DirectorEditor {
         this.syncFrameRateUI(this.timeline.frameRate);
         this.updateOutputModeUI();
         this.updateSegmentContinuityUI();
+        // Audio preview availability follows the audio mode (generate only).
+        this.refreshLiveAudioPreviewButton?.();
+        this.updateLiveAudioBar?.();
         this.syncExportSourceImagesUI();
         this.updateOutputPreview();
     }
@@ -6668,6 +6724,9 @@ class MiniMaxH3DirectorEditor {
         if (this.isRunSelectEnabled()) this.normalizeRunSelection();
         this.updateRunSelectUI();
         this.updateSegmentContinuityUI();
+        // Audio preview availability follows the audio mode (generate only).
+        this.refreshLiveAudioPreviewButton?.();
+        this.updateLiveAudioBar?.();
         if (this.taskTypeWidget) this.taskTypeWidget.value = this.timeline.global.taskType;
         if (this.globalPromptWidget) this.globalPromptWidget.value = this.timeline.global.prompt;
         if (this.negativePromptWidget) {
@@ -11478,6 +11537,104 @@ class MiniMaxH3DirectorEditor {
         btn.removeAttribute("data-i18n-title");
     }
 
+    isLiveAudioPreviewEnabled() {
+        return this.timeline?.liveAudioPreview === true;
+    }
+
+    /** 音频预览仅对模型生成音频（非静音/原声）有意义；且需在有统一试听槽的编辑器上。
+     *  注意：isImageBatch() 对 r2v/t2v/i2v/mixed 等视频批量任务也返回 true（它们的
+     *  director 模式是 prompt_batch），但这些任务在主时间线上有 duration groups
+     *  （usesBatchTimeline() 为真），与单轨编辑器共用同一套主试听面板，应当支持。
+     *  真正要排除的是纯图片组卡片（isImageBatch() 且 !usesBatchTimeline()）。 */
+    canPreviewAudio() {
+        if (this.isImageBatch?.() && !this.usesBatchTimeline?.()) return false;
+        const audioMode = normalizeAudioMode(this.timeline?.output?.audioMode);
+        return audioMode !== "mute" && audioMode !== "source";
+    }
+
+    toggleLiveAudioPreview() {
+        this.timeline.liveAudioPreview = !this.isLiveAudioPreviewEnabled();
+        this.refreshLiveAudioPreviewButton();
+        this.updateLiveAudioBar();
+        this.scheduleTimelineSync();
+        this.updateDomWidgetHeight?.();
+        syncDirectorNodeSize(this.node, this);
+    }
+
+    refreshLiveAudioPreviewButton() {
+        const btn = this.root?.querySelector('[data-a="live-audio-preview"]');
+        if (!btn) return;
+        const usable = this.canPreviewAudio();
+        const on = this.isLiveAudioPreviewEnabled() && usable;
+        btn.classList.toggle("active", on);
+        btn.disabled = !usable;
+        btn.textContent = t("toolbar.liveAudioPreview");
+        btn.title = !usable
+            ? t("tooltip.liveAudioPreviewUnavailable")
+            : on
+                ? t("tooltip.liveAudioPreviewOn")
+                : t("tooltip.liveAudioPreviewOff");
+        btn.setAttribute("data-i18n", "toolbar.liveAudioPreview");
+        btn.removeAttribute("data-i18n-title");
+    }
+
+    needsLiveAudioBar() {
+        return this.isLiveAudioPreviewEnabled() && this.canPreviewAudio();
+    }
+
+    updateLiveAudioBar() {
+        const bar = this.liveAudioEl;
+        if (!bar) return;
+        const show = this.needsLiveAudioBar();
+        bar.classList.toggle("hidden", !show);
+        if (!show) {
+            this.clearLiveSampleAudio();
+            return;
+        }
+        if (!this._liveAudioB64) {
+            if (this.liveAudioMeta) this.liveAudioMeta.textContent = t("liveSample.audioIdle");
+            if (this.liveAudioStep) this.liveAudioStep.textContent = "";
+        }
+    }
+
+    clearLiveSampleAudio() {
+        this._liveAudioB64 = "";
+        this._liveAudioStep = null;
+        this._liveAudioTotal = null;
+        if (this.liveAudioTag) {
+            try { this.liveAudioTag.pause(); } catch { /* noop */ }
+            this.liveAudioTag.removeAttribute("src");
+            try { this.liveAudioTag.load(); } catch { /* noop */ }
+        }
+        if (this.liveAudioStep) this.liveAudioStep.textContent = "";
+        if (this.liveAudioMeta && this.needsLiveAudioBar()) {
+            this.liveAudioMeta.textContent = t("liveSample.audioIdle");
+        }
+    }
+
+    /** Manual-listen audio preview: update the <audio> src, never autoplay. */
+    setLiveSampleAudio(detail = {}) {
+        if (!this.needsLiveAudioBar()) return;
+        const b64 = detail.audio_b64 || detail.audioB64 || "";
+        if (!b64) return;
+        this.liveAudioEl?.classList.remove("hidden");
+        this._liveAudioB64 = b64;
+        this._liveAudioStep = detail.step ?? null;
+        this._liveAudioTotal = detail.total_steps ?? detail.totalSteps ?? null;
+        if (this.liveAudioTag) {
+            const src = b64.startsWith("data:") ? b64 : `data:audio/wav;base64,${b64}`;
+            this.liveAudioTag.src = src;
+        }
+        const step = this._liveAudioStep;
+        const total = this._liveAudioTotal;
+        if (this.liveAudioStep) {
+            this.liveAudioStep.textContent = (step && total)
+                ? t("liveSample.audioStep", { step, total })
+                : t("liveSample.audioReady");
+        }
+        if (this.liveAudioMeta) this.liveAudioMeta.textContent = t("liveSample.audioAvailable");
+    }
+
     _clearEmbeddedLiveLayoutClasses() {
         this.globalPromptLayout?.classList.remove("bd-v2v-with-live", "bd-rv2v-with-live");
         this.segPromptLayout?.classList.remove("bd-v2v-with-live", "bd-rv2v-with-live");
@@ -12568,6 +12725,10 @@ app.registerExtension({
             editor.setLiveSamplePreview?.(detail);
         });
 
+        api.addEventListener("minimax_director_audio", ({ detail }) => {
+            findDirectorNode(detail?.node_id)?._minimaxEditor?.setLiveSampleAudio?.(detail);
+        });
+
         api.addEventListener("executing", ({ detail }) => {
             if (detail == null) return;
             const node = findDirectorNode(detail);
@@ -12575,6 +12736,7 @@ app.registerExtension({
             if (!editor) return;
             editor.flushTimelineSync?.();
             editor.clearLiveSamplePreview?.();
+            editor.clearLiveSampleAudio?.();
             if (editor.isImageBatch?.()) {
                 for (const seg of editor.timeline.segments || []) {
                     seg.previewB64 = "";
