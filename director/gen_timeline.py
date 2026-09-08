@@ -674,6 +674,7 @@ def build_gen_director_plan(
     src_w, src_h = _resolve_gen_image_source_dims(segment_ranges, global_block, output_block)
 
     from .segment_continuity import (
+        resolve_audio_continuity_enabled,
         resolve_continuity_mode,
         resolve_continuity_redraw,
         resolve_continuity_settings,
@@ -684,6 +685,7 @@ def build_gen_director_plan(
     )
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
+    audio_continuity_enabled = resolve_audio_continuity_enabled(timeline)
 
     return DirectorPlan(
         frame_rate=fps,
@@ -706,6 +708,7 @@ def build_gen_director_plan(
         run_indices=_parse_run_selection(timeline, len(segments)),
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        audio_continuity_enabled=audio_continuity_enabled,
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
         global_ref_audios=shared_ref_audios,

@@ -184,6 +184,30 @@ def resolve_continuity_settings(timeline: dict, *, segment_count: int) -> tuple[
     return True, snap_context_frames(raw)
 
 
+def resolve_audio_continuity_enabled(timeline: dict) -> bool:
+    """Read the「音频接续 / audio continuity」companion toggle (output block).
+
+    Controls whether the next segment pins/continues the previous segment's audio
+    across the seam. Independent of the video motion-context pin: video can stitch
+    while each segment keeps its own (hard-cut) audio.
+
+    Defaults to ON (legacy behavior always pinned audio); only an explicit false
+    disables it.
+    """
+    output = (timeline or {}).get("output") or {}
+    if "audioContinuityEnabled" in output:
+        raw = output.get("audioContinuityEnabled")
+    elif "audio_continuity_enabled" in output:
+        raw = output.get("audio_continuity_enabled")
+    else:
+        return True
+    if raw is None:
+        return True
+    if isinstance(raw, str):
+        return raw.strip().lower() not in {"false", "0", "no", "off", ""}
+    return raw is not False and raw != 0
+
+
 def resolve_segment_continuity_from_prev(
     seg_data: dict | None,
     *,
