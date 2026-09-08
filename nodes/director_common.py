@@ -360,14 +360,19 @@ def finalize_director_outputs(
 ):
     is_batch = is_prompt_batch_timeline(plan.raw, plan.global_task_key)
     export_segments = plan.export_mode == "segments"
+    export_selection = plan.export_mode == "selection"
     video_batch = is_video_batch_task_key(plan.global_task_key)
-    split_layout = export_segments or (is_batch and not video_batch)
+    # 选择导出 emits one merged clip per consecutive run-group (already built in
+    # the executor), so it uses the same list layout as 分段导出 — but without
+    # pixel-release posters (each list item is a full merged clip).
+    list_layout = export_segments or export_selection
+    split_layout = list_layout or (is_batch and not video_batch)
 
     images_out, frame_count = _layout_image_batches(
         plan,
         combined,
         segment_outputs,
-        export_segments=export_segments,
+        export_segments=list_layout,
         is_batch=is_batch,
         video_batch=video_batch,
     )
@@ -419,7 +424,7 @@ def finalize_director_outputs(
                 plan,
                 pre_comb,
                 pre_segs,
-                export_segments=export_segments,
+                export_segments=list_layout,
                 is_batch=is_batch,
                 video_batch=video_batch,
             )
@@ -455,6 +460,8 @@ def finalize_director_outputs(
     # Prefer caller-provided export lengths (post continuity trim); else match IMAGE batches.
     if segment_frame_counts is None and segment_audios and split_for_audio:
         segment_frame_counts = [int(s.shape[0]) for s in images_out]
+    # 选择导出: one merged clip per consecutive run-group; stitch audio per group.
+    selection_groups = getattr(plan, "selection_export_groups", None) if export_selection else None
     audio_out, source_fallback = build_director_audio_outputs(
         plan,
         images_out,
@@ -463,6 +470,7 @@ def finalize_director_outputs(
         segment_audios=segment_audios if use_generated else None,
         segment_frame_counts=segment_frame_counts if use_generated else None,
         audio_mode=audio_mode,
+        export_groups=selection_groups,
     )
     report = report + source_audio_report_note(
         plan,
@@ -474,7 +482,7 @@ def finalize_director_outputs(
         source_fallback=source_fallback,
     )
 
-    split_source_outputs = export_segments or (is_batch and not video_batch)
+    split_source_outputs = list_layout or (is_batch and not video_batch)
     if export_source_images:
         try:
             source_images_out = build_source_images_output(

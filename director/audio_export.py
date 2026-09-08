@@ -356,6 +356,105 @@ def _merge_generated_segment_audios(
     )
 
 
+def _build_grouped_audio_outputs(
+    plan,
+    images_out: list,
+    export_groups: list[list[int]],
+    *,
+    segment_audios: list | None,
+    segment_frame_counts: list[int] | None,
+    mode: str,
+    fps: float,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Build one AUDIO dict per consecutive-selection export group (选择导出).
+
+    generate → concatenate the group's per-segment model audio along the timeline.
+    source   → extract the source-timeline span covering the whole group (r2v falls
+               back to merged per-segment reference audio; then silence).
+    Each result is length-matched to that group's merged clip frame count.
+    """
+    timeline = plan.raw or {}
+    if plan.run_indices is not None:
+        run_list = sorted(plan.run_indices)
+    else:
+        run_list = list(range(len(plan.segments)))
+
+    outputs: list[dict[str, Any]] = []
+    source_fallback: str | None = None
+
+    for g, pos_group in enumerate(export_groups):
+        clip_frames = (
+            int(getattr(images_out[g], "shape", [0])[0] or 0)
+            if g < len(images_out)
+            else 0
+        )
+
+        if mode == AUDIO_MODE_GENERATE:
+            audios = [
+                segment_audios[p] if (segment_audios and p < len(segment_audios)) else None
+                for p in pos_group
+            ]
+            counts = [
+                int(segment_frame_counts[p])
+                if (segment_frame_counts and p < len(segment_frame_counts))
+                else 0
+                for p in pos_group
+            ]
+            total = clip_frames or sum(counts)
+            merged = _merge_generated_segment_audios(
+                plan,
+                [a if _audio_has_samples(a) else None for a in audios],
+                total_frames=total,
+                fps=fps,
+                frame_counts=counts,
+            )
+            outputs.append(
+                _coerce_audio_output(
+                    merged if _audio_has_samples(merged) else None,
+                    sample_rate=SILENT_SAMPLE_RATE,
+                )
+            )
+            continue
+
+        # source mode: extract the timeline span over the whole consecutive group.
+        idx_group = [run_list[p] for p in pos_group if 0 <= p < len(run_list)]
+        if not idx_group:
+            outputs.append(empty_audio_dict(SILENT_SAMPLE_RATE))
+            continue
+        first_seg = plan.segments[idx_group[0]]
+        last_seg = plan.segments[idx_group[-1]]
+        start, end = int(first_seg.start_frame), int(last_seg.end_frame)
+        extracted = extract_timeline_audio(
+            timeline, start, end, fps, audio_cache=_execution_audio_cache(plan),
+        )
+        if not _audio_has_samples(extracted):
+            # r2v has no source-timeline video; merge per-segment reference audio.
+            refs = [_ref_audio_for_segment(plan.segments[idx]) for idx in idx_group]
+            if any(a is not None for a in refs):
+                total = clip_frames or max(0, end - start)
+                extracted = _merge_generated_segment_audios(
+                    plan, refs, total_frames=total, fps=fps
+                )
+        if not _audio_has_samples(extracted):
+            hint = diagnose_source_audio_failure(timeline, start, end, fps)
+            log.warning(
+                "声音=使用原声，但选择导出组 #%d 无源音轨（%s）；已回退为静音。",
+                g + 1, hint,
+            )
+            extracted = None
+            source_fallback = "silent"
+        n_frames = clip_frames or max(0, end - start)
+        audio = _coerce_audio_output(extracted, sample_rate=SILENT_SAMPLE_RATE)
+        sr = int(audio.get("sample_rate") or SILENT_SAMPLE_RATE)
+        outputs.append(
+            _pad_or_trim_audio_to_frames(
+                audio, frame_count=n_frames, fps=fps, sample_rate=sr
+            )
+        )
+
+    return outputs, source_fallback
+
+
 def build_director_audio_outputs(
     plan,
     images_out: list,
@@ -366,6 +465,7 @@ def build_director_audio_outputs(
     segment_frame_counts: list[int] | None = None,
     audio_mode: str | None = None,
     mute_audio: bool = False,
+    export_groups: list[list[int]] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Return (AUDIO list, source_fallback).
 
@@ -374,6 +474,10 @@ def build_director_audio_outputs(
 
     ``segment_frame_counts`` should match ``segment_audios`` and the export
     chunk lengths (post continuity trim) so partial re-runs stay in sync.
+
+    ``export_groups`` (选择导出 only) lists consecutive run-groups as positions
+    into the run-order segment lists; ``images_out`` already holds one merged
+    clip per group. Each group's audio is stitched/extracted into one dict.
     """
     fps = float(plan.frame_rate or 24.0)
     mode = AUDIO_MODE_MUTE if mute_audio else (audio_mode or resolve_audio_mode(plan))
@@ -381,6 +485,17 @@ def build_director_audio_outputs(
 
     if mode == AUDIO_MODE_MUTE:
         return [empty_audio_dict(SILENT_SAMPLE_RATE) for _ in images_out], None
+
+    if export_groups is not None:
+        return _build_grouped_audio_outputs(
+            plan,
+            images_out,
+            export_groups,
+            segment_audios=segment_audios,
+            segment_frame_counts=segment_frame_counts,
+            mode=mode,
+            fps=fps,
+        )
 
     # Prefer model audio only in generate mode.
     if mode == AUDIO_MODE_GENERATE and segment_audios:
