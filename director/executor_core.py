@@ -791,6 +791,9 @@ def execute_director_plan_core(
             pin_audio = (
                 audio_mode != AUDIO_MODE_MUTE
                 and (prev_av is not None or prev_audio is not None)
+                # audio_continuity_enabled=False: video still stitches via motion context,
+                # but each segment keeps its own audio (hard cut across the seam).
+                and getattr(plan, "audio_continuity_enabled", True)
             )
             if is_continue_mode(plan):
                 from .h3_latent_continue import (

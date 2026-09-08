@@ -222,6 +222,9 @@ class DirectorPlan:
     run_indices: frozenset[int] | None = None  # None = run all segments
     continuity_enabled: bool = False
     continuity_overlap_frames: int = 0
+    # Audio handoff across the seam: when False, each segment keeps its own audio
+    # (hard cut) even while video motion-context still stitches. Default True.
+    audio_continuity_enabled: bool = True
     # "guide" (motion-context keyframes) | "continue" (引导+重绘 / latent remask).
     continuity_mode: str = "guide"
     continuity_redraw: float = 0.65
@@ -813,6 +816,7 @@ def build_director_plan(
         )
 
     from .segment_continuity import (
+        resolve_audio_continuity_enabled,
         resolve_continuity_mode,
         resolve_continuity_redraw,
         resolve_continuity_settings,
@@ -824,6 +828,7 @@ def build_director_plan(
     )
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
+    audio_continuity_enabled = resolve_audio_continuity_enabled(timeline)
     for seg, (_start, _end, seg_data) in zip(segments, segment_ranges):
         seg.continuity_from_prev = resolve_segment_continuity_from_prev(
             seg_data if isinstance(seg_data, dict) else {},
@@ -857,6 +862,7 @@ def build_director_plan(
         run_indices=_parse_run_selection(timeline, len(segments)),
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        audio_continuity_enabled=audio_continuity_enabled,
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
         global_ref_audios=global_ref_audios,
