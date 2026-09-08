@@ -154,14 +154,24 @@ def write_frames_to_mp4(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        assert proc.stdin is not None
+        # Do not write+close stdin then communicate(): on Linux that raises
+        # ``ValueError: flush of closed file`` after ffmpeg closes the pipe.
+        # communicate(input=) writes and closes once, and drains stderr.
+        raw = np.ascontiguousarray(rgb)
         try:
-            proc.stdin.write(rgb.tobytes())
-            proc.stdin.close()
-        except BrokenPipeError:
-            pass
-        stdout, stderr = proc.communicate()
-        if proc.returncode != 0 or not tmp_mp4.is_file() or tmp_mp4.stat().st_size <= 0:
+            _stdout, stderr = proc.communicate(input=raw.tobytes())
+        except (BrokenPipeError, ValueError) as exc:
+            # ffmpeg already closed stdin (common after a long rawvideo feed).
+            try:
+                if proc.poll() is None:
+                    proc.wait(timeout=180)
+            except Exception:
+                proc.kill()
+                proc.wait()
+            stderr = b""
+            if not tmp_mp4.is_file() or tmp_mp4.stat().st_size <= 0:
+                raise RuntimeError(f"ffmpeg encode failed: {exc}") from exc
+        if proc.returncode not in (0, None) or not tmp_mp4.is_file() or tmp_mp4.stat().st_size <= 0:
             err = (stderr or b"").decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"ffmpeg encode failed (code={proc.returncode}): {err or 'unknown'}")
 
