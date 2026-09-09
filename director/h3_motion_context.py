@@ -32,9 +32,12 @@ DEFAULT_CONTEXT_FRAMES = 22
 VIDEO_RUN_GRID = (124, 107, 90, 73, 56, 39, 22, 5, 1)
 
 CONTINUITY_TASK_KEYS = frozenset({"t2v", "i2v", "fl2v", "r2v", "v2v", "rv2v"})
-# v8: v7 + export audio cache + fps in fingerprint + trim hydrate on partial re-run.
+# v9: export the full free region (sample-trim) instead of cropping back to UI
+# visible — cropping cut the ~0.5s sentence tail / audio fade-out and made every
+# interior pin phase-trim the previous export. Bumps the cache fingerprint: old
+# v8 continuity caches have the shorter (cropped) length and must regenerate.
 # Single source of truth — imported by segment_cache.segment_cache_fingerprint.
-CONTINUITY_PIPELINE_ID = "minimax_h3_motion_context_v8"
+CONTINUITY_PIPELINE_ID = "minimax_h3_motion_context_v9"
 # Example workflow tested value (NikoDemon80): audio_context_length=24 with video=22.
 DEFAULT_AUDIO_CONTEXT_FRAMES = 24
 
@@ -576,19 +579,24 @@ def trim_export_tail(
 def generation_frame_budget(visible_frames: int, context_frames: int) -> tuple[int, int]:
     """Return ``(sample_length, trim_frames)`` for Director continuity.
 
-    Director contract: UI segment duration == exported frames.
+    Export contract (v9): the exported segment is the full model-generated
+    free region ``sample_length - trim_frames`` — NOT the UI ``visible`` count.
 
     Standalone Motion Context sets ``length`` to the sample and delivers
-    ``length - context`` (shorter than the UI seconds). That produced the
-    27s-vs-30s result. Here we instead:
+    ``length - context``. We do the same but keep the *entire* free region
+    instead of cropping back to ``visible``:
 
-    1. ``sample = align(visible + context)`` so the pin fits in the head
-    2. Trim ``context`` frames after decode
-    3. Keep exactly ``visible`` frames for export
-    4. Next pin uses ``context_end_frame = trim + visible`` (not the sample
-       absolute end, which includes align overshoot beyond the export)
-    5. If phase-align places the pin a few frames before that export end,
-       drop those frames from the previous export before concat (v7)
+    1. ``sample = align(visible + context)`` so the pin fits in the head.
+       Because ``visible ≡ 5`` and ``context ≡ 5`` on the 17k+5 grid,
+       ``visible + context ≡ 10`` and align rounds up 12 → the free region
+       ``sample - context`` is ``visible + 12`` (one grid remainder longer).
+    2. Trim ``context`` frames after decode (the pinned head is discarded).
+    3. Export the whole free region ``sample - context``. Cropping it back to
+       ``visible`` discarded ~12f (≈0.5s) at the tail — the sentence-final
+       2–3 syllables / audio fade-out got cut.
+    4. The next pin therefore ends at ``trim + export == sample``, which is
+       exactly on the 17k+5 grid → phase-aligned window reaches the latent
+       end with ``gap = 0``, so the previous export is no longer tail-trimmed.
     """
     from .frame_align import minimax_align_frame_count
 
