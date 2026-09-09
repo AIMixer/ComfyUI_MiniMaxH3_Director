@@ -609,6 +609,7 @@ def build_plan_from_external_groups(
     raw["editMode"] = "segment"
 
     from .segment_continuity import (
+        resolve_continuity_keep_tail,
         resolve_continuity_mode,
         resolve_continuity_redraw,
         resolve_continuity_settings,
@@ -619,6 +620,7 @@ def build_plan_from_external_groups(
     )
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
+    continuity_keep_tail = resolve_continuity_keep_tail(timeline)
 
     return DirectorPlan(
         frame_rate=fps,
@@ -643,5 +645,6 @@ def build_plan_from_external_groups(
         continuity_overlap_frames=continuity_overlap,
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
+        continuity_keep_tail=continuity_keep_tail,
         global_ref_audios=list(common_audios_raw) if family == "r2v" else [],
     )

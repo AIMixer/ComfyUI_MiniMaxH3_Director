@@ -109,7 +109,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         or seg.reference_video_meta.get("fileName")
         or ""
     ).strip()
-    return {
+    payload = {
         "index": seg.index,
         "start": seg.start_frame,
         "end": seg.end_frame,
@@ -149,6 +149,10 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
             else CONTINUITY_PIPELINE_ID
         ),
     }
+    if plan.continuity_enabled and bool(getattr(plan, "continuity_keep_tail", True)):
+        payload["continuity_keep_tail"] = True
+    return payload
+
 
 
 def first_pass_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:

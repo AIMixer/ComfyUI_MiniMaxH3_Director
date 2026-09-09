@@ -225,6 +225,8 @@ class DirectorPlan:
     # "guide" (motion-context keyframes) | "continue" (引导+重绘 / latent remask).
     continuity_mode: str = "guide"
     continuity_redraw: float = 0.65
+    # Keep sample-trim remainder (~12f) instead of cropping back to UI length.
+    continuity_keep_tail: bool = True
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
     # Full source-video PCM reused only during this Director execution.
     audio_decode_cache: dict = field(default_factory=dict, repr=False)
@@ -813,6 +815,7 @@ def build_director_plan(
         )
 
     from .segment_continuity import (
+        resolve_continuity_keep_tail,
         resolve_continuity_mode,
         resolve_continuity_redraw,
         resolve_continuity_settings,
@@ -824,6 +827,7 @@ def build_director_plan(
     )
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
+    continuity_keep_tail = resolve_continuity_keep_tail(timeline)
     for seg, (_start, _end, seg_data) in zip(segments, segment_ranges):
         seg.continuity_from_prev = resolve_segment_continuity_from_prev(
             seg_data if isinstance(seg_data, dict) else {},
@@ -859,6 +863,7 @@ def build_director_plan(
         continuity_overlap_frames=continuity_overlap,
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
+        continuity_keep_tail=continuity_keep_tail,
         global_ref_audios=global_ref_audios,
     )
 
@@ -982,9 +987,10 @@ def plan_summary(plan: DirectorPlan) -> str:
                 for seg in plan.segments
                 if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
             ]
+            keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
             lines.append(
                 f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "
-                f"motion context {plan.continuity_overlap_frames}f)"
+                f"motion context {plan.continuity_overlap_frames}f{keep_note})"
             )
             if pinned:
                 lines.append("  Pin from prev: #" + ", #".join(str(i) for i in pinned))
@@ -1035,9 +1041,10 @@ def plan_summary(plan: DirectorPlan) -> str:
             for seg in plan.segments
             if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
         ]
+        keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
         lines.append(
             f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "
-            f"motion context {plan.continuity_overlap_frames}f "
+            f"motion context {plan.continuity_overlap_frames}f{keep_note} "
             "→ pin previous tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)"
         )
         if pinned:
