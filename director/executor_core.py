@@ -50,7 +50,12 @@ from .plan import (
     usable_ref_audio_indices,
     drop_unusable_audio_prompt_tags,
 )
-from .progress import report_director_finish, report_director_progress, report_director_segment_preview
+from .progress import (
+    report_director_audio_preview,
+    report_director_finish,
+    report_director_progress,
+    report_director_segment_preview,
+)
 from .h3_motion_context import (
     DEFAULT_AUDIO_CONTEXT_FRAMES,
     apply_motion_context,
@@ -410,6 +415,16 @@ def execute_director_plan_core(
     # When off: skip step TAE and the post-sample full-segment JPEG playback encode.
     raw_live = (plan.raw or {}).get("liveTaePreview", (plan.raw or {}).get("live_tae_preview", False))
     live_tae_preview = raw_live in (True, 1, "1", "true", "True", "on")
+    # In-sampling audio preview (manual listen). Only meaningful when audio is
+    # model-generated and the audio VAE is available; off by default.
+    raw_live_audio = (plan.raw or {}).get(
+        "liveAudioPreview", (plan.raw or {}).get("live_audio_preview", False)
+    )
+    live_audio_preview = (
+        raw_live_audio in (True, 1, "1", "true", "True", "on")
+        and decode_audio
+        and audio_vae is not None
+    )
 
     all_segments = plan.segments
     # Drop caches for deleted/shortened timelines. Use every segment index (not
@@ -464,6 +479,8 @@ def execute_director_plan_core(
         reports.append("Live preview: ON — 采样 TAE + 成片后整段 JPEG 播放。")
     else:
         reports.append("Live preview: OFF — 跳过 TAE 与成片 JPEG（节点内不播放）。")
+    if live_audio_preview:
+        reports.append("Live audio preview: ON — 采样自首步起解码当前步音频（早期偏噪），供节点内手动试听、及早止损。")
     if clear_vram_between_segments:
         reports.append("VRAM: 段间清理显存已开启（最后一段不清理）。")
     if audio_mode == AUDIO_MODE_MUTE:
@@ -1038,25 +1055,65 @@ def execute_director_plan_core(
             )
 
         def _report_step_preview(step: int, total_steps: int, x0) -> None:
-            # Live frame for the batch-card preview slot (「生成中…」 area).
-            try:
-                from .tae_preview import pil_to_jpeg_b64, x0_to_preview_pil
+            # Live frame for the preview slot (「生成中…」 area).
+            if live_tae_preview:
+                try:
+                    from .tae_preview import pil_to_jpeg_b64, x0_to_preview_pil
 
-                pil = x0_to_preview_pil(x0, max_side=512)
-                if pil is None:
-                    return
-                report_director_segment_preview(
-                    node_id,
-                    segment_index=ui_idx,
-                    image_b64=pil_to_jpeg_b64(pil),
-                    width=pil.width,
-                    height=pil.height,
-                    live=True,
-                    step=step + 1,
-                    total_steps=total_steps,
-                )
-            except Exception as exc:
-                log.debug("Live TAE preview skipped: %s", exc)
+                    pil = x0_to_preview_pil(x0, max_side=512)
+                    if pil is not None:
+                        report_director_segment_preview(
+                            node_id,
+                            segment_index=ui_idx,
+                            image_b64=pil_to_jpeg_b64(pil),
+                            width=pil.width,
+                            height=pil.height,
+                            live=True,
+                            step=step + 1,
+                            total_steps=total_steps,
+                        )
+                except Exception as exc:
+                    log.debug("Live TAE preview skipped: %s", exc)
+
+            # Live audio: decode the current-step audio stream to a WAV preview.
+            # Emitted from the first step (early audio is not yet converged but
+            # enough to judge voice-vs-music / energy contour and abort early);
+            # the UI plays it manually (no autoplay).
+            if live_audio_preview:
+                try:
+                    from .audio_preview import (
+                        should_emit_audio_preview,
+                        x0_to_audio_preview_b64,
+                    )
+
+                    if should_emit_audio_preview(step, total_steps):
+                        # 回调里的 x0 是「模型空间」预测：采样时 H3 把音频 stream 放大
+                        # audio_scale 倍挂到视频调度上，采样结束才在
+                        # inner_model.process_latent_out() 里除回 VAE 空间（成片路径，
+                        # 见 comfy/samplers.py）。音频 VAE 必须吃缩放后的 latent，
+                        # 否则解出的预览电平虚高约 audio_scale 倍、削波失真、且与成片
+                        # 内容对不上（视频 TAE 预览本身就吃模型空间 latent，故不受影响）。
+                        x0_audio = x0
+                        try:
+                            inner = getattr(model, "model", None)
+                            if callable(getattr(inner, "process_latent_out", None)):
+                                x0_audio = inner.process_latent_out(x0.to(torch.float32))
+                        except Exception as exc:
+                            log.debug("Audio preview process_latent_out skipped: %s", exc)
+                        preview = x0_to_audio_preview_b64(x0_audio, audio_vae)
+                        if preview is not None:
+                            b64, sr = preview
+                            report_director_audio_preview(
+                                node_id,
+                                segment_index=ui_idx,
+                                audio_b64=b64,
+                                sample_rate=sr,
+                                live=True,
+                                step=step + 1,
+                                total_steps=total_steps,
+                            )
+                except Exception as exc:
+                    log.debug("Live audio preview skipped: %s", exc)
 
         t_sample = time.perf_counter()
         if skip_first_sample:
@@ -1085,7 +1142,7 @@ def execute_director_plan_core(
                 shift_audio=shift_audio,
                 sigmas=first_pass_sigmas,
                 on_phase=_report_sample_phase,
-                on_step_preview=_report_step_preview if live_tae_preview else None,
+                on_step_preview=_report_step_preview if (live_tae_preview or live_audio_preview) else None,
                 preview_every=1,
                 after_shift=after_shift,
             )
@@ -1212,7 +1269,7 @@ def execute_director_plan_core(
                 shift_video=shift_video,
                 shift_audio=shift_audio,
                 on_phase=_report_sample_phase,
-                on_step_preview=_report_step_preview if live_tae_preview else None,
+                on_step_preview=_report_step_preview if (live_tae_preview or live_audio_preview) else None,
                 first_pass_images=upscale_frames,
                 trim_frames=trim_frames,
                 on_pass=_export_refine_pass if mp4_run_dir is not None else None,

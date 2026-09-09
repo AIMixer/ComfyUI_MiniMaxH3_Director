@@ -150,6 +150,40 @@ def report_director_segment_preview(
         log.debug("Director preview send skipped: %s", exc)
 
 
+def report_director_audio_preview(
+    node_id: str | None,
+    *,
+    segment_index: int,
+    audio_b64: str,
+    sample_rate: int = 32000,
+    live: bool = True,
+    step: int | None = None,
+    total_steps: int | None = None,
+) -> None:
+    """Send a PCM16 WAV (base64) preview of the current denoising step."""
+    if not node_id or not audio_b64:
+        return
+    payload = {
+        "node_id": str(node_id),
+        "segment_index": segment_index,
+        "audio_b64": audio_b64,
+        "sample_rate": int(sample_rate),
+        "live": bool(live),
+    }
+    if step is not None:
+        payload["step"] = int(step)
+    if total_steps is not None:
+        payload["total_steps"] = int(total_steps)
+    try:
+        from server import PromptServer
+
+        srv = PromptServer.instance
+        if srv:
+            srv.send_sync("minimax_director_audio", payload, srv.client_id)
+    except Exception as exc:
+        log.debug("Director audio preview send skipped: %s", exc)
+
+
 def report_director_finish(node_id: str | None, segment_total: int) -> None:
     report_director_progress(
         node_id,
