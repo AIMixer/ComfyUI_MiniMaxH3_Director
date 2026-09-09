@@ -158,6 +158,23 @@ def resolve_continuity_redraw(timeline: dict | None) -> float:
     return clamp_seam_min_mask(raw)
 
 
+def resolve_continuity_keep_tail(timeline: dict | None) -> bool:
+    """Keep the align remainder after the pinned head (「保完整」). Default on."""
+    output = (timeline or {}).get("output") if isinstance(timeline, dict) else None
+    if not isinstance(output, dict):
+        return True
+    raw = output.get("continuityKeepTail")
+    if raw is None:
+        raw = output.get("continuity_keep_tail")
+    if raw is None:
+        return True
+    if raw is False or raw == 0:
+        return False
+    if isinstance(raw, str) and raw.strip().lower() in {"false", "0", "no", "off"}:
+        return False
+    return True
+
+
 def is_continue_mode(plan) -> bool:
     """True when master continuity is on and strategy is latent continue."""
     if plan is None or not getattr(plan, "continuity_enabled", False):
