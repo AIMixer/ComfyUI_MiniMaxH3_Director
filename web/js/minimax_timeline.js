@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
     bindSegmentLoraEvents,
+    normalizeLoraRows,
     bindSegmentLoraRefs,
     ensureSegmentLoraStyles,
     renderSegmentLoras,
@@ -2605,6 +2606,9 @@ class MiniMaxH3DirectorEditor {
                         // Persist per-segment「引用上段」(default true when unset).
                         continuityFromPrev: isSegmentContinuityFromPrev(clean, i),
                         refImageSize: resolveSegmentRefImageSize(clean, this.timeline.output),
+                        // Per-segment LoRA stack; the payload is a whitelist, so it
+                        // has to be carried explicitly or the backend never sees it.
+                        loras: normalizeLoraRows(clean.loras),
                     };
                 }),
                 ...this._runSelectionPayload(),

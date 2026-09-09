@@ -5,6 +5,7 @@
  */
 
 import { api } from "../../scripts/api.js";
+import { normalizeLoraRows } from "./minimax_segment_loras.js";
 import {
     defaultDurationSec,
     defaultFrameCount,
@@ -310,6 +311,7 @@ export function flattenFl2vShotsToSegments(editor) {
             prompt: shot.prompt || "",
             negativePrompt: shot.negativePrompt || DEFAULT_FL2V_NEGATIVE,
             continuityFromPrev: isSegmentContinuityFromPrev(shot, i),
+            loras: normalizeLoraRows(shot.loras),
             taskType: "",
             refs: [],
             // Do not mark start when end-only — canvas badges / thumbs key off these.
@@ -1577,6 +1579,7 @@ export function buildFl2vPayloadFields(editor) {
             prompt: s.prompt || "",
             negativePrompt: s.negativePrompt || DEFAULT_FL2V_NEGATIVE,
             continuityFromPrev: isSegmentContinuityFromPrev(s, i),
+            loras: normalizeLoraRows(s.loras),
             isStartFrame: !!(s.genImage?.imageFile || s.imageFile),
             isEndFrame: !!s.endImage?.imageFile,
             genImage: {
