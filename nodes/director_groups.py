@@ -46,6 +46,11 @@ def _i2v_inputs() -> dict:
                 "IMAGE",
                 {"tooltip": "Optional last frame → fl2v (alone or with first_frame)."},
             ),
+            "model": (  # [per-group-lora]
+                "MODEL",
+                {"tooltip": "Optional per-group MODEL (own LoRA stack). "
+                            "Unconnected -> the Director's own model input."},
+            ),
         },
     }
 
@@ -79,6 +84,7 @@ def _pack_r2v_kwargs(
     ref_videos=None,
     ref_video_audios=None,
     ref_audios=None,
+    model=None,  # [per-group-lora]
     **kwargs,
 ):
     """Pack R2V group from Autogrow dicts and/or legacy ref_*_N kwargs."""
@@ -109,6 +115,7 @@ def _pack_r2v_kwargs(
         ref_videos=videos,
         ref_video_audios=v_audios,
         ref_audios=audios,
+        model=model,  # [per-group-lora]
     )
 
 
@@ -136,6 +143,7 @@ class MiniMaxH3DirectorGroupImageToVideo:
         duration_sec=DEFAULT_FL2V_DURATION_SEC,
         first_frame=None,
         last_frame=None,
+        model=None,  # [per-group-lora]
         **_kwargs,
     ):
         group = pack_i2v_group(
@@ -143,6 +151,7 @@ class MiniMaxH3DirectorGroupImageToVideo:
             duration_sec=duration_sec,
             first_frame=first_frame,
             last_frame=last_frame,
+            model=model,
         )
         return (group,)
 
@@ -274,6 +283,12 @@ if comfy_io is not None:
                             max=MAX_REFERENCE_AUDIOS,
                         ),
                     ),
+                    comfy_io.Model.Input(  # [per-group-lora]
+                        "model",
+                        optional=True,
+                        tooltip="Optional per-group MODEL (own LoRA stack). "
+                                "Unconnected -> the Director's own model input.",
+                    ),
                 ],
                 outputs=[
                     _MMXDirGroup.Output("group"),
@@ -289,6 +304,7 @@ if comfy_io is not None:
             ref_videos=None,
             ref_video_audios=None,
             ref_audios=None,
+            model=None,  # [per-group-lora]
         ) -> comfy_io.NodeOutput:
             group = _pack_r2v_kwargs(
                 prompt=prompt,
@@ -297,6 +313,7 @@ if comfy_io is not None:
                 ref_videos=ref_videos,
                 ref_video_audios=ref_video_audios,
                 ref_audios=ref_audios,
+                model=model,
             )
             return comfy_io.NodeOutput(group)
 
@@ -389,7 +406,13 @@ else:
                         },
                     ),
                 },
-                "optional": opts,
+                "optional": {
+                    **opts,
+                    "model": (  # [per-group-lora]
+                        "MODEL",
+                        {"tooltip": "Optional per-group MODEL (own LoRA stack)."},
+                    ),
+                },
             }
 
         RETURN_TYPES = (MMX_DIR_GROUP,)

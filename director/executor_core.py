@@ -550,6 +550,10 @@ def execute_director_plan_core(
             )
 
         ui_idx = seg.timeline_index
+        # [per-group-lora] per-segment MODEL (LoRA branch), falling back to the node input.
+        seg_model = getattr(seg, "external_model", None)
+        if seg_model is None:
+            seg_model = model
         will_refine = refine_will_sample(plan, seg)
         confirm_first = confirm_first_pass_enabled(plan)
         pre_cache = (
@@ -1072,7 +1076,7 @@ def execute_director_plan_core(
             )
         else:
             samples = sample_single_stage(
-                model=model,
+                model=seg_model,  # [per-group-lora]
                 positive=positive,
                 negative=negative,
                 latent=latent,
@@ -1199,7 +1203,7 @@ def execute_director_plan_core(
                 plan,
                 seg,
                 samples=samples,
-                model=model,
+                model=seg_model,  # [per-group-lora]
                 vae=vae,
                 audio_vae=audio_vae,
                 positive=positive,

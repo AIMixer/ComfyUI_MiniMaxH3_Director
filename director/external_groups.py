@@ -105,6 +105,7 @@ def pack_i2v_group(
     duration_sec: float = DEFAULT_FL2V_DURATION_SEC,
     first_frame=None,
     last_frame=None,
+    model=None,  # [per-group-lora]
 ) -> dict[str, Any]:
     first = _as_image_batch(first_frame)
     last = _as_image_batch(last_frame)
@@ -121,6 +122,7 @@ def pack_i2v_group(
         "ref_videos": {},
         "ref_video_audios": {},
         "ref_audios": {},
+        "model": model,  # [per-group-lora]
     }
 
 
@@ -132,6 +134,7 @@ def pack_r2v_group(
     ref_videos: dict[int, Any] | None = None,
     ref_video_audios: dict[int, Any] | None = None,
     ref_audios: dict[int, Any] | None = None,
+    model=None,  # [per-group-lora]
 ) -> dict[str, Any]:
     images: dict[int, torch.Tensor] = {}
     for idx, img in (ref_images or {}).items():
@@ -187,6 +190,7 @@ def pack_r2v_group(
         "ref_videos": videos,
         "ref_video_audios": v_audios,
         "ref_audios": audios,
+        "model": model,  # [per-group-lora]
     }
 
 
@@ -592,6 +596,10 @@ def build_plan_from_external_groups(
                     ref_image_size=resolve_ref_image_size(row, timeline),
                 )
             )
+
+    # [per-group-lora] one packer node -> one segment, so all_indexed lines up.
+    for _sp, (_si, _g) in zip(segments, all_indexed):
+        _sp.external_model = (_g or {}).get("model")
 
     if not segments:
         raise ValueError("External groups produced no runnable segments.")

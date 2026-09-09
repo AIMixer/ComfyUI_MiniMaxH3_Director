@@ -188,6 +188,8 @@ class SegmentPlan:
     continuity_from_prev: bool = True
     # Official MiniMaxH3ReferenceToVideo combo: match | max. Per r2v/rv2v group.
     ref_image_size: str = "match"
+    # [per-group-lora] Per-group MODEL from the packer node; None -> Director model.
+    external_model: object = None
 
     @property
     def frame_count(self) -> int:
