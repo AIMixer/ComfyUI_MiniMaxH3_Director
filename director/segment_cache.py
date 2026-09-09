@@ -104,7 +104,8 @@ def _ref_audio_file_stamp(audio: Any, fallback_index: int) -> str:
     if path:
         try:
             st = os.stat(path)
-            stamp = f"{int(st.st_mtime)}:{int(st.st_size)}"
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+            stamp = f"{mtime_ns}:{int(st.st_size)}"
         except OSError:
             stamp = ""
     return f"aud{index}:{name}:{stamp}"

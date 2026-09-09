@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -125,9 +126,9 @@ class SegmentRefAudio:
     """Standalone reference audio for MiniMax ``<Audio N>`` (index 0-based)."""
 
     index: int
-    audio: dict  # ComfyUI AUDIO: {waveform, sample_rate}; decoded eagerly at build
+    audio: dict | None = None  # ComfyUI AUDIO; lazy for uploaded files
     audio_file: str = ""
-    audio_path: str = ""  # absolute input path (runtime-only; for cache fingerprint)
+    audio_path: str = ""  # absolute input path; used at runtime and in cache fingerprint
 
 
 @dataclass
@@ -384,13 +385,11 @@ def load_reference_audio_item(item: dict) -> dict | None:
 
 
 def _load_ref_audios(audio_list: list[dict]) -> list[SegmentRefAudio]:
-    """Eagerly decode uploaded reference audio at plan build.
+    """Build lazy file-backed reference slots without decoding PCM up front.
 
-    Decoding up front (instead of lazily during the generation loop) guarantees
-    the ``<Audio N>`` PCM is in memory before conditioning, and keeps a slot only
-    when decode actually succeeded — so prompt ``<Audio N>`` tags always line up
-    with a populated ref_audio slot (no tag-to-empty-slot mismatch = no silent
-    timbre drop).
+    Missing files are skipped (no empty slot). Decode happens on first use;
+    failed decodes are dropped from the prompt tags at execute time so
+    ``<Audio N>`` always matches a populated ``ref_audio_N``.
     """
     out: list[SegmentRefAudio] = []
     for item in audio_list or []:
@@ -405,14 +404,10 @@ def _load_ref_audios(audio_list: list[dict]) -> list[SegmentRefAudio]:
         if not os.path.isfile(file_path):
             log.warning("Reference audio missing: %s", file_path)
             continue
-        audio = load_reference_audio(file_path)
-        if audio is None:
-            log.warning("Failed to decode reference audio: %s", file_path)
-            continue
         out.append(
             SegmentRefAudio(
                 index=index,
-                audio=audio,
+                audio=None,
                 audio_file=rel,
                 audio_path=file_path,
             )
@@ -457,6 +452,47 @@ def ref_audios_to_dict(
         if isinstance(audio, dict) and audio.get("waveform") is not None:
             items.append((item.index, audio))
     return ref_audios_dict(items)
+
+
+def usable_ref_audio_indices(
+    audios: list[SegmentRefAudio] | None,
+    *,
+    cache: dict | None = None,
+) -> list[int]:
+    """Decode file-backed slots and return indices that actually have PCM."""
+    out: list[int] = []
+    for item in audios or []:
+        if item is None:
+            continue
+        idx = int(getattr(item, "index", 0))
+        audio = ensure_ref_audio_pcm(item, cache=cache)
+        if isinstance(audio, dict) and audio.get("waveform") is not None:
+            out.append(idx)
+            continue
+        log.warning(
+            "Reference audio slot %s dropped (decode failed or empty); "
+            "<Audio %s> will not be sent to the model.",
+            idx + 1,
+            idx + 1,
+        )
+    return out
+
+
+_AUDIO_PROMPT_TAG_RE = re.compile(r"<\s*Audio\s+(\d+)\s*>", re.IGNORECASE)
+
+
+def drop_unusable_audio_prompt_tags(prompt: str, keep_indices: list[int] | set[int]) -> str:
+    """Remove ``<Audio N>`` tags whose slot did not decode, to avoid silent timbre shift."""
+    keep = {int(i) for i in keep_indices}
+
+    def _keep_or_drop(match: re.Match[str]) -> str:
+        slot = int(match.group(1)) - 1
+        return match.group(0) if slot in keep else ""
+
+    text = _AUDIO_PROMPT_TAG_RE.sub(_keep_or_drop, prompt or "")
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return text.strip()
 
 
 def _ref_video_entry_has_file(item: dict | None) -> bool:
