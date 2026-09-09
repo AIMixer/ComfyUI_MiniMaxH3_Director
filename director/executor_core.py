@@ -47,11 +47,14 @@ from .plan import (
     reinforce_r2v_prompt,
     reinforce_rv2v_prompt,
     reinforce_v2v_prompt,
+    usable_ref_audio_indices,
+    drop_unusable_audio_prompt_tags,
 )
 from .progress import report_director_finish, report_director_progress, report_director_segment_preview
 from .h3_motion_context import (
     DEFAULT_AUDIO_CONTEXT_FRAMES,
     apply_motion_context,
+    continuity_export_len,
     generation_frame_budget,
     handoff_end_frame,
     snap_context_frames,
@@ -502,9 +505,10 @@ def execute_director_plan_core(
             if is_continue_mode(plan)
             else ""
         )
+        keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
         reports.append(
             f"Segment continuity: ON — {mode_label} "
-            f"{snap_context_frames(plan.continuity_overlap_frames)}f{redraw_note} "
+            f"{snap_context_frames(plan.continuity_overlap_frames)}f{redraw_note}{keep_note} "
             "(previous AV tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)."
         )
         if pinned:
@@ -711,7 +715,10 @@ def execute_director_plan_core(
         elif seg.task_key == "r2v":
             ref_idxs = [int(getattr(r, "index", 0)) for r in (seg.refs or []) if r is not None]
             vid_idxs = [int(getattr(v, "index", 0)) for v in (getattr(seg, "ref_videos", None) or []) if v is not None]
-            audio_idxs = [int(getattr(a, "index", 0)) for a in (seg.ref_audios or []) if a is not None]
+            audio_idxs = usable_ref_audio_indices(
+                seg.ref_audios, cache=getattr(plan, "audio_decode_cache", None),
+            )
+            positive_prompt = drop_unusable_audio_prompt_tags(positive_prompt, audio_idxs)
             positive_prompt = reinforce_r2v_prompt(
                 positive_prompt,
                 ref_indices=ref_idxs,
@@ -722,7 +729,10 @@ def execute_director_plan_core(
             positive_prompt = reinforce_v2v_prompt(positive_prompt)
         elif seg.task_key == "rv2v":
             ref_idxs = [int(getattr(r, "index", 0)) for r in (seg.refs or []) if r is not None]
-            audio_idxs = [int(getattr(a, "index", 0)) for a in (seg.ref_audios or []) if a is not None]
+            audio_idxs = usable_ref_audio_indices(
+                seg.ref_audios, cache=getattr(plan, "audio_decode_cache", None),
+            )
+            positive_prompt = drop_unusable_audio_prompt_tags(positive_prompt, audio_idxs)
             positive_prompt = reinforce_rv2v_prompt(
                 positive_prompt, ref_indices=ref_idxs, audio_indices=audio_idxs,
             )
@@ -992,12 +1002,19 @@ def execute_director_plan_core(
                 if is_continue_mode(plan)
                 else ""
             )
+            export_len = continuity_export_len(
+                trim_frames=trim_frames,
+                sample_len=sample_len,
+                visible_frames=num_frames,
+                target_len=target_len,
+                keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+            )
             reports.append(
                 f"Seg #{seg.index + 1}: continuity {handoff_label} — "
                 f"{trim_frames}f from seg #{seg.index} {remask_note}"
                 f"({'AV latent' if prev_av is not None else 'pixels'}"
                 f"{', +audio' if pin_audio else ', video-only'}); "
-                f"sample={sample_len}f → export {num_frames}f"
+                f"sample={sample_len}f → export {export_len}f"
                 + (
                     f"; trimmed prev export -{trimmed_prev_export}f (phase pin)"
                     if trimmed_prev_export
@@ -1117,7 +1134,13 @@ def execute_director_plan_core(
         if first_pass_gpu is not None and upscale_frames is None:
             del first_pass_gpu
             first_pass_gpu = None
-        export_len = int(num_frames) if trim_frames > 0 else int(target_len)
+        export_len = continuity_export_len(
+            trim_frames=trim_frames,
+            sample_len=sample_len,
+            visible_frames=num_frames,
+            target_len=target_len,
+            keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+        )
         if will_refine and not skip_first_sample:
             save_first_pass_cache(
                 node_id,
@@ -1222,10 +1245,15 @@ def execute_director_plan_core(
         decoded, audio_dict = _decode_av_latent(
             samples, vae, audio_vae, decode_audio=decode_audio,
         )
-        # Keep exactly the UI segment length. With motion context, sample is
-        # longer (visible+ctx, 17k+5 aligned); after trim, crop to num_frames.
-        # Next segment must pin at export end (trim+export), not sample end.
-        export_len = int(num_frames) if trim_frames > 0 else int(target_len)
+        # Default: crop free region back to UI length. 「保完整」keeps sample-trim
+        # (the 17k+5 remainder). Next pin uses trim+export.
+        export_len = continuity_export_len(
+            trim_frames=trim_frames,
+            sample_len=sample_len,
+            visible_frames=num_frames,
+            target_len=target_len,
+            keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+        )
         decoded, audio_dict = _trim_decoded_to_export(
             decoded,
             audio_dict,
