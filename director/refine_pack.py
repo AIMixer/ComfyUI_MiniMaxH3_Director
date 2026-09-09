@@ -279,6 +279,7 @@ def pack_refine(
     sampler: str = "",
     sigmas=None,
     confirm_first_pass: bool = False,
+    enable_chunking: bool = True,
 ) -> dict[str, Any]:
     mode = str(mode or "refine").strip().lower()
     if mode not in REFINE_MODES:
@@ -330,6 +331,7 @@ def pack_refine(
         "sigmas_tensor": sigma_tensor,
         "has_sigmas_tensor": sigma_tensor is not None,
         "confirm_first_pass": bool(confirm_first_pass),
+        "enable_chunking": bool(enable_chunking),
     }
 
 
@@ -414,6 +416,7 @@ def normalize_refine_pack(
         "sigmas_tensor": sigma_tensor,
         "has_sigmas_tensor": sigma_tensor is not None,
         "confirm_first_pass": bool(raw.get("confirm_first_pass", False)),
+        "enable_chunking": bool(raw.get("enable_chunking", True)),
     }
 
 
@@ -477,6 +480,7 @@ def refine_fingerprint(plan) -> dict[str, Any]:
         "refine_sigmas_wired": bool(pack.get("has_sigmas_tensor") or pack.get("sigmas_tensor") is not None),
         "refine_sample_model": bool(pack.get("has_sample_model") or pack.get("sample_model") is not None),
         "refine_skip_fl2v": bool(pack.get("skip_fl2v", True)),
+        "refine_enable_chunking": bool(pack.get("enable_chunking", True)),
     }
 
 

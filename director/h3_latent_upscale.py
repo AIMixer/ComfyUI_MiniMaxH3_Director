@@ -189,9 +189,88 @@ class LatentResizer3D(nn.Module):
         self.norm_out = _normalization(channels)
         self.conv_out = nn.Conv3d(channels, in_channels, 3, padding=1)
 
-    def forward(self, x, scale: float, target_size: tuple[int, int, int]):
+    def _temporal_kernel(self) -> int:
+        """Temporal dwconv kernel size from weights (fallback 5). Used as chunk overlap."""
+        for block in list(self.in_blocks) + list(self.out_blocks):
+            if isinstance(block, TemporalConv):
+                return int(block.dwconv.weight.shape[2])
+        return 5
+
+    def forward(
+        self,
+        x,
+        scale: float,
+        target_size: tuple[int, int, int],
+        enable_chunking: bool = True,
+    ):
         if tuple(target_size) == tuple(x.shape[-3:]):
             return x
+
+        b, c, t = x.shape[0], x.shape[1], x.shape[2]
+        chunk = 24  # 有效帧数/块（与独立节点一致）
+        overlap = self._temporal_kernel()
+
+        if not enable_chunking or t <= chunk:
+            return self._forward_seg(x, scale, target_size)
+
+        log.info(
+            "H3 latent upscaler temporal chunking: T=%d chunks=%d overlap=%d",
+            t,
+            (t + chunk - 1) // chunk,
+            overlap,
+        )
+        size = (int(target_size[0]), int(target_size[1]), int(target_size[2]))
+
+        x_padded = F.pad(x, (0, 0, 0, 0, overlap, overlap), mode="replicate")
+
+        out_full = torch.zeros(b, c, t, size[-2], size[-1], device=x.device, dtype=x.dtype)
+        weight_full = torch.zeros(1, 1, t, 1, 1, device=x.device, dtype=x.dtype)
+
+        start = 0
+        while start < t:
+            seg_start = start
+            seg_end = min(t, start + chunk)
+
+            # 输出范围含重叠区，块间才能加权融合
+            out_start = max(0, seg_start - overlap)
+            out_end = min(t, seg_end + overlap)
+
+            # padded 张量上的切片（额外的上下文帧）
+            lo = max(0, out_start - overlap)
+            hi = min(t + 2 * overlap, out_end + overlap)
+
+            seg = x_padded[:, :, lo:hi]
+            seg_size = (hi - lo, size[-2], size[-1])
+            seg_out = self._forward_seg(seg, scale, seg_size)
+
+            s0 = (out_start + overlap) - lo
+            valid_out = seg_out[:, :, s0 : s0 + (out_end - out_start)]
+            n_valid = out_end - out_start
+
+            weight = torch.ones(n_valid, device=x.device, dtype=x.dtype)
+            # 前重叠区：权重 0→1 线性递增
+            if seg_start > out_start:
+                blend_len = seg_start - out_start
+                weight[:blend_len] = (
+                    torch.arange(1, blend_len + 1, device=x.device, dtype=x.dtype)
+                    / (blend_len + 1)
+                )
+            # 后重叠区：权重 1→0 线性递减
+            if out_end > seg_end:
+                blend_len = out_end - seg_end
+                weight[-blend_len:] = (
+                    torch.arange(blend_len, 0, -1, device=x.device, dtype=x.dtype)
+                    / (blend_len + 1)
+                )
+
+            out_full[:, :, out_start:out_end] += valid_out * weight.view(1, 1, n_valid, 1, 1)
+            weight_full[:, :, out_start:out_end] += weight.view(1, 1, n_valid, 1, 1)
+
+            start += chunk
+
+        return out_full / weight_full.clamp(min=1e-8)
+
+    def _forward_seg(self, x, scale: float, target_size: tuple[int, int, int]):
         scale_emb = torch.tensor(
             [float(scale) - 1.0], dtype=x.dtype, device=x.device
         ).unsqueeze(0)
@@ -335,6 +414,7 @@ def upscale_h3_video_latent(
     source_height: int,
     model_name: str = "",
     model=None,
+    enable_chunking: bool = True,
 ) -> dict:
     """Spatially upscale MiniMax H3 video latent to a pixel canvas (×16 VAE)."""
     if model is None and (not model_name or str(model_name).startswith("(")):
@@ -382,7 +462,12 @@ def upscale_h3_video_latent(
     x = (x - mean) / std
     try:
         with torch.no_grad():
-            out = model(x, scale=scale, target_size=(t_size, dst_h, dst_w))
+            out = model(
+                x,
+                scale=scale,
+                target_size=(t_size, dst_h, dst_w),
+                enable_chunking=enable_chunking,
+            )
         out = out * std + mean
         out = out.to(device="cpu", dtype=orig_dtype).contiguous()
     finally:

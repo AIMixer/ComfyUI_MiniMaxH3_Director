@@ -498,6 +498,7 @@ function syncRefineWidgetVisibility(node) {
     const showH3Model = latentOnly || (upscale && method === "h3_latent");
     setWidgetVisible(node, "upscale_method", upscale);
     setWidgetVisible(node, "latent_upscale_model", showH3Model);
+    setWidgetVisible(node, "enable_chunking", showH3Model);
     setWidgetVisible(node, "h3_latent_model", false);
     setWidgetVisible(node, "upscale_model", false);
     setWidgetVisible(node, "schedule", false);

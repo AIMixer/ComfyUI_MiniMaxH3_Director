@@ -204,6 +204,18 @@ class MiniMaxH3DirectorRefine:
                         ),
                     },
                 ),
+                "enable_chunking": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "H3 latent 放大的时间分块（省显存）。"
+                            "latent 超过 24 帧时按 24 帧切块、首尾各垫 5 帧重叠加权融合，"
+                            "显存峰值被封顶，长视频不易爆显存；≤24 帧自动走整段，无差异。"
+                            "关掉则整段一次前向（与旧版行为一致，吃显存）。"
+                        ),
+                    },
+                ),
             },
         }
 
@@ -242,6 +254,7 @@ class MiniMaxH3DirectorRefine:
         height=720,
         skip_fl2v=True,
         confirm_first_pass=False,
+        enable_chunking=True,
         latent_upscale_model=None,
         upscale_model=None,
         h3_latent_model="",
@@ -289,6 +302,7 @@ class MiniMaxH3DirectorRefine:
             target_height=target_height,
             skip_fl2v=skip_fl2v,
             confirm_first_pass=bool(confirm_first_pass),
+            enable_chunking=bool(enable_chunking),
             upscale_method=upscale_method,
             sample_model=refine_model if refine_model is not None else model,
             latent_upscale_model=latent_upscale_model if latent_upscale_model is not None else h3_latent_model,

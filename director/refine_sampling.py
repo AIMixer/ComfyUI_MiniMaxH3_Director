@@ -357,6 +357,7 @@ def _apply_h3_latent_upscale(
         source_height=src_h,
         model_name=model_name,
         model=latent_mod,
+        enable_chunking=bool(pack.get("enable_chunking", True)),
     )
     if isinstance(encoded, dict):
         encoded.pop("noise_mask", None)
