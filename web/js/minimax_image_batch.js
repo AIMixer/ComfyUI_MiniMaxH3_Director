@@ -37,6 +37,7 @@ import {
 } from "./minimax_gen_timeline.js";
 import { refreshPromptTokenEditors, teardownPromptImageMentions, wirePromptImageMentions } from "./minimax_prompt_mentions.js";
 import { t } from "./minimax_i18n.js";
+import { createLoraSection } from "./minimax_segment_loras.js";
 import { createFl2vSlotPair, normalizeImageRef } from "./minimax_fl2v.js";
 import {
     hasDuplicateReferenceAudio,
@@ -2840,6 +2841,12 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             card.appendChild(prompts);
             card.appendChild(preview);
         }
+
+        // Per-segment LoRA stack. Prompt-batch tasks (r2v included) never open
+        // the classic segment panel, so the section lives on the card itself.
+        // Group nodes do not carry a LoRA stack, so this stays editable even
+        // when the rest of the card is externally locked.
+        card.appendChild(createLoraSection(editor, seg));
 
         list.appendChild(card);
 }

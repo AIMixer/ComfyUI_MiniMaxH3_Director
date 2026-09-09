@@ -91,6 +91,70 @@ export function ensureSegmentLoraStyles() {
     document.head.appendChild(style);
 }
 
+/** Self-contained section for one segment, used by the prompt-batch cards.
+ *
+ * The classic segment panel is only mounted for timeline-edited tasks; r2v and
+ * the other prompt-batch modes edit each segment on its own card instead, so
+ * the section has to be buildable standalone rather than bound to panel refs.
+ */
+export function createLoraSection(editor, seg) {
+    ensureSegmentLoraStyles();
+    const wrap = document.createElement("div");
+    wrap.className = "bd-seg-loras-wrap bd-r2v-section";
+
+    const head = document.createElement("div");
+    head.className = "bd-r2v-section-head";
+    const title = document.createElement("span");
+    title.className = "bd-label bd-r2v-section-title";
+    title.textContent = t("panel.segmentLoras");
+    const actions = document.createElement("span");
+    actions.className = "bd-r2v-section-actions";
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "bd-r2v-pick-existing";
+    addBtn.textContent = t("panel.addLora");
+    addBtn.title = t("tooltip.segmentLoras");
+    const count = document.createElement("span");
+    count.className = "bd-r2v-section-count";
+    actions.append(addBtn, count);
+    head.append(title, actions);
+
+    const box = document.createElement("div");
+    box.className = "bd-seg-loras";
+    wrap.append(head, box);
+
+    const paint = () => {
+        const rows = normalizeLoraRows(seg.loras);
+        seg.loras = rows;
+        count.textContent = rows.length ? `${rows.length}/${MAX_SEGMENT_LORAS}` : "";
+        box.innerHTML = "";
+        if (!rows.length) return;
+        loraNames().then((names) => {
+            box.innerHTML = "";
+            rows.forEach((row, idx) =>
+                box.appendChild(buildLoraRow(editor, seg, row, idx, names, paint)),
+            );
+        });
+    };
+
+    addBtn.onclick = async (e) => {
+        e?.stopPropagation?.();
+        const names = await loraNames();
+        if (!names.length) {
+            count.textContent = t("panel.noLorasFound");
+            return;
+        }
+        seg.loras = normalizeLoraRows(seg.loras);
+        if (seg.loras.length >= MAX_SEGMENT_LORAS) return;
+        seg.loras.push({ name: names[0], strength: 1, active: true });
+        paint();
+        editor.commit(true);
+    };
+
+    paint();
+    return wrap;
+}
+
 export function bindSegmentLoraRefs(ui) {
     ui.segLorasWrap = ui.root.querySelector('[data-r="seg-loras-wrap"]');
     ui.segLorasBox = ui.root.querySelector('[data-r="seg-loras"]');
@@ -138,11 +202,13 @@ export function renderSegmentLoras(ui, seg) {
         // The panel may have moved to another segment while the list resolved.
         if (currentSegment(ui) !== seg) return;
         box.innerHTML = "";
-        rows.forEach((row, idx) => box.appendChild(buildLoraRow(ui, seg, row, idx, names)));
+        rows.forEach((row, idx) =>
+            box.appendChild(buildLoraRow(ui, seg, row, idx, names, () => renderSegmentLoras(ui, seg))),
+        );
     });
 }
 
-function buildLoraRow(ui, seg, row, idx, names) {
+function buildLoraRow(ui, seg, row, idx, names, repaint) {
     const el = document.createElement("div");
     el.className = "bd-seg-lora-row";
 
@@ -198,7 +264,8 @@ function buildLoraRow(ui, seg, row, idx, names) {
     remove.onclick = (e) => {
         e?.stopPropagation?.();
         seg.loras.splice(idx, 1);
-        renderSegmentLoras(ui, seg);
+        if (repaint) repaint();
+        else renderSegmentLoras(ui, seg);
         ui.commit(true);
     };
 
