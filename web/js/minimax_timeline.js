@@ -1,6 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
+    bindSegmentLoraEvents,
+    bindSegmentLoraRefs,
+    ensureSegmentLoraStyles,
+    renderSegmentLoras,
+    segmentLoraTemplate,
+} from "./minimax_segment_loras.js";
+import {
     CUSTOM_ASPECT_RATIO,
     DEFAULT_ASPECT_RATIO,
     DEFAULT_MEGAPIXELS,
@@ -3067,7 +3074,7 @@ class MiniMaxH3DirectorEditor {
                 <div class="bd-gen-fc-row hidden" data-r="gen-seg-fc-row">
                     <span class="bd-label" data-i18n="panel.segmentFrames">片段帧数</span>
                     <input type="number" class="bd-num" data-r="gen-seg-fc" min="1" max="${MAX_GEN_FRAMES}" value="124" style="width:72px">
-                </div>
+                </div>${segmentLoraTemplate()}
             </div>`;
         this.mainBody.appendChild(bottom);
 
@@ -3180,6 +3187,9 @@ class MiniMaxH3DirectorEditor {
         this.segPrompt = this.root.querySelector('[data-r="seg-prompt"]');
         this.segNegative = this.root.querySelector('[data-r="seg-negative"]');
         this.segRefsBox = this.root.querySelector('[data-r="seg-refs"]');
+        ensureSegmentLoraStyles();
+        bindSegmentLoraRefs(this);
+        bindSegmentLoraEvents(this);
         this.globalRefsCol = this.root.querySelector('[data-r="global-refs-col"]');
         this.segRefsCol = this.root.querySelector('[data-r="seg-refs-col"]');
         this.globalRefVideoCol = this.root.querySelector('[data-r="global-ref-video-col"]');
@@ -10675,6 +10685,7 @@ class MiniMaxH3DirectorEditor {
             const fc = liveSeg.frameCount ?? liveSeg.length ?? defaultFrameCount(this.getTaskKey(), this.getFrameRate());
             if (this.genSegFc) this.genSegFc.value = fc;
         }
+        renderSegmentLoras(this, liveSeg);
         if (this.isFl2vMode()) updateFl2vDetailUI(this);
     }
 

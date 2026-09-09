@@ -24,6 +24,7 @@ from ..lib.ref_images import MAX_REFERENCE_IMAGES, REF_IMAGE_KEY_PREFIX
 from ..lib.ref_videos import MAX_REFERENCE_VIDEOS, ref_videos_dict
 from ..lib.image_prep import assert_minimax_canvas, resolve_output_dimensions
 from ..lib.task_prompts import get_task_prompt_spec, resolve_task_key
+from .segment_loras import normalize_lora_rows
 from ..lib.video_io import (
     load_reference_video_clip,
     logical_frame_count,
@@ -188,6 +189,9 @@ class SegmentPlan:
     continuity_from_prev: bool = True
     # Official MiniMaxH3ReferenceToVideo combo: match | max. Per r2v/rv2v group.
     ref_image_size: str = "match"
+    # Per-segment LoRA stack: [{name, strength, active}], applied on top of
+    # the Director MODEL right before sampling.
+    loras: list = field(default_factory=list)
 
     @property
     def frame_count(self) -> int:
@@ -832,6 +836,11 @@ def build_director_plan(
             )
             seg_ref_video = dict(seg_data.get("referenceVideo") or seg_data.get("reference_video") or {})
 
+        # Global edit mode has no per-segment cards, so the global LoRA stack
+        # (if any) applies to every segment.
+        seg_loras = normalize_lora_rows(
+            global_block.get("loras") if use_global else seg_data.get("loras")
+        )
         seg_task_key = resolve_task_key(seg_task)
         seg_refs = segment_refs_for_context(seg_task_key, seg_refs)
         seg_ref_audios = segment_ref_audios_for_context(seg_task_key, seg_ref_audios)
@@ -850,6 +859,7 @@ def build_director_plan(
                 ref_audios=seg_ref_audios,
                 reference_video_meta=seg_ref_video,
                 reference_video_start_frame=ref_start,
+                loras=seg_loras,
             )
         )
 
