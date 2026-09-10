@@ -219,7 +219,7 @@ class DirectorPlan:
     raw: dict
     source_total_frames: int = 0
     export_max_frames: int = 0
-    export_mode: str = "all"  # "all" | "segments"
+    export_mode: str = "all"  # "all" | "segments" | "selection"
     run_indices: frozenset[int] | None = None  # None = run all segments
     continuity_enabled: bool = False
     continuity_overlap_frames: int = 0
@@ -245,6 +245,10 @@ class DirectorPlan:
     sample_shift_audio: float = 3.0
     # Set during execute when export_mode=segments (minimax_seg_export folder).
     segment_mp4_run_dir: str | None = None
+    # Set during execute when export_mode=selection: list of consecutive run-groups,
+    # each a list of positions into the run-order (run_list) segment list. One
+    # merged clip is emitted per group. Consumed by the audio-output builder.
+    selection_export_groups: list | None = None
 
     @property
     def segment_count(self) -> int:
@@ -601,6 +605,8 @@ def _resolve_export_mode(output_block: dict) -> str:
     mode = str(output_block.get("exportMode") or output_block.get("export_mode") or "all").lower()
     if mode in ("segments", "segment", "per_segment", "by_segment"):
         return "segments"
+    if mode in ("selection", "selected", "select", "merge_selection", "by_selection"):
+        return "selection"
     return "all"
 
 

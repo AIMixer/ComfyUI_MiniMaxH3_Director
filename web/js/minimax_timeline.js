@@ -2887,6 +2887,7 @@ class MiniMaxH3DirectorEditor {
             <select class="bd-select" data-r="out-export-mode" data-i18n-title="tooltip.exportMode">
                 <option value="all" data-i18n="output.exportMode.all">全部导出</option>
                 <option value="segments" data-i18n="output.exportMode.segments">分段导出</option>
+                <option value="selection" data-i18n="output.exportMode.selection">选择导出</option>
             </select>
             <span class="hidden" data-r="out-max-frames-wrap" hidden aria-hidden="true">
                 <label data-i18n="output.maxFrames">最大帧数</label>
@@ -4134,9 +4135,12 @@ class MiniMaxH3DirectorEditor {
             this.runSelectSummary.style.color = "#aaa";
         } else {
             const nums = (this.timeline.runSelection || []).map((i) => i + 1).join(", ");
-            const exportHint = this.timeline.output?.exportMode === "segments"
+            const runExportMode = this.timeline.output?.exportMode;
+            const exportHint = runExportMode === "segments"
                 ? t("runSelect.exportOnlyChecked")
-                : t("runSelect.fillUnchecked");
+                : runExportMode === "selection"
+                    ? t("runSelect.exportSelection")
+                    : t("runSelect.fillUnchecked");
             this.runSelectSummary.textContent = count === 1
                 ? t("runSelect.sampleOne", { unit: label, nums, hint: exportHint })
                 : t("runSelect.sampleMany", { count, unit: label, nums, hint: exportHint });
@@ -6152,7 +6156,10 @@ class MiniMaxH3DirectorEditor {
         if (this.outW) this.outW.value = String(out.width ?? 864);
         if (this.outH) this.outH.value = String(out.height ?? 480);
         if (this.outMaxFrames) this.outMaxFrames.value = String(out.maxExportFrames ?? 0);
-        if (this.outExportMode) this.outExportMode.value = out.exportMode === "segments" ? "segments" : "all";
+        if (this.outExportMode) {
+            const em = out.exportMode === "segments" || out.exportMode === "selection" ? out.exportMode : "all";
+            this.outExportMode.value = em;
+        }
         if (this.outAudioMode) {
             const am = normalizeAudioMode(out.audioMode);
             this.outAudioMode.value = am;
@@ -6451,9 +6458,12 @@ class MiniMaxH3DirectorEditor {
 
     _exportPreviewSuffix() {
         const cap = this.getMaxExportFrames();
-        const exportMode = this.timeline.output?.exportMode === "segments"
+        const previewExportMode = this.timeline.output?.exportMode;
+        const exportMode = previewExportMode === "segments"
             ? t("output.preview.segmentExport")
-            : "";
+            : previewExportMode === "selection"
+                ? t("output.preview.selectionExport")
+                : "";
         const dur = this.getTimelineDurationSec().toFixed(2);
         const fps = formatProbeFps(this.getFrameRate());
         const timeHint = t("output.preview.timeFps", { dur, fps });
@@ -6525,7 +6535,8 @@ class MiniMaxH3DirectorEditor {
             const n = parseInt(value, 10);
             this.timeline.output.maxExportFrames = Number.isFinite(n) && n > 0 ? n : 0;
         } else if (key === "exportMode") {
-            this.timeline.output.exportMode = value === "segments" ? "segments" : "all";
+            this.timeline.output.exportMode =
+                value === "segments" || value === "selection" ? value : "all";
         } else if (key === "audioMode") {
             this.timeline.output.audioMode = normalizeAudioMode(value);
         } else if (key === "continuityEnabled") {
