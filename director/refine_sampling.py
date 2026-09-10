@@ -327,6 +327,8 @@ def _apply_h3_latent_upscale(
     tw: int,
     th: int,
     first_pass_images: torch.Tensor | None,
+    previous_refined_latent: dict | None,
+    previous_refined_frames: torch.Tensor | None,
     pin_frames: int,
     task_key: str,
     vae,
@@ -366,7 +368,29 @@ def _apply_h3_latent_upscale(
         audio_latent.pop("noise_mask", None)
     work = _join_av(encoded, audio_latent, work)
     notes = [f"{tw}×{th}", "h3_latent"]
-    if pin_frames > 0 and first_pass_images is not None:
+    # The refine stage uses the predecessor's final latent on its own canvas.
+    # This is intentionally separate from the native first-pass handoff.
+    if pin_frames > 0 and (
+        isinstance(previous_refined_latent, dict) or previous_refined_frames is not None
+    ):
+        try:
+            from .h3_motion_context import apply_motion_context
+
+            refine_positive, pinned, _ = apply_motion_context(
+                refine_positive,
+                work,
+                vae=vae,
+                context_length=pin_frames,
+                context_latent=previous_refined_latent,
+                context_frames=previous_refined_frames,
+                continue_audio=False,
+                keep_existing_keyframes=(task_key == "fl2v"),
+            )
+            if pinned:
+                notes.append(f"re-pin {pin_frames}f final-latent")
+        except Exception as exc:
+            log.warning("H3 latent upscale refined continuity pin failed (%s).", exc)
+    elif pin_frames > 0 and first_pass_images is not None:
         try:
             prefix = first_pass_images[:pin_frames]
             ph, pw = int(prefix.shape[1]), int(prefix.shape[2])
@@ -436,6 +460,8 @@ def apply_segment_refine(
     on_phase: PhaseCallback | None = None,
     on_step_preview: StepPreviewCallback | None = None,
     first_pass_images: torch.Tensor | None = None,
+    previous_refined_latent: dict | None = None,
+    previous_refined_frames: torch.Tensor | None = None,
     trim_frames: int = 0,
     on_pass: RefinePassCallback | None = None,
 ) -> tuple[dict, str]:
@@ -489,6 +515,8 @@ def apply_segment_refine(
                     tw=tw,
                     th=th,
                     first_pass_images=first_pass_images,
+                    previous_refined_latent=previous_refined_latent,
+                    previous_refined_frames=previous_refined_frames,
                     pin_frames=pin_frames,
                     task_key=task_key,
                     vae=vae,

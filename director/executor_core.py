@@ -286,6 +286,7 @@ def _release_segment_file_ref_audios(plan: DirectorPlan, seg) -> None:
 def _prune_continuity_working_set(
     next_segment_index: int,
     av_latents: dict[int, dict],
+    first_pass_av_latents: dict[int, dict],
     refine_passes: dict[int, list[tuple[str, torch.Tensor]]],
 ) -> None:
     """Keep only the direct predecessor needed by the next segment.
@@ -295,7 +296,7 @@ def _prune_continuity_working_set(
     """
     current = int(next_segment_index)
     keep = current - 1
-    for working_set in (av_latents, refine_passes):
+    for working_set in (av_latents, first_pass_av_latents, refine_passes):
         for index in tuple(working_set):
             if int(index) < current and int(index) != keep:
                 working_set.pop(index, None)
@@ -526,6 +527,10 @@ def execute_director_plan_core(
     completed_outputs: dict[int, torch.Tensor] = {}
     completed_pre_refine: dict[int, torch.Tensor] = {}
     completed_refine_passes: dict[int, list[tuple[str, torch.Tensor]]] = {}
+    # Keep the native first-pass and final/refined grids independently. The
+    # former is the only same-canvas context for the next first pass; the
+    # latter belongs to the next upscale/refine boundary.
+    completed_first_pass_av_latents: dict[int, dict] = {}
     completed_av_latents: dict[int, dict] = {}
     completed_av_handoff: dict[int, dict] = {}
     completed_audios: dict[int, dict] = {}
@@ -605,6 +610,7 @@ def execute_director_plan_core(
         continuity_active = is_continuity_active(plan, seg)
         prev_tail = None
         prev_av = None
+        prev_refined_av = None
         prev_audio = None
         prev_end_frame = None
         prev_idx = seg.index - 1
@@ -637,13 +643,29 @@ def execute_director_plan_core(
             # (resolve_prev may return a cache tensor without storing it).
             if prev_idx >= 0 and prev_tail is not None and prev_idx not in completed_outputs:
                 completed_outputs[prev_idx] = prev_tail
-            prev_av = completed_av_latents.get(prev_idx)
-            if prev_av is None and prev_seg is not None:
-                prev_av = load_segment_av_latent(
+            prev_refined_av = completed_av_latents.get(prev_idx)
+            if prev_refined_av is None and prev_seg is not None:
+                prev_refined_av = load_segment_av_latent(
                     node_id, prev_seg, plan, allow_stale=True
                 )
-                if prev_av is not None:
-                    completed_av_latents[prev_idx] = prev_av
+                if prev_refined_av is not None:
+                    completed_av_latents[prev_idx] = prev_refined_av
+            # Never feed an upscaled/refined predecessor into the next native
+            # first pass. A canvas mismatch otherwise falls back to decoded
+            # pixels and a resize + VAE re-encode, which can drift brightness
+            # and colour at every segment boundary.
+            prev_av = completed_first_pass_av_latents.get(prev_idx)
+            if prev_av is None and prev_seg is not None:
+                previous_first = load_first_pass_cache(node_id, prev_seg, plan)
+                if isinstance(previous_first, dict):
+                    candidate = previous_first.get("av_latent")
+                    if isinstance(candidate, dict) and "samples" in candidate:
+                        prev_av = candidate
+                        completed_first_pass_av_latents[prev_idx] = candidate
+            # Backward compatibility with caches written before the separate
+            # first-pass stream existed.
+            if prev_av is None:
+                prev_av = prev_refined_av
             prev_handoff = completed_av_handoff.get(prev_idx)
             if prev_handoff is None and prev_seg is not None:
                 prev_handoff = load_segment_handoff_meta(
@@ -1102,6 +1124,7 @@ def execute_director_plan_core(
             )
 
         first_pass_samples = samples
+        completed_first_pass_av_latents[seg.index] = first_pass_samples
         first_pass_gpu = None
         pre_export = None
         run_refine = will_refine and not hold_after_first
@@ -1225,6 +1248,8 @@ def execute_director_plan_core(
                 on_phase=_report_sample_phase,
                 on_step_preview=_report_step_preview if live_tae_preview else None,
                 first_pass_images=upscale_frames,
+                previous_refined_latent=prev_refined_av,
+                previous_refined_frames=prev_tail,
                 trim_frames=trim_frames,
                 on_pass=_export_refine_pass if mp4_run_dir is not None else None,
             )
@@ -1392,6 +1417,7 @@ def execute_director_plan_core(
         _prune_continuity_working_set(
             seg.index,
             completed_av_latents,
+            completed_first_pass_av_latents,
             completed_refine_passes,
         )
         if export_segments_mode:

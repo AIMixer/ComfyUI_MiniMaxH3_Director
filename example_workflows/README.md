@@ -12,6 +12,7 @@
 | `minimax_h3_director_external_groups_i2v.json` | fl2v | fl2va | 外部 Group（Image to Video）→ Combine → Director.`i2v_groups`；时长/素材以接线为准 |
 | `minimax_h3_director_external_groups_r2v.json` | r2v | **ref2va** | 外部 Group（Reference to Video）→ Combine → Director.`r2v_groups`；可用「选择运行」勾选组序 |
 | `minimax_h3_director_二采_加速.json` | r2v | **ref2va** | 外接 **MiniMax H3 Director Refine** → Director.`refine`（SIGMAS + H3 latent）。`images` 为二采后成片，`images_pre_refine` 为一采对比片 |
+| `minimax_h3_director_multisegment_h3_latent_refine_guide.json` | r2v | **ref2va** | 多段 H3 latent 放大二采；使用 39 帧 `guide` 衔接。一采续接一采 latent，二采续接二采 latent，避免放大画布在段间反复解码重编码造成色彩漂移 |
 
 ## 模型路径（与官方模板一致）
 
