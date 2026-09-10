@@ -84,11 +84,7 @@ from .segment_continuity import (
     is_continuity_active,
     resolve_prev_segment_output,
 )
-from .segment_loras import (
-    apply_segment_loras,
-    describe_lora_rows,
-    lora_signature,
-)
+from .segment_loras import apply_segment_loras, describe_lora_rows
 from .vram_cleanup import cleanup_segment_vram
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.core")
@@ -409,11 +405,11 @@ def execute_director_plan_core(
     plan.sample_shift_video = float(shift_video)
     plan.sample_shift_audio = float(shift_audio)
     audio_mode = resolve_audio_mode(plan)
-    # Per-run LoRA caches: identical stacks reuse one patched MODEL, and a
-    # LoRA shared by several segments is read from disk once. Both die with
-    # this call so nothing is held across queue runs.
-    _segment_lora_models: dict = {}
-    _segment_lora_tensors: dict = {}
+    # Per-segment LoRAs are applied fresh each segment and dropped straight
+    # after. Caching the patched MODEL or the LoRA tensors would hold them
+    # in system RAM for the whole run, and H3 already stages ~37 GB of
+    # weights - on a 32 GB box that margin is what aimdo needs to lock
+    # pages for its reads (ERROR_NO_SYSTEM_RESOURCES otherwise).
     decode_audio = audio_mode == AUDIO_MODE_GENERATE
     # UI toggle on the player bar (timeline.liveTaePreview); default off.
     # When off: skip step TAE and the post-sample full-segment JPEG playback encode.
@@ -563,14 +559,7 @@ def execute_director_plan_core(
         seg_lora_rows = getattr(seg, "loras", None)
         seg_lora_label = describe_lora_rows(seg_lora_rows)
         if seg_lora_label:
-            cache_key = (id(seg_model), lora_signature(seg_lora_rows))
-            cached = _segment_lora_models.get(cache_key)
-            if cached is None:
-                cached = apply_segment_loras(
-                    seg_model, seg_lora_rows, state_dict_cache=_segment_lora_tensors
-                )
-                _segment_lora_models[cache_key] = cached
-            seg_model = cached
+            seg_model = apply_segment_loras(seg_model, seg_lora_rows)
             reports.append(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: LoRA → {seg_lora_label}"
             )
