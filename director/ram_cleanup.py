@@ -88,7 +88,7 @@ def system_ram_cleanup(*, retries: int = 3, pause_s: float = 1.0) -> dict:
     try:
         before_pct, before_avail = _ram_usage()
     except Exception as exc:
-        log.warning("段间清理内存 / RAM cleanup skipped: %s", exc)
+        log.warning("Free RAM between segments: RAM cleanup skipped: %s", exc)
         return report
     system = platform.system()
     attempts = max(1, int(retries))
@@ -114,7 +114,7 @@ def system_ram_cleanup(*, retries: int = 3, pause_s: float = 1.0) -> dict:
                 except Exception:
                     pass
         except Exception as exc:
-            log.warning("段间清理内存 / RAM cleanup attempt %d failed: %s", attempt + 1, exc)
+            log.warning("Free RAM between segments: RAM cleanup attempt %d failed: %s", attempt + 1, exc)
         if attempt + 1 < attempts and pause_s > 0:
             time.sleep(pause_s)
     try:
@@ -127,7 +127,7 @@ def system_ram_cleanup(*, retries: int = 3, pause_s: float = 1.0) -> dict:
         freed_mb=after_avail - before_avail,
     )
     log.info(
-        "段间清理内存 / RAM cleanup: %.1f%% -> %.1f%%, freed %.0f MB, trimmed %d processes",
+        "Free RAM between segments: RAM cleanup: %.1f%% -> %.1f%%, freed %.0f MB, trimmed %d processes",
         before_pct, after_pct, report["freed_mb"], report["processes"],
     )
     return report
