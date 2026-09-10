@@ -86,6 +86,7 @@ from .segment_continuity import (
     resolve_prev_segment_output,
 )
 from .segment_loras import apply_segment_loras, describe_lora_rows
+from .ram_cleanup import system_ram_cleanup
 from .vram_cleanup import cleanup_segment_vram
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.core")
@@ -1197,6 +1198,10 @@ def execute_director_plan_core(
         # Single / last segment: skip — official H3 also keeps models loaded.
         if clear_vram_between_segments and seg_total > 1:
             cleanup_segment_vram(enabled=True, unload_models=True)
+        # Same routine as the RAM-Cleanup node (file cache + every process's
+        # working set), run here between segments with the models unloaded.
+        if clear_ram_between_segments and seg.index > 0:
+            system_ram_cleanup()
 
         def _report_sample_phase(phase: str, value: float) -> None:
             report_director_progress(
