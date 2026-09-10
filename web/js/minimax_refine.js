@@ -324,6 +324,7 @@ function renderCacheStatus(node, data, kind = "normal") {
         continuity_overlap: "上下文帧数",
         continuity_mode: "引导方式",
         continuity_redraw: "重绘幅度",
+        continuity_keep_tail: "保完整",
         cfg: "CFG",
         steps: "一采步数",
         sampler: "一采采样器",

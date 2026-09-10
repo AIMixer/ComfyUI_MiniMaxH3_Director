@@ -605,6 +605,26 @@ def generation_frame_budget(visible_frames: int, context_frames: int) -> tuple[i
     return sample, ctx
 
 
+def continuity_export_len(
+    *,
+    trim_frames: int,
+    sample_len: int,
+    visible_frames: int,
+    target_len: int,
+    keep_tail: bool,
+) -> int:
+    """Frames to keep after dropping the pinned head.
+
+    Default crops the free region back to the UI visible length. ``keep_tail``
+    keeps ``sample - trim`` (the 17k+5 remainder, typically 12 frames).
+    """
+    if int(trim_frames) <= 0:
+        return int(target_len)
+    if keep_tail:
+        return max(1, int(sample_len) - int(trim_frames))
+    return int(visible_frames)
+
+
 def handoff_end_frame(*, trim_frames: int, export_frames: int) -> int:
     """Sample-timeline pixel index where the exported segment ends (exclusive)."""
     return max(0, int(trim_frames)) + max(0, int(export_frames))

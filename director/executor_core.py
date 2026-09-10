@@ -33,7 +33,6 @@ from .segment_runtime import (
     frames_label,
     resolve_segment_raw_clip,
     segment_passthrough_chunk,
-    tensor_frame_to_jpeg_b64,
 )
 from .plan import (
     DirectorPlan,
@@ -47,11 +46,14 @@ from .plan import (
     reinforce_r2v_prompt,
     reinforce_rv2v_prompt,
     reinforce_v2v_prompt,
+    usable_ref_audio_indices,
+    drop_unusable_audio_prompt_tags,
 )
 from .progress import report_director_finish, report_director_progress, report_director_segment_preview
 from .h3_motion_context import (
     DEFAULT_AUDIO_CONTEXT_FRAMES,
     apply_motion_context,
+    continuity_export_len,
     generation_frame_budget,
     handoff_end_frame,
     snap_context_frames,
@@ -465,9 +467,9 @@ def execute_director_plan_core(
     if mp4_run_dir is not None:
         reports.append(f"Segment mp4 export dir: {mp4_run_dir}")
     if live_tae_preview:
-        reports.append("Live preview: ON — 采样 TAE + 成片后整段 JPEG 播放。")
+        reports.append("Live preview: ON — 采样中 TAE 动态预览（成片看下游 CreateVideo / SaveVideo）。")
     else:
-        reports.append("Live preview: OFF — 跳过 TAE 与成片 JPEG（节点内不播放）。")
+        reports.append("Live preview: OFF — 跳过采样预览。")
     if clear_vram_between_segments:
         reports.append("VRAM: 段间清理显存已开启（最后一段不清理）。")
     if audio_mode == AUDIO_MODE_MUTE:
@@ -513,9 +515,10 @@ def execute_director_plan_core(
             if is_continue_mode(plan)
             else ""
         )
+        keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
         reports.append(
             f"Segment continuity: ON — {mode_label} "
-            f"{snap_context_frames(plan.continuity_overlap_frames)}f{redraw_note} "
+            f"{snap_context_frames(plan.continuity_overlap_frames)}f{redraw_note}{keep_note} "
             "(previous AV tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)."
         )
         if pinned:
@@ -722,7 +725,10 @@ def execute_director_plan_core(
         elif seg.task_key == "r2v":
             ref_idxs = [int(getattr(r, "index", 0)) for r in (seg.refs or []) if r is not None]
             vid_idxs = [int(getattr(v, "index", 0)) for v in (getattr(seg, "ref_videos", None) or []) if v is not None]
-            audio_idxs = [int(getattr(a, "index", 0)) for a in (seg.ref_audios or []) if a is not None]
+            audio_idxs = usable_ref_audio_indices(
+                seg.ref_audios, cache=getattr(plan, "audio_decode_cache", None),
+            )
+            positive_prompt = drop_unusable_audio_prompt_tags(positive_prompt, audio_idxs)
             positive_prompt = reinforce_r2v_prompt(
                 positive_prompt,
                 ref_indices=ref_idxs,
@@ -733,7 +739,10 @@ def execute_director_plan_core(
             positive_prompt = reinforce_v2v_prompt(positive_prompt)
         elif seg.task_key == "rv2v":
             ref_idxs = [int(getattr(r, "index", 0)) for r in (seg.refs or []) if r is not None]
-            audio_idxs = [int(getattr(a, "index", 0)) for a in (seg.ref_audios or []) if a is not None]
+            audio_idxs = usable_ref_audio_indices(
+                seg.ref_audios, cache=getattr(plan, "audio_decode_cache", None),
+            )
+            positive_prompt = drop_unusable_audio_prompt_tags(positive_prompt, audio_idxs)
             positive_prompt = reinforce_rv2v_prompt(
                 positive_prompt, ref_indices=ref_idxs, audio_indices=audio_idxs,
             )
@@ -1022,12 +1031,19 @@ def execute_director_plan_core(
                 if is_continue_mode(plan)
                 else ""
             )
+            export_len = continuity_export_len(
+                trim_frames=trim_frames,
+                sample_len=sample_len,
+                visible_frames=num_frames,
+                target_len=target_len,
+                keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+            )
             reports.append(
                 f"Seg #{seg.index + 1}: continuity {handoff_label} — "
                 f"{trim_frames}f from seg #{seg.index} {remask_note}"
                 f"({'AV latent' if prev_av is not None else 'pixels'}"
                 f"{', +audio' if pin_audio else ', video-only'}); "
-                f"sample={sample_len}f → export {num_frames}f"
+                f"sample={sample_len}f → export {export_len}f"
                 + (
                     f"; trimmed prev export -{trimmed_prev_export}f (phase pin)"
                     if trimmed_prev_export
@@ -1051,22 +1067,34 @@ def execute_director_plan_core(
             )
 
         def _report_step_preview(step: int, total_steps: int, x0) -> None:
-            # Live frame for the batch-card preview slot (「生成中…」 area).
+            # Live clip for the batch-card / 采样预览 slot (KJNodes-style looping WebP).
             try:
-                from .tae_preview import pil_to_jpeg_b64, x0_to_preview_pil
+                from .tae_preview import (
+                    LIVE_PREVIEW_FPS,
+                    LIVE_PREVIEW_MAX_FRAMES,
+                    encode_preview_payload,
+                    x0_to_preview_frames,
+                )
 
-                pil = x0_to_preview_pil(x0, max_side=512)
-                if pil is None:
+                frames = x0_to_preview_frames(x0, max_frames=LIVE_PREVIEW_MAX_FRAMES, max_side=512)
+                if not frames:
+                    return
+                image_b64, mime, width, height = encode_preview_payload(
+                    frames, fps=LIVE_PREVIEW_FPS
+                )
+                if not image_b64:
                     return
                 report_director_segment_preview(
                     node_id,
                     segment_index=ui_idx,
-                    image_b64=pil_to_jpeg_b64(pil),
-                    width=pil.width,
-                    height=pil.height,
+                    image_b64=image_b64,
+                    width=width,
+                    height=height,
                     live=True,
                     step=step + 1,
                     total_steps=total_steps,
+                    mime=mime,
+                    fps=float(LIVE_PREVIEW_FPS),
                 )
             except Exception as exc:
                 log.debug("Live TAE preview skipped: %s", exc)
@@ -1141,7 +1169,13 @@ def execute_director_plan_core(
         if first_pass_gpu is not None and upscale_frames is None:
             del first_pass_gpu
             first_pass_gpu = None
-        export_len = int(num_frames) if trim_frames > 0 else int(target_len)
+        export_len = continuity_export_len(
+            trim_frames=trim_frames,
+            sample_len=sample_len,
+            visible_frames=num_frames,
+            target_len=target_len,
+            keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+        )
         if will_refine and not skip_first_sample:
             save_first_pass_cache(
                 node_id,
@@ -1246,10 +1280,15 @@ def execute_director_plan_core(
         decoded, audio_dict = _decode_av_latent(
             samples, vae, audio_vae, decode_audio=decode_audio,
         )
-        # Keep exactly the UI segment length. With motion context, sample is
-        # longer (visible+ctx, 17k+5 aligned); after trim, crop to num_frames.
-        # Next segment must pin at export end (trim+export), not sample end.
-        export_len = int(num_frames) if trim_frames > 0 else int(target_len)
+        # Default: crop free region back to UI length. 「保完整」keeps sample-trim
+        # (the 17k+5 remainder). Next pin uses trim+export.
+        export_len = continuity_export_len(
+            trim_frames=trim_frames,
+            sample_len=sample_len,
+            visible_frames=num_frames,
+            target_len=target_len,
+            keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
+        )
         decoded, audio_dict = _trim_decoded_to_export(
             decoded,
             audio_dict,
@@ -1355,29 +1394,6 @@ def execute_director_plan_core(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: "
                 f"{mp4_export_kind(mp4_path)} saved → {mp4_path}"
             )
-
-        if (
-            live_tae_preview
-            and seg.task_key in {"t2v", "i2v", "r2v", "fl2v", "v2v", "rv2v"}
-            and decoded.shape[0] >= 1
-        ):
-            try:
-                frames_b64 = [
-                    tensor_frame_to_jpeg_b64(decoded[i])
-                    for i in range(int(decoded.shape[0]))
-                ]
-                h, w = int(decoded.shape[1]), int(decoded.shape[2])
-                report_director_segment_preview(
-                    node_id,
-                    segment_index=ui_idx,
-                    image_b64=frames_b64[0],
-                    width=w,
-                    height=h,
-                    frames=frames_b64,
-                    fps=float(plan.frame_rate or 24),
-                )
-            except Exception as exc:
-                log.debug("Segment video preview skipped: %s", exc)
 
         if clear_vram_between_segments and progress_index < seg_total - 1:
             cleanup_segment_vram(enabled=True)

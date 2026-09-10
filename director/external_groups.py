@@ -381,8 +381,10 @@ def build_plan_from_external_groups(
         _load_refs,
         concat_common_segment_prompt,
         merge_indexed_refs,
+        drop_unusable_audio_prompt_tags,
         reinforce_r2v_prompt,
         resolve_ref_image_size,
+        usable_ref_audio_indices,
     )
 
     timeline = _parse_timeline_meta(timeline_data)
@@ -577,11 +579,13 @@ def build_plan_from_external_groups(
                 SegmentRefAudio(index=int(idx), audio=aud, audio_file="")
                 for idx, aud in sorted((g.get("ref_video_audios") or {}).items())
             ]
+            audio_idxs = usable_ref_audio_indices(ref_audios)
+            prompt = drop_unusable_audio_prompt_tags(prompt, audio_idxs)
             prompt = reinforce_r2v_prompt(
                 prompt,
                 ref_indices=[r.index for r in refs],
                 video_indices=[v.index for v in ref_videos],
-                audio_indices=[a.index for a in ref_audios],
+                audio_indices=audio_idxs,
             )
             row = timeline_row_for_index(timeline, int(src_index))
             if not row and isinstance(g, dict):
@@ -628,6 +632,7 @@ def build_plan_from_external_groups(
     raw["editMode"] = "segment"
 
     from .segment_continuity import (
+        resolve_continuity_keep_tail,
         resolve_continuity_mode,
         resolve_continuity_redraw,
         resolve_continuity_settings,
@@ -638,6 +643,7 @@ def build_plan_from_external_groups(
     )
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
+    continuity_keep_tail = resolve_continuity_keep_tail(timeline)
 
     return DirectorPlan(
         frame_rate=fps,
@@ -662,5 +668,6 @@ def build_plan_from_external_groups(
         continuity_overlap_frames=continuity_overlap,
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
+        continuity_keep_tail=continuity_keep_tail,
         global_ref_audios=list(common_audios_raw) if family == "r2v" else [],
     )

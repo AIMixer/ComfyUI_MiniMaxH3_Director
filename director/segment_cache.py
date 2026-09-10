@@ -91,6 +91,27 @@ def _cache_root(node_id: str) -> Path | None:
         return None
 
 
+def _ref_audio_file_stamp(audio: Any, fallback_index: int) -> str:
+    """Fingerprint fragment for one reference audio.
+
+    Keying on the uploaded filename alone misses the case where the user keeps
+    the same slot/filename but replaces the audio content. Stamp the source
+    file's mtime+size so a content swap invalidates the first-pass cache.
+    """
+    index = getattr(audio, "index", fallback_index)
+    name = getattr(audio, "audio_file", "") or ""
+    path = getattr(audio, "audio_path", "") or ""
+    stamp = ""
+    if path:
+        try:
+            st = os.stat(path)
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+            stamp = f"{mtime_ns}:{int(st.st_size)}"
+        except OSError:
+            stamp = ""
+    return f"aud{index}:{name}:{stamp}"
+
+
 def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
     """Identity that affects first-pass sampling (no Refine settings)."""
     ref_files = sorted(
@@ -98,7 +119,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         for ref in seg.refs
     )
     ref_audio_files = sorted(
-        f"aud{getattr(a, 'index', i)}:{(getattr(a, 'audio_file', '') or '')}"
+        _ref_audio_file_stamp(a, i)
         for i, a in enumerate(getattr(seg, "ref_audios", None) or [])
     )
     ref_video_files = sorted(
@@ -117,7 +138,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         list(getattr(seg, "timed_audio_guides", None) or []),
         frame_count=int(getattr(seg, "frame_count", 0) or 0),
     )
-    return {
+    payload = {
         "index": seg.index,
         "start": seg.start_frame,
         "end": seg.end_frame,
@@ -159,6 +180,10 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
             else CONTINUITY_PIPELINE_ID
         ),
     }
+    if plan.continuity_enabled and bool(getattr(plan, "continuity_keep_tail", True)):
+        payload["continuity_keep_tail"] = True
+    return payload
+
 
 
 def first_pass_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:

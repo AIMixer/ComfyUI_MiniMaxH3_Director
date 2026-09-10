@@ -102,6 +102,45 @@ def build_plan(task_key: str, segment_keys: list[str], *, mode: str = "continue"
 
 
 class AddGuideContinuityMergeTests(unittest.TestCase):
+    def test_cache_retains_both_guides_and_keep_tail(self):
+        built = build_plan("mixed", ["addguide", "t2v"], mode="guide")
+        segment = built.segments[0]
+        segment.timed_audio_guides = [timed_module.SegmentTimedAudioGuide(
+            id="audio", frame_index=0, audio_identity="audio:a",
+            source_duration_sec=1.0,
+        )]
+        built.continuity_keep_tail = True
+        first = cache_module.first_pass_cache_fingerprint(segment, built)
+        self.assertTrue(first["continuity_keep_tail"])
+        self.assertTrue(first["timed_guides"])
+        self.assertTrue(first["timed_audio_guides"])
+        segment.timed_audio_guides[0].audio_identity = "audio:b"
+        changed = cache_module.first_pass_cache_fingerprint(segment, built)
+        self.assertNotEqual(first["timed_audio_guides"], changed["timed_audio_guides"])
+        self.assertEqual(first["timed_guides"], changed["timed_guides"])
+        built.continuity_keep_tail = False
+        trimmed = cache_module.first_pass_cache_fingerprint(segment, built)
+        self.assertNotIn("continuity_keep_tail", trimmed)
+        built.continuity_keep_tail = True
+        built.continuity_enabled = False
+        self.assertNotIn("continuity_keep_tail", cache_module.first_pass_cache_fingerprint(segment, built))
+
+    def test_reference_audio_content_stamp_invalidates_cache(self):
+        built = build_plan("mixed", ["t2v"], mode="guide")
+        segment = built.segments[0]
+        segment.ref_audios = [types.SimpleNamespace(
+            index=2, audio_file="voice.wav", audio_path="voice.wav",
+        )]
+        with mock.patch.object(cache_module.os, "stat", return_value=types.SimpleNamespace(
+            st_mtime=1.0, st_mtime_ns=1000000000, st_size=100,
+        )):
+            first = cache_module.first_pass_cache_fingerprint(segment, built)
+        with mock.patch.object(cache_module.os, "stat", return_value=types.SimpleNamespace(
+            st_mtime=2.0, st_mtime_ns=2000000000, st_size=101,
+        )):
+            changed = cache_module.first_pass_cache_fingerprint(segment, built)
+        self.assertNotEqual(first["ref_audios"], changed["ref_audios"])
+
     def test_pure_addguide_forces_continuity_off_even_in_continue_mode(self):
         built = build_plan("addguide", ["addguide"], mode="continue")
         self.assertFalse(built.continuity_enabled)

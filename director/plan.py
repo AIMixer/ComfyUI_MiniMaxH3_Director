@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -128,7 +129,7 @@ class SegmentRefAudio:
     index: int
     audio: dict | None = None  # ComfyUI AUDIO; lazy for uploaded files
     audio_file: str = ""
-    audio_path: str = ""  # absolute input path; runtime-only, not a cache identity
+    audio_path: str = ""  # absolute input path; used at runtime and in cache fingerprint
 
 
 @dataclass
@@ -228,8 +229,11 @@ class DirectorPlan:
     # "guide" (motion-context keyframes) | "continue" (引导+重绘 / latent remask).
     continuity_mode: str = "guide"
     continuity_redraw: float = 0.65
+    # Keep sample-trim remainder (~12f) instead of cropping back to UI length.
+    continuity_keep_tail: bool = True
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
-    # Full source-video PCM reused only during this Director execution.
+    # Full source-video PCM, reused only during this one Director execution and
+    # freed when the run ends (replaces the old never-cleared process cache).
     audio_decode_cache: dict = field(default_factory=dict, repr=False)
     refine: dict | None = None
     # Sampling knobs stamped at execute time (first-pass cache fingerprint).
@@ -351,7 +355,7 @@ def _load_refs(ref_list: list[dict]) -> list[SegmentRef]:
 
 
 def _reference_audio_file(item: dict) -> tuple[str, str]:
-    """Return (timeline-relative identity, absolute input path)."""
+    """Return (timeline identity rel, absolute input path) for a refAudios entry."""
     rel = str(
         item.get("audioFile")
         or item.get("audio_file")
@@ -362,9 +366,10 @@ def _reference_audio_file(item: dict) -> tuple[str, str]:
     if not rel:
         return "", ""
     sub = str(item.get("subfolder") or "").replace("\\", "/").strip().strip("/")
-    if sub and not rel.startswith(sub + "/"):
-        rel = f"{sub}/{rel}"
-    file_path = os.path.join(folder_paths.get_input_directory(), rel.replace("/", os.sep))
+    located = rel
+    if sub and not located.startswith(sub + "/"):
+        located = f"{sub}/{located}"
+    file_path = os.path.join(folder_paths.get_input_directory(), located.replace("/", os.sep))
     return rel, file_path
 
 
@@ -383,7 +388,12 @@ def load_reference_audio_item(item: dict) -> dict | None:
 
 
 def _load_ref_audios(audio_list: list[dict]) -> list[SegmentRefAudio]:
-    """Build lazy file-backed reference slots without decoding PCM up front."""
+    """Build lazy file-backed reference slots without decoding PCM up front.
+
+    Missing files are skipped (no empty slot). Decode happens on first use;
+    failed decodes are dropped from the prompt tags at execute time so
+    ``<Audio N>`` always matches a populated ``ref_audio_N``.
+    """
     out: list[SegmentRefAudio] = []
     for item in audio_list or []:
         if not isinstance(item, dict):
@@ -445,6 +455,47 @@ def ref_audios_to_dict(
         if isinstance(audio, dict) and audio.get("waveform") is not None:
             items.append((item.index, audio))
     return ref_audios_dict(items)
+
+
+def usable_ref_audio_indices(
+    audios: list[SegmentRefAudio] | None,
+    *,
+    cache: dict | None = None,
+) -> list[int]:
+    """Decode file-backed slots and return indices that actually have PCM."""
+    out: list[int] = []
+    for item in audios or []:
+        if item is None:
+            continue
+        idx = int(getattr(item, "index", 0))
+        audio = ensure_ref_audio_pcm(item, cache=cache)
+        if isinstance(audio, dict) and audio.get("waveform") is not None:
+            out.append(idx)
+            continue
+        log.warning(
+            "Reference audio slot %s dropped (decode failed or empty); "
+            "<Audio %s> will not be sent to the model.",
+            idx + 1,
+            idx + 1,
+        )
+    return out
+
+
+_AUDIO_PROMPT_TAG_RE = re.compile(r"<\s*Audio\s+(\d+)\s*>", re.IGNORECASE)
+
+
+def drop_unusable_audio_prompt_tags(prompt: str, keep_indices: list[int] | set[int]) -> str:
+    """Remove ``<Audio N>`` tags whose slot did not decode, to avoid silent timbre shift."""
+    keep = {int(i) for i in keep_indices}
+
+    def _keep_or_drop(match: re.Match[str]) -> str:
+        slot = int(match.group(1)) - 1
+        return match.group(0) if slot in keep else ""
+
+    text = _AUDIO_PROMPT_TAG_RE.sub(_keep_or_drop, prompt or "")
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return text.strip()
 
 
 def _ref_video_entry_has_file(item: dict | None) -> bool:
@@ -816,6 +867,7 @@ def build_director_plan(
         )
 
     from .segment_continuity import (
+        resolve_continuity_keep_tail,
         resolve_continuity_mode,
         resolve_continuity_redraw,
         resolve_continuity_settings,
@@ -827,6 +879,7 @@ def build_director_plan(
     )
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
+    continuity_keep_tail = resolve_continuity_keep_tail(timeline)
     for seg, (_start, _end, seg_data) in zip(segments, segment_ranges):
         seg.continuity_from_prev = resolve_segment_continuity_from_prev(
             seg_data if isinstance(seg_data, dict) else {},
@@ -862,6 +915,7 @@ def build_director_plan(
         continuity_overlap_frames=continuity_overlap,
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
+        continuity_keep_tail=continuity_keep_tail,
         global_ref_audios=global_ref_audios,
     )
 
@@ -989,9 +1043,10 @@ def plan_summary(plan: DirectorPlan) -> str:
                 and seg.task_key != "addguide"
                 and not getattr(seg, "continuity_from_prev", True)
             ]
+            keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
             lines.append(
                 f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "
-                f"motion context {plan.continuity_overlap_frames}f)"
+                f"motion context {plan.continuity_overlap_frames}f{keep_note})"
             )
             if pinned:
                 lines.append("  Pin from prev: #" + ", #".join(str(i) for i in pinned))
@@ -1082,9 +1137,10 @@ def plan_summary(plan: DirectorPlan) -> str:
             for seg in plan.segments
             if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
         ]
+        keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
         lines.append(
             f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "
-            f"motion context {plan.continuity_overlap_frames}f "
+            f"motion context {plan.continuity_overlap_frames}f{keep_note} "
             "→ pin previous tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)"
         )
         if pinned:

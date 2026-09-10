@@ -139,7 +139,26 @@ def _video_latent_from_x0(x0: Any) -> torch.Tensor | None:
     return None
 
 
-def _latent2rgb_pil(video: torch.Tensor) -> Image.Image | None:
+# Match KJNodes ModelPreviewOverride defaults for animated step previews.
+LIVE_PREVIEW_MAX_FRAMES = 16
+LIVE_PREVIEW_FPS = 12
+
+
+def _pick_temporal_indices(t_total: int, max_frames: int) -> list[int]:
+    if t_total <= 0:
+        return []
+    cap = int(max_frames or 0)
+    if cap <= 0 or cap >= t_total:
+        return list(range(t_total))
+    return np.linspace(0, t_total - 1, cap).round().astype(int).tolist()
+
+
+def _rgb_to_pil(rgb_hwc: torch.Tensor) -> Image.Image:
+    arr = (rgb_hwc.detach().float().clamp(0, 1).cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+    return Image.fromarray(arr, mode="RGB")
+
+
+def _latent2rgb_frames(video: torch.Tensor, indices: list[int]) -> list[Image.Image]:
     try:
         from comfy.latent_formats import MiniMaxH3Video
         import latent_preview
@@ -149,52 +168,69 @@ def _latent2rgb_pil(video: torch.Tensor) -> Image.Image | None:
             fmt.latent_rgb_factors,
             fmt.latent_rgb_factors_bias,
         )
-        # Mid temporal frame for a quick look.
-        t = int(video.shape[2] // 2)
-        frame = video[:1, :, t]
-        out = previewer.decode_latent_to_preview(frame)
-        if isinstance(out, Image.Image):
-            return out.convert("RGB")
+        out: list[Image.Image] = []
+        for t in indices:
+            frame = previewer.decode_latent_to_preview(video[:1, :, int(t)])
+            if isinstance(frame, Image.Image):
+                out.append(frame.convert("RGB"))
+        return out
     except Exception as exc:
         log.debug("Latent2RGB preview failed: %s", exc)
-    return None
+    return []
 
 
-def x0_to_preview_pil(x0: Any, *, max_side: int = 512) -> Image.Image | None:
-    video = _video_latent_from_x0(x0)
-    if video is None or video.numel() == 0:
-        return None
-
-    pil = None
+def _tae_frames(video: torch.Tensor, indices: list[int]) -> list[Image.Image]:
     dec = get_tae_decoder()
-    if dec is not None and int(video.shape[1]) == int(dec.latent_channels):
-        try:
-            t = int(video.shape[2] // 2)
-            rgb = dec.decode_frame(video[:1, :, t])
-            arr = (rgb.numpy() * 255.0).clip(0, 255).astype(np.uint8)
-            pil = Image.fromarray(arr, mode="RGB")
-        except Exception as exc:
-            log.warning("TAE decode failed, falling back to Latent2RGB: %s", exc)
-            pil = None
+    if dec is None or int(video.shape[1]) != int(dec.latent_channels):
+        return []
+    try:
+        return [_rgb_to_pil(dec.decode_frame(video[:1, :, int(t)])) for t in indices]
+    except Exception as exc:
+        log.warning("TAE decode failed, falling back to Latent2RGB: %s", exc)
+        return []
 
-    if pil is None:
-        pil = _latent2rgb_pil(video)
-    if pil is None:
-        return None
 
+def _fit_preview_pil(pil: Image.Image, max_side: int) -> Image.Image:
     # Latent2RGB frames are often tiny (latent spatial size); upscale so UI
     # preview slots are not a speck in a large card.
     min_side = 256
     longest = max(int(pil.width), int(pil.height))
     if longest > 0 and longest < min_side:
         scale = min_side / float(longest)
+        nearest = Image.Resampling.NEAREST if hasattr(Image, "Resampling") else Image.NEAREST
         pil = pil.resize(
             (max(1, int(round(pil.width * scale))), max(1, int(round(pil.height * scale)))),
-            Image.Resampling.NEAREST if hasattr(Image, "Resampling") else Image.NEAREST,
+            nearest,
         )
     if max_side and max_side > 0 and (pil.width > max_side or pil.height > max_side):
         pil = ImageOps.contain(pil, (max_side, max_side), Image.LANCZOS)
-    return pil
+    return pil if pil.mode == "RGB" else pil.convert("RGB")
+
+
+def x0_to_preview_frames(
+    x0: Any,
+    *,
+    max_frames: int = LIVE_PREVIEW_MAX_FRAMES,
+    max_side: int = 512,
+) -> list[Image.Image]:
+    """Decode evenly spaced temporal frames from a video x0 (KJNodes-style)."""
+    video = _video_latent_from_x0(x0)
+    if video is None or video.numel() == 0:
+        return []
+    # Detach so TAE / Latent2RGB cannot alias the sampler's live x0.
+    video = video.detach()
+    indices = _pick_temporal_indices(int(video.shape[2]), max_frames)
+    if not indices:
+        return []
+    frames = _tae_frames(video, indices) or _latent2rgb_frames(video, indices)
+    return [_fit_preview_pil(frame, max_side) for frame in frames]
+
+
+def x0_to_preview_pil(x0: Any, *, max_side: int = 512) -> Image.Image | None:
+    frames = x0_to_preview_frames(x0, max_frames=LIVE_PREVIEW_MAX_FRAMES, max_side=max_side)
+    if not frames:
+        return None
+    return frames[len(frames) // 2]
 
 
 def pil_to_jpeg_b64(pil: Image.Image, *, quality: int = 80) -> str:
@@ -204,3 +240,47 @@ def pil_to_jpeg_b64(pil: Image.Image, *, quality: int = 80) -> str:
     buf = io.BytesIO()
     pil.save(buf, format="JPEG", quality=int(quality))
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def encode_animated_webp(frames: list[Image.Image], *, fps: int = LIVE_PREVIEW_FPS, quality: int = 80) -> str:
+    import base64
+    import io
+
+    if not frames:
+        return ""
+    duration_ms = max(1, int(round(1000 / max(1, int(fps)))))
+    buf = io.BytesIO()
+    try:
+        frames[0].save(
+            buf,
+            format="WEBP",
+            save_all=True,
+            append_images=frames[1:],
+            duration=duration_ms,
+            loop=0,
+            quality=int(quality),
+            method=4,
+        )
+    except Exception as exc:
+        log.warning("Animated WebP encode failed: %s", exc)
+        return ""
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def encode_preview_payload(
+    frames: list[Image.Image],
+    *,
+    fps: int = LIVE_PREVIEW_FPS,
+    quality: int = 80,
+) -> tuple[str, str, int, int]:
+    """Return (b64, mime, width, height). Multi-frame → looping WebP like KJNodes."""
+    if not frames:
+        return "", "image/jpeg", 0, 0
+    first = frames[0]
+    if len(frames) == 1:
+        return pil_to_jpeg_b64(first, quality=quality), "image/jpeg", first.width, first.height
+    b64 = encode_animated_webp(frames, fps=fps, quality=quality)
+    if not b64:
+        mid = frames[len(frames) // 2]
+        return pil_to_jpeg_b64(mid, quality=quality), "image/jpeg", mid.width, mid.height
+    return b64, "image/webp", first.width, first.height
