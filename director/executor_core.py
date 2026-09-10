@@ -395,7 +395,7 @@ def _spill_segment_pixels_for_ram(
     progress_pos: dict,
     spilled: set,
 ) -> bool:
-    """「段间清理内存」: keep a finished segment's pixels only in the disk cache.
+    """「完成片段转存磁盘」: keep a finished segment's pixels only in the disk cache.
 
     Every in-RAM holder (completed_*, segment_*, output_*) is swapped for a
     1-frame poster so the tensor can really be freed; _restore_spilled_segments
@@ -408,7 +408,7 @@ def _spill_segment_pixels_for_ram(
         return False
     seg = next((s for s in all_segments if int(s.index) == idx), None)
     if seg is None or not segment_cache_exists(node_id, seg):
-        log.info("Free RAM between segments: segment %d is not in the disk cache; keeping it in RAM.", idx + 1)
+        log.info("Offload segments to disk: segment %d is not in the disk cache; keeping it in RAM.", idx + 1)
         return False
     run_pos = progress_pos.get(idx)
     out_pos = [oi for oi, oseg in enumerate(output_segments) if int(getattr(oseg, "index", -1)) == idx]
@@ -425,7 +425,7 @@ def _spill_segment_pixels_for_ram(
         return False
     base = tensors[0]
     if any(t is not base and (t.shape != base.shape or not torch.equal(t, base)) for t in tensors[1:]):
-        log.info("Free RAM between segments: segment %d has a separate refine pre-pass; keeping it in RAM.", idx + 1)
+        log.info("Offload segments to disk: segment %d has a separate refine pre-pass; keeping it in RAM.", idx + 1)
         return False
     before = _rss_gb()
     frames = int(base.shape[0])
@@ -446,7 +446,7 @@ def _spill_segment_pixels_for_ram(
     del held, tensors, base
     gc.collect()
     log.info(
-        "Free RAM between segments: segment %d (%d frames) moved to the disk cache; "
+        "Offload segments to disk: segment %d (%d frames) moved to the disk cache; "
         "process RAM %.1f GB -> %.1f GB.",
         idx + 1, frames, before, _rss_gb(),
     )
@@ -466,14 +466,14 @@ def _restore_spilled_segments(
     output_segments: list,
     progress_pos: dict,
 ) -> None:
-    """Read segments moved out by「段间清理内存」back in for the final join."""
+    """Read segments moved out by「完成片段转存磁盘」back in for the final join."""
     count = len(spilled)
     for idx in sorted(spilled):
         seg = next((s for s in all_segments if int(s.index) == idx), None)
         frames = load_segment_cache(node_id, seg, plan, allow_stale=True) if seg is not None else None
         if frames is None:
             raise RuntimeError(
-                "Free RAM between segments: segment %d could not be read back from the "
+                "Offload segments to disk: segment %d could not be read back from the "
                 "Director disk cache for the final join. Turn the toggle off and re-run." % (idx + 1)
             )
         run_pos = progress_pos.get(idx)
@@ -488,7 +488,7 @@ def _restore_spilled_segments(
                 if oi < len(output_pre_chunks):
                     output_pre_chunks[oi] = frames
     spilled.clear()
-    log.info("Free RAM between segments: read %d segment(s) back from the disk cache for the join.", count)
+    log.info("Offload segments to disk: read %d segment(s) back from the disk cache for the join.", count)
 
 
 def execute_director_plan_core(
@@ -509,6 +509,7 @@ def execute_director_plan_core(
     shift_audio: float = 3.0,
     clear_vram_between_segments: bool = True,
     clear_ram_between_segments: bool = False,
+    offload_segments_to_disk: bool = False,
 ) -> tuple[
     torch.Tensor,
     list[torch.Tensor],
@@ -1169,11 +1170,11 @@ def execute_director_plan_core(
             phase="context_encode", phase_value=1, phase_max=1, **meta,
         )
 
-        # Free RAM between segments: the previous segment's pixels are settled by
-        # now (continuity pin and phase-align trim ran above), so move them to the
-        # disk cache before this segment's sampling needs the room.
+        # Offload finished segments to disk: the previous segment's pixels are
+        # settled by now (continuity pin and phase-align trim ran above), so move
+        # them to the disk cache before this segment's sampling needs the room.
         if (
-            clear_ram_between_segments
+            offload_segments_to_disk
             and seg.index > 0
             and not confirm_first
             and plan.export_mode == "all"
@@ -1609,7 +1610,7 @@ def execute_director_plan_core(
                 output_chunks.append(chunk)
                 output_pre_chunks.append(pre_chunk)
                 output_segments.append(seg)
-            if clear_ram_between_segments:
+            if offload_segments_to_disk:
                 # Drop the loop's own handles so the next segment's spill can free them.
                 chunk = pre_chunk = None
             continue

@@ -230,6 +230,7 @@ class MiniMaxH3Director:
         clear_vram_between_segments=True,
         export_source_images=False,
         clear_ram_between_segments=False,
+        offload_segments_to_disk=False,
         **kwargs,
     ):
         del kwargs
@@ -268,6 +269,7 @@ class MiniMaxH3Director:
                     shift_audio=shift_audio,
                     clear_vram_between_segments=clear_vram_between_segments,
                     clear_ram_between_segments=clear_ram_between_segments,
+                    offload_segments_to_disk=offload_segments_to_disk,
                 )
             )
 
