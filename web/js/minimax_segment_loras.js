@@ -87,7 +87,10 @@ export function ensureSegmentLoraStyles() {
 .bd-seg-lora-row.bd-lora-off { opacity:0.45; }
 .bd-seg-lora-del { flex:0 0 auto; cursor:pointer; border:none; background:transparent;
     color:inherit; font-size:15px; line-height:1; padding:2px 5px; }
-.bd-seg-lora-del:hover { color:#e06c6c; }`;
+.bd-seg-lora-del:hover { color:#e06c6c; }
+/* fl2v shot cards are only 220px wide */
+.bd-fl2v-shot .bd-seg-lora-row { gap:4px; }
+.bd-fl2v-shot .bd-seg-lora-strength { width:52px; }`;
     document.head.appendChild(style);
 }
 

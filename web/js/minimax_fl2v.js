@@ -5,7 +5,7 @@
  */
 
 import { api } from "../../scripts/api.js";
-import { normalizeLoraRows } from "./minimax_segment_loras.js";
+import { createLoraSection, normalizeLoraRows } from "./minimax_segment_loras.js";
 import {
     defaultDurationSec,
     defaultFrameCount,
@@ -1275,6 +1275,13 @@ function renderFl2vShotCards(editor) {
             editor.updateDomWidgetHeight?.();
         };
         secInput?.addEventListener("change", applySec);
+        // Per-shot LoRA stack. Stop pointer/click here: a click on the dropdown
+        // must not bubble into the card and re-render it while the menu opens.
+        const loraSection = createLoraSection(editor, shot);
+        for (const evt of ["click", "pointerdown", "mousedown", "dragstart"]) {
+            loraSection.addEventListener(evt, (e) => e.stopPropagation());
+        }
+        card.appendChild(loraSection);
         ui.shotsEl.appendChild(card);
     });
 }
@@ -1550,6 +1557,7 @@ export function buildFl2vPayloadFields(editor) {
         prompt: s.prompt || "",
         negativePrompt: s.negativePrompt || DEFAULT_FL2V_NEGATIVE,
         continuityFromPrev: isSegmentContinuityFromPrev(s, i),
+        loras: normalizeLoraRows(s.loras),
         startImage: s.startImage
             ? {
                 imageFile: s.startImage.imageFile || "",
