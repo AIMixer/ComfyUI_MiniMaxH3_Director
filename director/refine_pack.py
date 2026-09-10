@@ -20,6 +20,25 @@ MAX_REFINE_PASSES = 9999
 # 海螺参考生视频二采：ManualSigmas 4 个数 = euler 3 步。
 HAILUO_REFINE_SIGMAS = (0.85, 0.7250, 0.4219, 0.0)
 DEFAULT_REFINE_SIGMA_SAMPLER = "euler"
+MAX_SPATIAL_TILES = 8
+DEFAULT_SPATIAL_TILES = 2
+DEFAULT_TILE_OVERLAP = 128
+
+
+def _clamp_tile_count(raw: Any) -> int:
+    try:
+        n = int(raw if raw is not None else DEFAULT_SPATIAL_TILES)
+    except (TypeError, ValueError):
+        n = DEFAULT_SPATIAL_TILES
+    return max(1, min(MAX_SPATIAL_TILES, n))
+
+
+def _clamp_tile_overlap(raw: Any) -> int:
+    try:
+        n = int(raw if raw is not None else DEFAULT_TILE_OVERLAP)
+    except (TypeError, ValueError):
+        n = DEFAULT_TILE_OVERLAP
+    return max(0, min(2048, n))
 
 
 def parse_refine_sigmas(raw: Any, *, fallback: bool = False) -> tuple[float, ...]:
@@ -279,7 +298,10 @@ def pack_refine(
     sampler: str = "",
     sigmas=None,
     confirm_first_pass: bool = False,
-    enable_chunking: bool = False,
+    enable_latent_chunking: bool = False,
+    enable_tiling: bool = False,
+    tile_count: int = 2,
+    tile_overlap: int = 128,
 ) -> dict[str, Any]:
     mode = str(mode or "refine").strip().lower()
     if mode not in REFINE_MODES:
@@ -331,7 +353,10 @@ def pack_refine(
         "sigmas_tensor": sigma_tensor,
         "has_sigmas_tensor": sigma_tensor is not None,
         "confirm_first_pass": bool(confirm_first_pass),
-        "enable_chunking": bool(enable_chunking),
+        "enable_latent_chunking": bool(enable_latent_chunking),
+        "enable_tiling": bool(enable_tiling),
+        "tile_count": _clamp_tile_count(tile_count),
+        "tile_overlap": _clamp_tile_overlap(tile_overlap),
     }
 
 
@@ -416,7 +441,10 @@ def normalize_refine_pack(
         "sigmas_tensor": sigma_tensor,
         "has_sigmas_tensor": sigma_tensor is not None,
         "confirm_first_pass": bool(raw.get("confirm_first_pass", False)),
-        "enable_chunking": bool(raw.get("enable_chunking", False)),
+        "enable_latent_chunking": bool(raw.get("enable_latent_chunking", False)),
+        "enable_tiling": bool(raw.get("enable_tiling", False)),
+        "tile_count": _clamp_tile_count(raw.get("tile_count")),
+        "tile_overlap": _clamp_tile_overlap(raw.get("tile_overlap")),
     }
 
 
@@ -481,8 +509,12 @@ def refine_fingerprint(plan) -> dict[str, Any]:
         "refine_sample_model": bool(pack.get("has_sample_model") or pack.get("sample_model") is not None),
         "refine_skip_fl2v": bool(pack.get("skip_fl2v", True)),
     }
-    if refine_uses_h3_latent(pack) and bool(pack.get("enable_chunking")):
-        payload["refine_enable_chunking"] = True
+    if refine_uses_h3_latent(pack) and bool(pack.get("enable_latent_chunking")):
+        payload["refine_enable_latent_chunking"] = True
+    if str(pack.get("mode") or "") != "latent_upscale" and bool(pack.get("enable_tiling")):
+        payload["refine_enable_tiling"] = True
+        payload["refine_tile_count"] = _clamp_tile_count(pack.get("tile_count"))
+        payload["refine_tile_overlap"] = _clamp_tile_overlap(pack.get("tile_overlap"))
     return payload
 
 
@@ -508,7 +540,7 @@ def refine_report_line(plan) -> str | None:
             f", {ar} → {int(pack.get('target_width') or 0)}×{int(pack.get('target_height') or 0)}"
             f", {how}"
         )
-        if refine_uses_h3_latent(pack) and pack.get("enable_chunking"):
+        if refine_uses_h3_latent(pack) and pack.get("enable_latent_chunking"):
             extra += ", temporal chunk"
     n_passes = refine_passes_for(pack)
     pass_note = f", passes={n_passes}" if n_passes > 1 else ""
@@ -528,6 +560,10 @@ def refine_report_line(plan) -> str | None:
             f"Refine: ON ({mode}, {how}{step_note}"
             f"{pass_note}{model_note}{extra})"
         )
+        if pack.get("enable_tiling"):
+            tile_count = _clamp_tile_count(pack.get("tile_count"))
+            overlap = _clamp_tile_overlap(pack.get("tile_overlap"))
+            line += f", spatial tiles {tile_count} overlap {overlap}px"
     if pack.get("confirm_first_pass"):
         line += " — 先确认一采（无缓存只一采，有缓存则二采）"
     return line

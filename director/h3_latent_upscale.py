@@ -428,7 +428,7 @@ def upscale_h3_video_latent(
     source_height: int,
     model_name: str = "",
     model=None,
-    enable_chunking: bool = False,
+    enable_latent_chunking: bool = False,
 ) -> dict:
     """Spatially upscale MiniMax H3 video latent to a pixel canvas (×16 VAE)."""
     if model is None and (not model_name or str(model_name).startswith("(")):
@@ -481,7 +481,7 @@ def upscale_h3_video_latent(
                 x,
                 scale=scale,
                 target_size=(t_size, dst_h, dst_w),
-                enable_chunking=bool(enable_chunking),
+                enable_chunking=bool(enable_latent_chunking),
             )
         out = out * std + mean
         out = out.to(device="cpu", dtype=orig_dtype).contiguous()
