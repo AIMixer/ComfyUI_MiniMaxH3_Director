@@ -26,6 +26,7 @@ from .fl2v_timeline import (
     reinforce_fl2v_prompt,
 )
 from .frame_align import minimax_align_frame_count
+from .segment_loras import normalize_lora_rows
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.external_groups")
 
@@ -600,6 +601,10 @@ def build_plan_from_external_groups(
     # [per-group-lora] one packer node -> one segment, so all_indexed lines up.
     for _sp, (_si, _g) in zip(segments, all_indexed):
         _sp.external_model = (_g or {}).get("model")
+        _row = timeline_row_for_index(timeline, int(_si)) or {}
+        _sp.loras = normalize_lora_rows(
+            _row.get("loras") or (_g or {}).get("loras")
+        )
 
     if not segments:
         raise ValueError("External groups produced no runnable segments.")

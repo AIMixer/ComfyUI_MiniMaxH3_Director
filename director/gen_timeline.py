@@ -14,6 +14,7 @@ from ..lib.image_prep import (
     resolve_output_dimensions,
 )
 from ..lib.task_prompts import resolve_task_key
+from .segment_loras import normalize_lora_rows
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.gen")
 
@@ -659,6 +660,13 @@ def build_gen_director_plan(
                 ref_image_size=resolve_ref_image_size(
                     seg_data if isinstance(seg_data, dict) else {},
                     timeline,
+                ),
+                # Prompt-batch / gen timelines build their segments here, not in
+                # build_director_plan, so the LoRA stack has to be carried again.
+                loras=normalize_lora_rows(
+                    global_block.get("loras")
+                    if use_global
+                    else (seg_data.get("loras") if isinstance(seg_data, dict) else None)
                 ),
             )
         )
