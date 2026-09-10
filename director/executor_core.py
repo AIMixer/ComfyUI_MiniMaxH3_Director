@@ -70,6 +70,7 @@ from .segment_cache import (
     prune_segment_cache,
     save_first_pass_cache,
     save_segment_cache,
+    segment_cache_exists,
 )
 from .segment_mp4_export import (
     copy_segment_mp4_suffix,
@@ -366,6 +367,129 @@ def _ref_video_audios_to_dict(items) -> dict | None:
     return out or None
 
 
+def _rss_gb() -> float:
+    """This process's resident RAM in GB (0.0 when psutil is unavailable)."""
+    try:
+        import psutil
+
+        return psutil.Process().memory_info().rss / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
+def _spill_segment_pixels_for_ram(
+    index: int,
+    *,
+    node_id: str | None,
+    plan: DirectorPlan,
+    all_segments: list,
+    completed_outputs: dict,
+    completed_pre_refine: dict,
+    completed_refine_passes: dict,
+    segment_outputs: list,
+    segment_pre_refine: list,
+    output_chunks: list,
+    output_pre_chunks: list,
+    output_segments: list,
+    progress_pos: dict,
+    spilled: set,
+) -> bool:
+    """「段间清理内存」: keep a finished segment's pixels only in the disk cache.
+
+    Every in-RAM holder (completed_*, segment_*, output_*) is swapped for a
+    1-frame poster so the tensor can really be freed; _restore_spilled_segments
+    reads the frames back before the final join. The segment stays in RAM when
+    it is not on disk, or when a separate refine pre-pass (not part of the
+    final cache) would be lost.
+    """
+    idx = int(index)
+    if idx < 0 or idx in spilled:
+        return False
+    seg = next((s for s in all_segments if int(s.index) == idx), None)
+    if seg is None or not segment_cache_exists(node_id, seg):
+        log.info("Free RAM between segments: segment %d is not in the disk cache; keeping it in RAM.", idx + 1)
+        return False
+    run_pos = progress_pos.get(idx)
+    out_pos = [oi for oi, oseg in enumerate(output_segments) if int(getattr(oseg, "index", -1)) == idx]
+    held = [completed_outputs.get(idx), completed_pre_refine.get(idx)]
+    if run_pos is not None and run_pos < len(segment_outputs):
+        held.append(segment_outputs[run_pos])
+        if run_pos < len(segment_pre_refine):
+            held.append(segment_pre_refine[run_pos])
+    for oi in out_pos:
+        held.append(output_chunks[oi] if oi < len(output_chunks) else None)
+        held.append(output_pre_chunks[oi] if oi < len(output_pre_chunks) else None)
+    tensors = [t for t in held if isinstance(t, torch.Tensor) and t.dim() == 4 and t.shape[0] > 1]
+    if not tensors:
+        return False
+    base = tensors[0]
+    if any(t is not base and (t.shape != base.shape or not torch.equal(t, base)) for t in tensors[1:]):
+        log.info("Free RAM between segments: segment %d has a separate refine pre-pass; keeping it in RAM.", idx + 1)
+        return False
+    before = _rss_gb()
+    frames = int(base.shape[0])
+    poster = _poster_frame(base)
+    completed_outputs.pop(idx, None)
+    completed_pre_refine.pop(idx, None)
+    completed_refine_passes.pop(idx, None)
+    if run_pos is not None and run_pos < len(segment_outputs):
+        segment_outputs[run_pos] = poster
+        if run_pos < len(segment_pre_refine):
+            segment_pre_refine[run_pos] = poster
+    for oi in out_pos:
+        if oi < len(output_chunks):
+            output_chunks[oi] = poster
+        if oi < len(output_pre_chunks):
+            output_pre_chunks[oi] = poster
+    spilled.add(idx)
+    del held, tensors, base
+    gc.collect()
+    log.info(
+        "Free RAM between segments: segment %d (%d frames) moved to the disk cache; "
+        "process RAM %.1f GB -> %.1f GB.",
+        idx + 1, frames, before, _rss_gb(),
+    )
+    return True
+
+
+def _restore_spilled_segments(
+    *,
+    node_id: str | None,
+    plan: DirectorPlan,
+    all_segments: list,
+    spilled: set,
+    segment_outputs: list,
+    segment_pre_refine: list,
+    output_chunks: list,
+    output_pre_chunks: list,
+    output_segments: list,
+    progress_pos: dict,
+) -> None:
+    """Read segments moved out by「段间清理内存」back in for the final join."""
+    count = len(spilled)
+    for idx in sorted(spilled):
+        seg = next((s for s in all_segments if int(s.index) == idx), None)
+        frames = load_segment_cache(node_id, seg, plan, allow_stale=True) if seg is not None else None
+        if frames is None:
+            raise RuntimeError(
+                "Free RAM between segments: segment %d could not be read back from the "
+                "Director disk cache for the final join. Turn the toggle off and re-run." % (idx + 1)
+            )
+        run_pos = progress_pos.get(idx)
+        if run_pos is not None and run_pos < len(segment_outputs):
+            segment_outputs[run_pos] = frames
+            if run_pos < len(segment_pre_refine):
+                segment_pre_refine[run_pos] = frames
+        for oi, oseg in enumerate(output_segments):
+            if int(getattr(oseg, "index", -1)) == idx:
+                if oi < len(output_chunks):
+                    output_chunks[oi] = frames
+                if oi < len(output_pre_chunks):
+                    output_pre_chunks[oi] = frames
+    spilled.clear()
+    log.info("Free RAM between segments: read %d segment(s) back from the disk cache for the join.", count)
+
+
 def execute_director_plan_core(
     plan: DirectorPlan,
     *,
@@ -383,6 +507,7 @@ def execute_director_plan_core(
     shift_video: float = 12.0,
     shift_audio: float = 3.0,
     clear_vram_between_segments: bool = True,
+    clear_ram_between_segments: bool = False,
 ) -> tuple[
     torch.Tensor,
     list[torch.Tensor],
@@ -394,6 +519,8 @@ def execute_director_plan_core(
     bool,
 ]:
     """Process every segment with MiniMax H3 conditioning + single-stage sampling."""
+    # "Free RAM between segments" also does everything the VRAM toggle does.
+    clear_vram_between_segments = bool(clear_vram_between_segments or clear_ram_between_segments)
     plan.sample_seed = int(seed)
     plan.sample_cfg = float(cfg)
     plan.sample_steps = int(steps)
@@ -442,6 +569,7 @@ def execute_director_plan_core(
     segment_outputs: list[torch.Tensor] = []
     segment_pre_refine: list[torch.Tensor] = []
     segment_audios: list[dict[str, Any]] = []
+    ram_spilled: set[int] = set()  # segments whose pixels currently live only in the disk cache
     skipped_no_cache: list[int] = []
     reports: list[str] = [plan_summary(plan), "", "Execution path: ComfyUI official MiniMax H3"]
     if first_pass_sigmas is not None:
@@ -1040,6 +1168,32 @@ def execute_director_plan_core(
             phase="context_encode", phase_value=1, phase_max=1, **meta,
         )
 
+        # Free RAM between segments: the previous segment's pixels are settled by
+        # now (continuity pin and phase-align trim ran above), so move them to the
+        # disk cache before this segment's sampling needs the room.
+        if (
+            clear_ram_between_segments
+            and seg.index > 0
+            and not confirm_first
+            and plan.export_mode == "all"
+        ):
+            prev_tail = prev_chunk = prev_pre = None  # this closure's own handles
+            _spill_segment_pixels_for_ram(
+                seg.index - 1,
+                node_id=node_id,
+                plan=plan,
+                all_segments=all_segments,
+                completed_outputs=completed_outputs,
+                completed_pre_refine=completed_pre_refine,
+                completed_refine_passes=completed_refine_passes,
+                segment_outputs=segment_outputs,
+                segment_pre_refine=segment_pre_refine,
+                output_chunks=output_chunks,
+                output_pre_chunks=output_pre_chunks,
+                output_segments=output_segments,
+                progress_pos=progress_pos,
+                spilled=ram_spilled,
+            )
         # Single / last segment: skip — official H3 also keeps models loaded.
         if clear_vram_between_segments and seg_total > 1:
             cleanup_segment_vram(enabled=True, unload_models=True)
@@ -1450,6 +1604,9 @@ def execute_director_plan_core(
                 output_chunks.append(chunk)
                 output_pre_chunks.append(pre_chunk)
                 output_segments.append(seg)
+            if clear_ram_between_segments:
+                # Drop the loop's own handles so the next segment's spill can free them.
+                chunk = pre_chunk = None
             continue
 
         if plan.export_mode != "all":
@@ -1536,6 +1693,19 @@ def execute_director_plan_core(
             "(勾选重跑或先全跑可补上)."
         )
 
+    if ram_spilled:
+        _restore_spilled_segments(
+            node_id=node_id,
+            plan=plan,
+            all_segments=all_segments,
+            spilled=ram_spilled,
+            segment_outputs=segment_outputs,
+            segment_pre_refine=segment_pre_refine,
+            output_chunks=output_chunks,
+            output_pre_chunks=output_pre_chunks,
+            output_segments=output_segments,
+            progress_pos=progress_pos,
+        )
     if not output_chunks and not segment_outputs:
         raise ValueError("Director plan produced no segments.")
 

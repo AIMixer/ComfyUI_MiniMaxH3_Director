@@ -99,6 +99,16 @@ def director_perf_inputs() -> dict:
                 ),
             },
         ),
+        "clear_ram_between_segments": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "段间清理内存：每段采样前把上一段已完成的画面移到磁盘缓存并卸载模型，"
+                    "最后合成时再读回。多段长视频可省下数 GB 内存。"
+                ),
+            },
+        ),
     }
 
 

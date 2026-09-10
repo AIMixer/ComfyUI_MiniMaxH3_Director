@@ -993,3 +993,13 @@ def clear_segment_cache(node_id: str | None, kind: str = "final") -> int:
     if removed:
         log.info("Cleared %s cache for node %s (%d file(s)).", kind, node_id, removed)
     return removed
+
+
+def segment_cache_exists(node_id: str | None, seg: SegmentPlan) -> bool:
+    """True when this segment's frames are on disk (seg_NNNN.pt), without loading them."""
+    if not node_id:
+        return False
+    root = _cache_root(node_id)
+    if root is None:
+        return False
+    return (root / f"seg_{int(seg.index):04d}.pt").is_file()
