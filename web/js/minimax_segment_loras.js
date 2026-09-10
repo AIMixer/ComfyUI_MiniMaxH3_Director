@@ -604,7 +604,7 @@ export function ensureSegmentLoraStyles() {
 .mmx-lora-picker-head input:focus { border-color:#4fff8f; box-shadow:0 0 0 3px rgba(79,255,143,.15); }
 .mmx-lora-picker-close { background:transparent; border:none; color:#999; font-size:20px; line-height:1; cursor:pointer; padding:0 4px; }
 .mmx-lora-picker-close:hover { color:#e06c6c; }
-.mmx-lora-folders { display:flex; gap:6px; padding:0 14px 10px; overflow-x:auto; scrollbar-width:thin; }
+.mmx-lora-folders { display:flex; flex-wrap:wrap; gap:6px; padding:0 14px 10px; }
 .mmx-lora-folders[hidden] { display:none; }
 .mmx-lora-folder { flex:0 0 auto; background:#191919; border:1px solid #2e2e2e; color:#bbb; border-radius:999px;
     padding:3px 10px; font-size:10px; cursor:pointer; white-space:nowrap; font-family:inherit; transition:all .15s; }
@@ -612,6 +612,7 @@ export function ensureSegmentLoraStyles() {
 .mmx-lora-folder.is-on { background:#4fff8f; border-color:#4fff8f; color:#062b14; font-weight:700; }
 .mmx-lora-picker-body { display:grid; grid-template-columns:minmax(0, 1fr) 300px; min-height:0; border-top:1px solid #222; }
 .mmx-lora-picker-gridwrap { min-height:0; overflow-y:auto; padding:12px 14px; }
+.mmx-lora-picker-gridwrap, .mmx-lora-detail { scrollbar-width:thin; scrollbar-color:#3a3a3a transparent; }
 .mmx-lora-picker-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(128px, 1fr)); gap:10px; }
 .mmx-lora-tile { position:relative; display:block; padding:0; aspect-ratio:3 / 4; border-radius:10px; overflow:hidden;
     cursor:pointer; background:#151515; border:1px solid #262626; color:#fff; text-align:left; font:inherit;
