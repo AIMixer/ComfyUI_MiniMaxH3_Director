@@ -33,7 +33,6 @@ from .segment_runtime import (
     frames_label,
     resolve_segment_raw_clip,
     segment_passthrough_chunk,
-    tensor_frame_to_jpeg_b64,
 )
 from .plan import (
     DirectorPlan,
@@ -461,9 +460,9 @@ def execute_director_plan_core(
     if mp4_run_dir is not None:
         reports.append(f"Segment mp4 export dir: {mp4_run_dir}")
     if live_tae_preview:
-        reports.append("Live preview: ON — 采样 TAE + 成片后整段 JPEG 播放。")
+        reports.append("Live preview: ON — 采样中 TAE 动态预览（成片看下游 CreateVideo / SaveVideo）。")
     else:
-        reports.append("Live preview: OFF — 跳过 TAE 与成片 JPEG（节点内不播放）。")
+        reports.append("Live preview: OFF — 跳过采样预览。")
     if clear_vram_between_segments:
         reports.append("VRAM: 段间清理显存已开启（最后一段不清理）。")
     if audio_mode == AUDIO_MODE_MUTE:
@@ -1038,22 +1037,34 @@ def execute_director_plan_core(
             )
 
         def _report_step_preview(step: int, total_steps: int, x0) -> None:
-            # Live frame for the batch-card preview slot (「生成中…」 area).
+            # Live clip for the batch-card / 采样预览 slot (KJNodes-style looping WebP).
             try:
-                from .tae_preview import pil_to_jpeg_b64, x0_to_preview_pil
+                from .tae_preview import (
+                    LIVE_PREVIEW_FPS,
+                    LIVE_PREVIEW_MAX_FRAMES,
+                    encode_preview_payload,
+                    x0_to_preview_frames,
+                )
 
-                pil = x0_to_preview_pil(x0, max_side=512)
-                if pil is None:
+                frames = x0_to_preview_frames(x0, max_frames=LIVE_PREVIEW_MAX_FRAMES, max_side=512)
+                if not frames:
+                    return
+                image_b64, mime, width, height = encode_preview_payload(
+                    frames, fps=LIVE_PREVIEW_FPS
+                )
+                if not image_b64:
                     return
                 report_director_segment_preview(
                     node_id,
                     segment_index=ui_idx,
-                    image_b64=pil_to_jpeg_b64(pil),
-                    width=pil.width,
-                    height=pil.height,
+                    image_b64=image_b64,
+                    width=width,
+                    height=height,
                     live=True,
                     step=step + 1,
                     total_steps=total_steps,
+                    mime=mime,
+                    fps=float(LIVE_PREVIEW_FPS),
                 )
             except Exception as exc:
                 log.debug("Live TAE preview skipped: %s", exc)
@@ -1353,29 +1364,6 @@ def execute_director_plan_core(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: "
                 f"{mp4_export_kind(mp4_path)} saved → {mp4_path}"
             )
-
-        if (
-            live_tae_preview
-            and seg.task_key in {"t2v", "i2v", "r2v", "fl2v", "v2v", "rv2v"}
-            and decoded.shape[0] >= 1
-        ):
-            try:
-                frames_b64 = [
-                    tensor_frame_to_jpeg_b64(decoded[i])
-                    for i in range(int(decoded.shape[0]))
-                ]
-                h, w = int(decoded.shape[1]), int(decoded.shape[2])
-                report_director_segment_preview(
-                    node_id,
-                    segment_index=ui_idx,
-                    image_b64=frames_b64[0],
-                    width=w,
-                    height=h,
-                    frames=frames_b64,
-                    fps=float(plan.frame_rate or 24),
-                )
-            except Exception as exc:
-                log.debug("Segment video preview skipped: %s", exc)
 
         if clear_vram_between_segments and progress_index < seg_total - 1:
             cleanup_segment_vram(enabled=True)

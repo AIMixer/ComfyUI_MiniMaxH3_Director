@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import base64
-import io
-
 import torch
-from PIL import Image
 
 from ..lib.image_prep import fit_canvas, fit_video_long_edge
 from ..lib.video_io import load_timeline_segment
@@ -125,14 +121,6 @@ def segment_passthrough_chunk(plan: DirectorPlan, seg) -> torch.Tensor | None:
         except Exception:
             return None
     return None
-
-
-def tensor_frame_to_jpeg_b64(frame: torch.Tensor) -> str:
-    arr = (frame.detach().cpu().clamp(0, 1).numpy() * 255).astype("uint8")
-    img = Image.fromarray(arr)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=88)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def frames_label(seg) -> str:

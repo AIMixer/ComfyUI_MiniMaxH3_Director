@@ -310,6 +310,7 @@ function sanitizeSegmentForPayload(seg) {
     const {
         previewB64,
         previewFrames,
+        previewMime,
         imageB64,
         ...rest
     } = seg;
@@ -11631,7 +11632,8 @@ class MiniMaxH3DirectorEditor {
         this._liveSampleTotal = detail.total_steps ?? detail.totalSteps ?? null;
         this._liveSampleSeg = detail.segment_index ?? detail.segmentIndex ?? null;
 
-        const src = b64.startsWith("data:") ? b64 : `data:image/jpeg;base64,${b64}`;
+        const mime = (typeof detail.mime === "string" && detail.mime) ? detail.mime : "image/jpeg";
+        const src = b64.startsWith("data:") ? b64 : `data:${mime};base64,${b64}`;
         if (this.liveSampleImg) {
             this.liveSampleImg.src = src;
             this.liveSampleImg.classList.remove("hidden");
@@ -12614,6 +12616,7 @@ app.registerExtension({
                         live: !!detail?.live,
                         step: detail?.step,
                         total_steps: detail?.total_steps,
+                        mime: detail?.mime,
                     },
                 );
                 return;
@@ -12632,6 +12635,7 @@ app.registerExtension({
                 for (const seg of editor.timeline.segments || []) {
                     seg.previewB64 = "";
                     seg.previewFrames = [];
+                    seg.previewMime = "";
                     seg.previewLive = false;
                     seg.previewStep = null;
                     seg.previewTotalSteps = null;
