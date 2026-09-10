@@ -279,6 +279,7 @@ def pack_refine(
     sampler: str = "",
     sigmas=None,
     confirm_first_pass: bool = False,
+    enable_chunking: bool = False,
 ) -> dict[str, Any]:
     mode = str(mode or "refine").strip().lower()
     if mode not in REFINE_MODES:
@@ -330,6 +331,7 @@ def pack_refine(
         "sigmas_tensor": sigma_tensor,
         "has_sigmas_tensor": sigma_tensor is not None,
         "confirm_first_pass": bool(confirm_first_pass),
+        "enable_chunking": bool(enable_chunking),
     }
 
 
@@ -414,6 +416,7 @@ def normalize_refine_pack(
         "sigmas_tensor": sigma_tensor,
         "has_sigmas_tensor": sigma_tensor is not None,
         "confirm_first_pass": bool(raw.get("confirm_first_pass", False)),
+        "enable_chunking": bool(raw.get("enable_chunking", False)),
     }
 
 
@@ -459,7 +462,7 @@ def refine_fingerprint(plan) -> dict[str, Any]:
     pack = getattr(plan, "refine", None)
     if not isinstance(pack, dict) or not pack.get("enabled"):
         return {"refine": False}
-    return {
+    payload = {
         "refine": True,
         "refine_mode": pack.get("mode") or "refine",
         "refine_passes": refine_passes_for(pack),
@@ -478,6 +481,9 @@ def refine_fingerprint(plan) -> dict[str, Any]:
         "refine_sample_model": bool(pack.get("has_sample_model") or pack.get("sample_model") is not None),
         "refine_skip_fl2v": bool(pack.get("skip_fl2v", True)),
     }
+    if refine_uses_h3_latent(pack) and bool(pack.get("enable_chunking")):
+        payload["refine_enable_chunking"] = True
+    return payload
 
 
 def refine_report_line(plan) -> str | None:
@@ -502,6 +508,8 @@ def refine_report_line(plan) -> str | None:
             f", {ar} → {int(pack.get('target_width') or 0)}×{int(pack.get('target_height') or 0)}"
             f", {how}"
         )
+        if refine_uses_h3_latent(pack) and pack.get("enable_chunking"):
+            extra += ", temporal chunk"
     n_passes = refine_passes_for(pack)
     pass_note = f", passes={n_passes}" if n_passes > 1 else ""
     model_note = (
