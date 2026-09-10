@@ -194,6 +194,9 @@ export function newFl2vShot(overrides = {}) {
     if (overrides.continuityFromPrev != null || overrides.continuity_from_prev != null) {
         shot.continuityFromPrev = overrides.continuityFromPrev ?? overrides.continuity_from_prev;
     }
+    // Same trap for the per-shot LoRA stack. Keep the array reference so rows
+    // being edited on a card survive the rebuild.
+    if (Array.isArray(overrides.loras)) shot.loras = overrides.loras;
     return shot;
 }
 
@@ -1277,7 +1280,7 @@ function renderFl2vShotCards(editor) {
         secInput?.addEventListener("change", applySec);
         // Per-shot LoRA stack. Stop pointer/click here: a click on the dropdown
         // must not bubble into the card and re-render it while the menu opens.
-        const loraSection = createLoraSection(editor, shot);
+        const loraSection = createLoraSection(editor, shot, () => editor.timeline.shots?.[i]);
         for (const evt of ["click", "pointerdown", "mousedown", "dragstart"]) {
             loraSection.addEventListener(evt, (e) => e.stopPropagation());
         }

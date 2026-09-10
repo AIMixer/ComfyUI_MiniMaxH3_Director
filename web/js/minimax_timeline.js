@@ -2276,6 +2276,8 @@ class MiniMaxH3DirectorEditor {
                     id: matched?.id,
                     durationSec: spec.durationSec ?? defaultDurationSec("fl2v"),
                     prompt,
+                    // Group nodes carry no LoRA stack; keep the Director's own.
+                    loras: matched?.loras,
                     externalNodeId: spec.nodeId ?? null,
                     // External graph is source of truth for media previews.
                     startImage: imageRefFromPath(spec.firstImageFile),

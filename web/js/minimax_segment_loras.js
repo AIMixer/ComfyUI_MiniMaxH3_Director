@@ -100,8 +100,11 @@ export function ensureSegmentLoraStyles() {
  * the other prompt-batch modes edit each segment on its own card instead, so
  * the section has to be buildable standalone rather than bound to panel refs.
  */
-export function createLoraSection(editor, seg) {
+export function createLoraSection(editor, seg, resolveSeg = null) {
     ensureSegmentLoraStyles();
+    // fl2v rebuilds its shot objects on every sync, so a captured object can go
+    // stale; resolveSeg returns the live one when the caller can provide it.
+    const cur = () => (typeof resolveSeg === "function" && resolveSeg()) || seg;
     const wrap = document.createElement("div");
     wrap.className = "bd-seg-loras-wrap bd-r2v-section";
 
@@ -127,15 +130,16 @@ export function createLoraSection(editor, seg) {
     wrap.append(head, box);
 
     const paint = () => {
-        const rows = normalizeLoraRows(seg.loras);
-        seg.loras = rows;
+        const s = cur();
+        const rows = normalizeLoraRows(s.loras);
+        s.loras = rows;
         count.textContent = rows.length ? `${rows.length}/${MAX_SEGMENT_LORAS}` : "";
         box.innerHTML = "";
         if (!rows.length) return;
         loraNames().then((names) => {
             box.innerHTML = "";
             rows.forEach((row, idx) =>
-                box.appendChild(buildLoraRow(editor, seg, row, idx, names, paint)),
+                box.appendChild(buildLoraRow(editor, s, row, idx, names, paint)),
             );
         });
     };
@@ -147,9 +151,10 @@ export function createLoraSection(editor, seg) {
             count.textContent = t("panel.noLorasFound");
             return;
         }
-        seg.loras = normalizeLoraRows(seg.loras);
-        if (seg.loras.length >= MAX_SEGMENT_LORAS) return;
-        seg.loras.push({ name: names[0], strength: 1, active: true });
+        const s = cur();
+        s.loras = normalizeLoraRows(s.loras);
+        if (s.loras.length >= MAX_SEGMENT_LORAS) return;
+        s.loras.push({ name: names[0], strength: 1, active: true });
         paint();
         editor.commit(true);
     };
