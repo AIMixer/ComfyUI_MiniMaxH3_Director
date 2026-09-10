@@ -1257,7 +1257,7 @@ def execute_director_plan_core(
             )
         else:
             samples = sample_single_stage(
-                model=model,
+                model=seg_model,  # per-segment LoRA
                 positive=positive,
                 negative=negative,
                 latent=latent,
@@ -1384,7 +1384,7 @@ def execute_director_plan_core(
                 plan,
                 seg,
                 samples=samples,
-                model=model,
+                model=seg_model,  # per-segment LoRA
                 vae=vae,
                 audio_vae=audio_vae,
                 positive=positive,
