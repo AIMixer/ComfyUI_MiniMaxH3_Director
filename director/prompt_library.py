@@ -1,8 +1,10 @@
 """Prompt library and auto history for the MiniMax H3 Director.
 
-Saved prompts keep their LoRA stack, the user's categories and a thumbnail;
-every rendered group is also recorded in a history with a looping WebP cut from
-its decoded frames. Files live in ``<user>/default/minimax_director/``:
+Saved entries are either single prompts (prompt + LoRA stack + categories +
+thumbnail) or scenarios (every group of a Director — prompts, LoRAs, pictures /
+refs, durations — kept as one entry with a thumbnail per group). Every rendered
+group is also recorded in a history with a looping WebP cut from its decoded
+frames. Files live in ``<user>/default/minimax_director/``:
 ``prompt_library.json``, ``prompt_history.json`` and ``thumbs/``. The Director
 UI (web/js/minimax_prompt_library.js) reads and edits them through the routes
 at the bottom of this module.
@@ -31,6 +33,8 @@ THUMB_FRAMES = 16
 THUMB_FPS = 8
 MAX_TITLE = 120
 MAX_CATEGORIES = 64
+MAX_SCENARIO_GROUPS = 64
+MAX_SCENARIO_BYTES = 4_000_000
 _THUMB_NAME = re.compile(r"^[hp]_[0-9a-f]{16}\.webp$")
 _COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 _lock = threading.RLock()
@@ -73,8 +77,17 @@ def _load() -> tuple[dict, list]:
     return lib, hist
 
 
+def _thumb_refs(entries: list) -> set[str]:
+    refs: set[str] = set()
+    for entry in entries:
+        if isinstance(entry.get("thumb"), str):
+            refs.add(entry["thumb"])
+        refs.update(t for t in entry.get("thumbs") or [] if isinstance(t, str))
+    return refs
+
+
 def _prune_thumbs(lib: dict, hist: list) -> None:
-    keep = {e.get("thumb") for e in lib["prompts"]} | {e.get("thumb") for e in hist}
+    keep = _thumb_refs(lib["prompts"]) | _thumb_refs(hist)
     folder = os.path.join(_root(), "thumbs")
     for name in os.listdir(folder):
         if _THUMB_NAME.match(name) and name not in keep:
@@ -112,6 +125,16 @@ def _entry_key(prompt: str, loras: list[dict]) -> str:
     rows = [[r.get("name"), round(float(r.get("strength", 1)), 3), bool(r.get("active", True))] for r in loras]
     raw = json.dumps([prompt.strip(), rows], ensure_ascii=False)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _copy_thumb(source: str) -> str | None:
+    """Copy an existing thumbnail to a library-owned name (history pruning never breaks it)."""
+    source = str(source or "")
+    if not _THUMB_NAME.match(source) or not os.path.isfile(_thumb_path(source)):
+        return None
+    name = f"p_{uuid.uuid4().hex[:16]}.webp"
+    shutil.copyfile(_thumb_path(source), _thumb_path(name))
+    return name
 
 
 def _write_thumb(frames, prefix: str = "h") -> str | None:
@@ -203,7 +226,38 @@ def _pick(items: list, item_id) -> dict | None:
     return next((x for x in items if x.get("id") == item_id), None) if item_id else None
 
 
+def _ids(body: dict) -> set:
+    ids = body.get("ids")
+    if isinstance(ids, list):
+        return {str(i) for i in ids if i}
+    return {str(body["id"])} if body.get("id") else set()
+
+
+def _apply_scenario_fields(entry: dict, body: dict) -> None:
+    entry["kind"] = "scenario"
+    if "task" in body:
+        entry["task"] = str(body.get("task") or "")[:40]
+    if "groups_kind" in body:
+        entry["groups_kind"] = "shots" if body.get("groups_kind") == "shots" else "segments"
+    if "groups" in body:
+        groups = [g for g in (body.get("groups") or []) if isinstance(g, dict)][:MAX_SCENARIO_GROUPS]
+        if len(json.dumps(groups, ensure_ascii=False)) > MAX_SCENARIO_BYTES:
+            raise ValueError("Scenario is too large to save.")
+        entry["groups"] = groups
+    if "thumbs_from" in body:
+        entry["thumbs"] = [_copy_thumb(s) if s else None for s in (body.get("thumbs_from") or [])][:MAX_SCENARIO_GROUPS]
+        first = next((t for t in entry["thumbs"] if t), None)
+        if first:
+            entry["thumb"] = first
+    entry.setdefault("task", "")
+    entry.setdefault("groups_kind", "segments")
+    entry.setdefault("groups", [])
+    entry.setdefault("thumbs", [])
+
+
 def _apply_prompt_fields(lib: dict, entry: dict, body: dict) -> None:
+    if body.get("kind") == "scenario" or entry.get("kind") == "scenario":
+        _apply_scenario_fields(entry, body)
     if "prompt" in body:
         entry["prompt"] = str(body.get("prompt") or "").strip()
     if "negative" in body:
@@ -215,17 +269,21 @@ def _apply_prompt_fields(lib: dict, entry: dict, body: dict) -> None:
         entry["categories"] = [c for c in dict.fromkeys(body.get("categories") or []) if c in valid]
     if "favorite" in body:
         entry["favorite"] = bool(body.get("favorite"))
-    if "title" in body or not entry.get("title"):
-        title = " ".join(str(body.get("title") or "").split())[:MAX_TITLE]
-        entry["title"] = title or _auto_title(entry.get("prompt", ""))
-    source = str(body.get("thumb_from") or "")
-    if source and _THUMB_NAME.match(source) and os.path.isfile(_thumb_path(source)):
-        name = f"p_{uuid.uuid4().hex[:16]}.webp"
-        shutil.copyfile(_thumb_path(source), _thumb_path(name))
-        entry["thumb"] = name
-        entry["thumb_origin"] = str(body.get("thumb_origin") or source)
+    if entry.get("kind") != "scenario" and body.get("thumb_from"):
+        name = _copy_thumb(body.get("thumb_from"))
+        if name:
+            entry["thumb"] = name
+            entry["thumb_origin"] = str(body.get("thumb_origin") or body.get("thumb_from"))
     for key, default in (("prompt", ""), ("negative", ""), ("loras", []), ("categories", []), ("favorite", False)):
         entry.setdefault(key, default)
+    if "title" in body or not entry.get("title"):
+        title = " ".join(str(body.get("title") or "").split())[:MAX_TITLE]
+        if not title and entry.get("kind") == "scenario":
+            groups = entry.get("groups") or []
+            first = next((str(g.get("prompt") or "") for g in groups if str(g.get("prompt") or "").strip()), "")
+            label = (entry.get("task") or "").upper()
+            title = f"{label + ' · ' if label else ''}{_auto_title(first) if first else 'Scenario'} ({len(groups)})"
+        entry["title"] = title or _auto_title(entry.get("prompt", ""))
     entry["updated"] = int(time.time())
 
 
@@ -244,8 +302,11 @@ def _op_save_prompts(lib, hist, body):
     return {"saved": list(reversed(saved))}
 
 
-def _op_delete_prompt(lib, hist, body):
-    lib["prompts"] = [p for p in lib["prompts"] if p.get("id") != body.get("id")]
+def _op_delete_prompts(lib, hist, body):
+    ids = _ids(body)
+    before = len(lib["prompts"])
+    lib["prompts"] = [p for p in lib["prompts"] if p.get("id") not in ids]
+    return {"deleted": before - len(lib["prompts"])}
 
 
 def _op_use_prompt(lib, hist, body):
@@ -253,6 +314,27 @@ def _op_use_prompt(lib, hist, body):
     if entry is not None:
         entry["uses"] = int(entry.get("uses") or 0) + 1
         entry["last_used"] = int(time.time())
+
+
+def _op_categorize(lib, hist, body):
+    category_id = body.get("category")
+    if _pick(lib["categories"], category_id) is None:
+        raise ValueError("Unknown category.")
+    ids = _ids(body)
+    add = body.get("add", True) is not False
+    changed = 0
+    for prompt in lib["prompts"]:
+        if prompt.get("id") not in ids:
+            continue
+        cats = list(prompt.get("categories") or [])
+        if add and category_id not in cats:
+            cats.append(category_id)
+            changed += 1
+        elif not add and category_id in cats:
+            cats.remove(category_id)
+            changed += 1
+        prompt["categories"] = cats
+    return {"changed": changed}
 
 
 def _category_name(body) -> str:
@@ -292,18 +374,25 @@ def _op_delete_category(lib, hist, body):
 
 
 def _op_history_delete(lib, hist, body):
-    hist[:] = [h for h in hist if h.get("id") != body.get("id")]
+    ids = _ids(body)
+    before = len(hist)
+    hist[:] = [h for h in hist if h.get("id") not in ids]
+    return {"deleted": before - len(hist)}
 
 
 def _op_history_clear(lib, hist, body):
+    deleted = len(hist)
     hist.clear()
+    return {"deleted": deleted}
 
 
 _OPS = {
     "save_prompt": _op_save_prompt,
     "save_prompts": _op_save_prompts,
-    "delete_prompt": _op_delete_prompt,
+    "delete_prompt": _op_delete_prompts,
+    "delete_prompts": _op_delete_prompts,
     "use_prompt": _op_use_prompt,
+    "categorize": _op_categorize,
     "add_category": _op_add_category,
     "update_category": _op_update_category,
     "delete_category": _op_delete_category,

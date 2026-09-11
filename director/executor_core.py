@@ -510,6 +510,7 @@ def execute_director_plan_core(
     clear_vram_between_segments: bool = True,
     clear_ram_between_segments: bool = False,
     offload_segments_to_disk: bool = False,
+    save_group_videos: bool = False,
 ) -> tuple[
     torch.Tensor,
     list[torch.Tensor],
@@ -591,6 +592,8 @@ def execute_director_plan_core(
             "BasicGuider/CFGGuider → SamplerCustomAdvanced."
         )
     # One timestamp folder per execute so all segments of this run stay together.
+    # Save each group's video: crash-safe per-group mp4s in any export mode.
+    plan.save_group_videos = bool(save_group_videos)
     mp4_run_dir = new_segment_mp4_run_dir(plan)
     plan.segment_mp4_run_dir = str(mp4_run_dir) if mp4_run_dir is not None else None
     if mp4_run_dir is not None:
@@ -1513,7 +1516,7 @@ def execute_director_plan_core(
         except Exception as exc:
             log.warning("Prompt history skipped: %s", exc)
 
-        #「分段导出」: flush mp4 as soon as this segment succeeds (crash-safe).
+        #「分段导出」or "Save each group's video": flush mp4 as soon as this segment succeeds (crash-safe).
         # Confirmation hold has no final/second-pass clip yet: save only _pre.
         if hold_after_first:
             pre_path = maybe_export_segment_mp4(

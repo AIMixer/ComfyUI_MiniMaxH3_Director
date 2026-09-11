@@ -119,6 +119,33 @@ def director_perf_inputs() -> dict:
                 ),
             },
         ),
+        "save_group_videos": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "每组完成后保存视频：每组生成完立即把该组视频（含音频）存到 "
+                    "output/minimax_seg_export/<时间>/，后面崩溃也能留住已完成的部分。"
+                ),
+            },
+        ),
+        "rerun_when_done": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": "完成后询问重跑：整次运行结束后弹出提示，可换新 seed 立即重跑或停止。",
+            },
+        ),
+        "rerun_after_seconds": (
+            "INT",
+            {
+                "default": 60,
+                "min": 0,
+                "max": 3600,
+                "step": 5,
+                "tooltip": "无人响应时 N 秒后自动换新 seed 重跑，一直循环直到点「停止」；0 = 只提示不自动。",
+            },
+        ),
     }
 
 

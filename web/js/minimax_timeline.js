@@ -9,6 +9,7 @@ import {
     segmentLoraTemplate,
 } from "./minimax_segment_loras.js";
 import { mountPromptLibraryBar } from "./minimax_prompt_library.js";
+import "./minimax_rerun.js";
 import {
     CUSTOM_ASPECT_RATIO,
     DEFAULT_ASPECT_RATIO,
@@ -504,6 +505,9 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
     clear_vram_between_segments: "widget.clearVram",
     clear_ram_between_segments: "widget.clearRam",
     offload_segments_to_disk: "widget.offloadDisk",
+    save_group_videos: "widget.saveGroupVideos",
+    rerun_when_done: "widget.rerunWhenDone",
+    rerun_after_seconds: "widget.rerunAfterSeconds",
     export_source_images: "widget.exportSourceImages",
     control_after_generate: "widget.controlAfterGenerate",
     "control after generate": "widget.controlAfterGenerate",
@@ -513,6 +517,9 @@ const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
     clear_ram_between_segments: "widget.tooltip.clearRam",
     offload_segments_to_disk: "widget.tooltip.offloadDisk",
+    save_group_videos: "widget.tooltip.saveGroupVideos",
+    rerun_when_done: "widget.tooltip.rerunWhenDone",
+    rerun_after_seconds: "widget.tooltip.rerunAfterSeconds",
     export_source_images: "widget.tooltip.exportSourceImages",
 };
 
@@ -1641,7 +1648,15 @@ function moveDirectorDomWidgetToEnd(node) {
     node.widgets.push(widget);
 }
 
-const PERF_WIDGET_ORDER = ["bd_grp_perf", "clear_vram_between_segments", "clear_ram_between_segments", "offload_segments_to_disk"];
+const PERF_WIDGET_ORDER = [
+    "bd_grp_perf",
+    "clear_vram_between_segments",
+    "clear_ram_between_segments",
+    "offload_segments_to_disk",
+    "save_group_videos",
+    "rerun_when_done",
+    "rerun_after_seconds",
+];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {
     const dom = node?._minimaxDomWidget;

@@ -21,6 +21,8 @@ const MAX_STRENGTH = 10;
 let _loraNamesPromise = null;
 let _loraInfoPromise = null;
 let _openPicker = null;
+const LORA_ROW_TYPE = "application/x-mmx-lora-row";
+let _loraDrag = null;
 
 /** LoRA filenames, taken from the stock LoraLoader combo so no extra route is needed. */
 export function loraNames() {
@@ -74,6 +76,17 @@ export function refreshLoraNames() {
 
 function loraCatalog() {
     return Promise.all([loraNames(), loraInfo()]).then(([names, info]) => ({ names, info }));
+}
+
+/** Re-read the LoRA list, previews and trigger words (new files show up without a reload). */
+async function refreshLoraCatalog(button) {
+    button?.classList.remove("is-spinning");
+    void button?.offsetWidth;
+    button?.classList.add("is-spinning");
+    const names = await refreshLoraNames();
+    await loraInfo();
+    flash(button, t("panel.lorasRefreshed").replace("{n}", String(names.length)));
+    return names;
 }
 
 function clampStrength(value) {
@@ -290,7 +303,18 @@ export async function openLoraPicker(anchor, current, onPick, opts = {}) {
     closeBtn.type = "button";
     closeBtn.className = "mmx-lora-picker-close";
     closeBtn.textContent = "×";
-    head.append(title, count, search, closeBtn);
+    const refresh = document.createElement("button");
+    refresh.type = "button";
+    refresh.className = "bd-seg-lora-refresh";
+    refresh.textContent = "↻";
+    refresh.title = t("panel.refreshLoras");
+    refresh.onclick = () => {
+        refreshLoraCatalog(refresh).then(() => {
+            close();
+            openLoraPicker(anchor, current, onPick, opts);
+        });
+    };
+    head.append(title, count, refresh, search, closeBtn);
 
     const items = names.map((name) => {
         const meta = info[name] || {};
@@ -544,6 +568,7 @@ export function segmentLoraTemplate() {
                     <div class="bd-r2v-section-head">
                         <span class="bd-label bd-r2v-section-title" data-i18n="panel.segmentLoras">片段 LoRA</span>
                         <span class="bd-r2v-section-actions">
+                            <button type="button" class="bd-seg-lora-refresh" data-r="seg-loras-refresh" data-i18n-title="panel.refreshLoras">↻</button>
                             <button type="button" class="bd-r2v-pick-existing" data-r="seg-loras-add" data-i18n="panel.addLora" data-i18n-title="tooltip.segmentLoras">+ LoRA</button>
                             <span class="bd-r2v-section-count" data-r="seg-loras-count"></span>
                         </span>
@@ -573,8 +598,21 @@ export function ensureSegmentLoraStyles() {
 .bd-seg-lora-del { flex:0 0 auto; cursor:pointer; border:none; background:transparent;
     color:inherit; font-size:15px; line-height:1; padding:2px 5px; }
 .bd-seg-lora-del:hover { color:#e06c6c; }
-.bd-seg-lora-triggers { display:flex; flex-wrap:wrap; gap:4px; padding-left:24px; }
+.bd-seg-lora-triggers { display:flex; flex-wrap:wrap; gap:4px; padding-left:38px; }
+.bd-seg-lora-handle { flex:0 0 auto; cursor:grab; color:#555; font-size:11px; letter-spacing:-2px; padding:0 3px 0 1px;
+    user-select:none; line-height:1; }
+.bd-seg-lora-handle:hover { color:#4fff8f; }
+.bd-seg-lora-item.is-dragging { opacity:.4; }
+.bd-seg-lora-item.drop-before { box-shadow:0 -2px 0 #4fff8f; }
+.bd-seg-lora-item.drop-after { box-shadow:0 2px 0 #4fff8f; }
 .bd-seg-lora-triggers .mmx-trigger-chip { font-size:10px; padding:2px 6px; }
+/* batch cards are grids (i2v: picture | prompt | preview): the LoRA box spans every column */
+.bd-batch-card > .bd-seg-loras-wrap { grid-column:1 / -1; }
+.bd-seg-lora-refresh { background:transparent; border:1px solid #3a3a3a; color:#c8c8c8; border-radius:6px;
+    padding:1px 7px; font-size:11px; line-height:1.4; cursor:pointer; font-family:inherit; }
+.bd-seg-lora-refresh:hover { border-color:#4fff8f; color:#4fff8f; }
+.bd-seg-lora-refresh.is-spinning { animation:mmx-spin .6s ease; }
+@keyframes mmx-spin { to { transform:rotate(360deg); } }
 
 .mmx-lora-thumb { flex:0 0 auto; display:flex; align-items:center; justify-content:center; overflow:hidden;
     background:#0e0e0e; border-radius:4px; color:#555; font-weight:800; }
@@ -707,7 +745,16 @@ export function createLoraSection(editor, seg, resolveSeg = null) {
     addBtn.title = t("tooltip.segmentLoras");
     const count = document.createElement("span");
     count.className = "bd-r2v-section-count";
-    actions.append(addBtn, count);
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.className = "bd-seg-lora-refresh";
+    refreshBtn.textContent = "↻";
+    refreshBtn.title = t("panel.refreshLoras");
+    refreshBtn.onclick = (e) => {
+        e?.stopPropagation?.();
+        refreshLoraCatalog(refreshBtn).then(() => paint());
+    };
+    actions.append(refreshBtn, addBtn, count);
     head.append(title, actions);
 
     const box = document.createElement("div");
@@ -764,6 +811,7 @@ export function bindSegmentLoraRefs(ui) {
     ui.segLorasBox = ui.root.querySelector('[data-r="seg-loras"]');
     ui.segLorasAddBtn = ui.root.querySelector('[data-r="seg-loras-add"]');
     ui.segLorasCount = ui.root.querySelector('[data-r="seg-loras-count"]');
+    ui.segLorasRefreshBtn = ui.root.querySelector('[data-r="seg-loras-refresh"]');
 }
 
 function currentSegment(ui) {
@@ -771,6 +819,12 @@ function currentSegment(ui) {
 }
 
 export function bindSegmentLoraEvents(ui) {
+    if (ui.segLorasRefreshBtn) {
+        ui.segLorasRefreshBtn.onclick = (e) => {
+            e?.stopPropagation?.();
+            refreshLoraCatalog(ui.segLorasRefreshBtn).then(() => renderSegmentLoras(ui, currentSegment(ui)));
+        };
+    }
     if (!ui.segLorasAddBtn) return;
     ui.segLorasAddBtn.onclick = async (e) => {
         e?.stopPropagation?.();
@@ -821,6 +875,63 @@ export function renderSegmentLoras(ui, seg) {
     });
 }
 
+/** Drag a row by its handle to move it within that segment's LoRA stack. */
+function wireLoraReorder(item, handle, ui, seg, idx, redraw) {
+    const arm = () => {
+        item.draggable = true;
+    };
+    handle.addEventListener("pointerdown", arm);
+    handle.addEventListener("mousedown", arm);
+    const clearMarks = () => {
+        item.parentElement?.querySelectorAll(".drop-before, .drop-after").forEach((n) => n.classList.remove("drop-before", "drop-after"));
+    };
+    item.addEventListener("dragstart", (e) => {
+        if (!item.draggable) return;
+        e.stopPropagation();
+        _loraDrag = { seg, from: idx };
+        e.dataTransfer.setData(LORA_ROW_TYPE, String(idx));
+        e.dataTransfer.effectAllowed = "move";
+        item.classList.add("is-dragging");
+    });
+    item.addEventListener("dragend", (e) => {
+        e.stopPropagation();
+        item.draggable = false;
+        item.classList.remove("is-dragging");
+        _loraDrag = null;
+        clearMarks();
+    });
+    const below = (e) => {
+        const r = item.getBoundingClientRect();
+        return e.clientY > r.top + r.height / 2;
+    };
+    item.addEventListener("dragover", (e) => {
+        if (_loraDrag?.seg !== seg) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = "move";
+        const after = below(e);
+        item.classList.toggle("drop-after", after);
+        item.classList.toggle("drop-before", !after);
+    });
+    item.addEventListener("dragleave", () => item.classList.remove("drop-before", "drop-after"));
+    item.addEventListener("drop", (e) => {
+        if (_loraDrag?.seg !== seg) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const from = _loraDrag.from;
+        _loraDrag = null;
+        clearMarks();
+        const rows = seg.loras || [];
+        let to = idx + (below(e) ? 1 : 0);
+        if (to > from) to -= 1;
+        if (from < 0 || from >= rows.length || to === from) return;
+        const [moved] = rows.splice(from, 1);
+        rows.splice(to, 0, moved);
+        redraw();
+        ui.commit(true);
+    });
+}
+
 function buildLoraRow(ui, seg, row, idx, catalog, repaint) {
     const { names, info } = catalog;
     const meta = info[row.name] || {};
@@ -830,6 +941,11 @@ function buildLoraRow(ui, seg, row, idx, catalog, repaint) {
     el.className = "bd-seg-lora-row";
     const promptField = () => promptFieldFor(item, ui);
     const redraw = () => (repaint ? repaint() : renderSegmentLoras(ui, seg));
+    const handle = document.createElement("span");
+    handle.className = "bd-seg-lora-handle";
+    handle.textContent = "⋮⋮";
+    handle.title = t("tooltip.dragLora");
+    wireLoraReorder(item, handle, ui, seg, idx, redraw);
 
     const on = document.createElement("input");
     on.type = "checkbox";
@@ -900,7 +1016,7 @@ function buildLoraRow(ui, seg, row, idx, catalog, repaint) {
         ui.commit(true);
     };
 
-    el.append(on, pick, strength, remove);
+    el.append(handle, on, pick, strength, remove);
     item.appendChild(el);
 
     // Trigger words: click adds to this segment's prompt, Shift+click (or no
