@@ -18,7 +18,7 @@ import torch
 
 import folder_paths
 
-from .h3_latent_continue import CONTINUE_PIPELINE_ID
+from .h3_latent_continue import CONTINUE_PIPELINE_ID, clamp_seam_min_mask
 from .h3_motion_context import CONTINUITY_PIPELINE_ID, trim_context_prefix, trim_export_tail
 from .plan import DirectorPlan, SegmentPlan, resolve_ref_image_size
 
@@ -158,7 +158,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
             else "off"
         ),
         "continuity_redraw": (
-            round(float(getattr(plan, "continuity_redraw", 0.65) or 0.65), 2)
+            round(clamp_seam_min_mask(getattr(plan, "continuity_redraw", 0.10)), 2)
             if plan.continuity_enabled
             and str(getattr(plan, "continuity_mode", "guide") or "guide") == "continue"
             else 0

@@ -416,6 +416,39 @@ def _repin_after_upscale(
     return new_positive, True
 
 
+def _relock_continue_refine(
+    work: dict,
+    *,
+    vae,
+    audio_vae=None,
+    pin_frames: int,
+    prev_refine_av=None,
+    prev_end_frame: int | None = None,
+    prev_tail: torch.Tensor | None = None,
+    seam_min: float = 0.10,
+) -> tuple[dict, bool]:
+    """Rewrite the continue prefix + mask onto refine latent. No Guide keyframes."""
+    from .h3_latent_continue import apply_latent_continue
+
+    n = max(0, int(pin_frames or 0))
+    if n < 1:
+        return work, False
+    if prev_refine_av is None and (prev_tail is None or int(getattr(prev_tail, "shape", [0])[0]) < 1):
+        return work, work.get("noise_mask") is not None
+    locked, _span, _trim = apply_latent_continue(
+        work,
+        prev_av=prev_refine_av,
+        prev_tail=prev_tail,
+        vae=vae,
+        context_length=n,
+        context_end_frame=prev_end_frame,
+        pin_audio=False,
+        audio_vae=audio_vae,
+        seam_min_mask=seam_min,
+    )
+    return locked, True
+
+
 def apply_segment_refine(
     plan,
     seg,
@@ -438,6 +471,9 @@ def apply_segment_refine(
     first_pass_images: torch.Tensor | None = None,
     trim_frames: int = 0,
     on_pass: RefinePassCallback | None = None,
+    prev_refine_av=None,
+    prev_end_frame: int | None = None,
+    prev_tail: torch.Tensor | None = None,
 ) -> tuple[dict, str]:
     """Run optional refine/upscale second sample. Never raises — returns first-pass on failure.
 
@@ -468,10 +504,10 @@ def apply_segment_refine(
     task_key = str(getattr(seg, "task_key", "") or "")
     from .segment_continuity import is_continue_mode
 
-    # Continue first-pass remask must not leak into refine (no guide re-pin).
-    if is_continue_mode(plan):
-        pin_frames = 0
-        note_parts.append("continue: no refine re-pin")
+    continue_mode = is_continue_mode(plan)
+    # Continue must not stack official Guide keyframes. Keep pin_frames so the
+    # copied tail can be rewritten + remasked; do not strip the lock.
+    guide_pin = 0 if continue_mode else pin_frames
 
     # Same-size refine keeps any first-pass mask so a continuity lock still holds.
     # No continuity → drop stray masks so refine can touch the whole clip.
@@ -489,7 +525,7 @@ def apply_segment_refine(
                     tw=tw,
                     th=th,
                     first_pass_images=first_pass_images,
-                    pin_frames=pin_frames,
+                    pin_frames=guide_pin,
                     task_key=task_key,
                     vae=vae,
                     refine_positive=refine_positive,
@@ -530,18 +566,18 @@ def apply_segment_refine(
                 )
                 encoded = _encode_video(vae, frames)
                 work = _join_av(encoded, audio_latent, work)
-                if pin_frames > 0:
+                if guide_pin > 0:
                     try:
                         refine_positive, pinned = _repin_after_upscale(
                             refine_positive,
                             work,
                             vae=vae,
                             prefix_frames=frames,
-                            trim_frames=pin_frames,
+                            trim_frames=guide_pin,
                             task_key=task_key,
                         )
                         if pinned:
-                            note_parts.append(f"re-pin {pin_frames}f")
+                            note_parts.append(f"re-pin {guide_pin}f")
                     except Exception as exc:
                         log.warning(
                             "Segment %s refine upscale re-pin failed (%s); "
@@ -554,6 +590,33 @@ def apply_segment_refine(
                 if on_phase:
                     on_phase("upscale", 1)
                 last_ok = work
+
+        continue_after_shift = None
+        if continue_mode and pin_frames > 0:
+            try:
+                work, locked = _relock_continue_refine(
+                    work,
+                    vae=vae,
+                    audio_vae=audio_vae,
+                    pin_frames=pin_frames,
+                    prev_refine_av=prev_refine_av,
+                    prev_end_frame=prev_end_frame,
+                    prev_tail=prev_tail,
+                    seam_min=float(getattr(plan, "continuity_redraw", 0.10)),
+                )
+                if locked:
+                    from .h3_latent_continue import install_continue_prefix_remask
+
+                    continue_after_shift = install_continue_prefix_remask
+                    note_parts.append(f"continue re-lock {pin_frames}f")
+                    last_ok = work
+            except Exception as exc:
+                log.warning(
+                    "Segment %s continue refine re-lock failed (%s); "
+                    "second sample continues without a prefix lock.",
+                    int(getattr(seg, "index", 0)) + 1,
+                    exc,
+                )
 
         if mode == "latent_upscale":
             if on_phase:
@@ -613,6 +676,7 @@ def apply_segment_refine(
                 phase_name="refine",
                 sigmas=sigma_list,
                 apply_shift=True,
+                after_shift=continue_after_shift,
                 enable_tiling=bool(pack.get("enable_tiling", False)),
                 tile_count=int(pack.get("tile_count") or 2),
                 tile_overlap=int(pack.get("tile_overlap") or 128),

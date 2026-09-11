@@ -195,8 +195,8 @@ const CONTINUITY_FRAME_CHOICES = [5, 22, 39, 56];
 /** Official Motion Context baseline recommendation. */
 const DEFAULT_CONTINUITY_FRAMES = 22;
 const DEFAULT_CONTINUITY_MODE = "guide";
-const DEFAULT_CONTINUITY_REDRAW = 0.65;
-const MIN_CONTINUITY_REDRAW = 0.40;
+const DEFAULT_CONTINUITY_REDRAW = 0.10;
+const MIN_CONTINUITY_REDRAW = 0;
 const MAX_CONTINUITY_REDRAW = 0.95;
 
 function normalizeContinuityMode(raw) {
@@ -2909,7 +2909,7 @@ class MiniMaxH3DirectorEditor {
                     </select>
                     <span data-r="segment-continuity-redraw-wrap" hidden>
                         <span class="bd-meta" data-i18n="output.continuityRedraw">重绘幅度</span>
-                        <input type="number" class="bd-num" data-r="segment-continuity-redraw" min="0.40" max="0.95" step="0.05" value="0.65" style="width:56px" data-i18n-title="tooltip.continuityRedraw">
+                        <input type="number" class="bd-num" data-r="segment-continuity-redraw" min="0" max="0.95" step="0.05" value="0.10" style="width:56px" data-i18n-title="tooltip.continuityRedraw">
                     </span>
                 </span>
                 <label data-r="segment-continuity-keep-tail-wrap" hidden data-i18n-title="tooltip.continuityKeepTail">

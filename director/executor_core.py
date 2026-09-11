@@ -82,6 +82,7 @@ from .segment_continuity import (
     concat_continuous_chunks,
     is_continue_mode,
     is_continuity_active,
+    match_export_opening_grade,
     resolve_prev_segment_output,
 )
 from .vram_cleanup import cleanup_segment_vram
@@ -500,7 +501,7 @@ def execute_director_plan_core(
         ]
         mode_label = "guide+redraw" if is_continue_mode(plan) else "guide"
         redraw_note = (
-            f", redraw {float(getattr(plan, 'continuity_redraw', 0.65)):.2f}"
+            f", redraw {float(getattr(plan, 'continuity_redraw', 0.10)):.2f}"
             if is_continue_mode(plan)
             else ""
         )
@@ -818,7 +819,7 @@ def execute_director_plan_core(
                     context_audio=prev_audio,
                     audio_vae=audio_vae,
                     audio_context_length=DEFAULT_AUDIO_CONTEXT_FRAMES,
-                    seam_min_mask=getattr(plan, "continuity_redraw", 0.65),
+                    seam_min_mask=getattr(plan, "continuity_redraw", 0.10),
                 )
                 after_shift = install_continue_prefix_remask
             else:
@@ -997,7 +998,7 @@ def execute_director_plan_core(
             handoff_label = "guide+redraw" if is_continue_mode(plan) else "guide"
             task_hint = f"{task_hint} + {handoff_label} {trim_frames}f"
             remask_note = (
-                f"(redraw {float(getattr(plan, 'continuity_redraw', 0.65)):.2f}, no cond-pin) "
+                f"(redraw {float(getattr(plan, 'continuity_redraw', 0.10)):.2f}, no cond-pin) "
                 if is_continue_mode(plan)
                 else ""
             )
@@ -1227,6 +1228,9 @@ def execute_director_plan_core(
                 first_pass_images=upscale_frames,
                 trim_frames=trim_frames,
                 on_pass=_export_refine_pass if mp4_run_dir is not None else None,
+                prev_refine_av=completed_av_latents.get(prev_idx) if prev_idx >= 0 else None,
+                prev_end_frame=prev_end_frame,
+                prev_tail=prev_tail,
             )
         elif hold_after_first:
             refine_note = (
@@ -1291,6 +1295,15 @@ def execute_director_plan_core(
                 pre_chunk = pre_chunk.float()
         else:
             pre_chunk = chunk
+        if trim_frames > 0 and prev_idx >= 0 and is_continuity_active(plan, seg):
+            prev_export = completed_outputs.get(prev_idx)
+            if prev_export is not None and int(prev_export.shape[0]) >= 1:
+                same_pre = pre_chunk is chunk
+                chunk = match_export_opening_grade(chunk, prev_export)
+                if same_pre:
+                    pre_chunk = chunk
+                elif pre_chunk is not None:
+                    pre_chunk = match_export_opening_grade(pre_chunk, prev_export)
         if hold_after_first and pre_chunk is chunk:
             pre_chunk = chunk.clone()
         decode_s = time.perf_counter() - t_decode

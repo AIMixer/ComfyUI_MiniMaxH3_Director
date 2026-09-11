@@ -225,7 +225,7 @@ class DirectorPlan:
     continuity_overlap_frames: int = 0
     # "guide" (motion-context keyframes) | "continue" (引导+重绘 / latent remask).
     continuity_mode: str = "guide"
-    continuity_redraw: float = 0.65
+    continuity_redraw: float = 0.10
     # Keep sample-trim remainder (~12f) instead of cropping back to UI length.
     continuity_keep_tail: bool = True
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
