@@ -8,6 +8,7 @@ import {
     renderSegmentLoras,
     segmentLoraTemplate,
 } from "./minimax_segment_loras.js";
+import { mountPromptLibraryBar } from "./minimax_prompt_library.js";
 import {
     CUSTOM_ASPECT_RATIO,
     DEFAULT_ASPECT_RATIO,
@@ -3104,6 +3105,8 @@ class MiniMaxH3DirectorEditor {
             this.fl2vUi.totalInput = this.root.querySelector('[data-r="fl2v-total"]');
         }
         bindFl2vEvents(this);
+        // Prompt library bar: sits above the group toolbar of whichever panel is showing.
+        mountPromptLibraryBar(this);
 
         const runStatus = document.createElement("div");
         runStatus.className = "bd-run-status idle";

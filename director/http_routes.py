@@ -646,6 +646,11 @@ def register_routes() -> bool:
 
     _register_route(routes, "GET", "/minimax/director/lora_previews", minimax_lora_previews)
     _register_route(routes, "GET", "/minimax/director/lora_preview", minimax_lora_preview)
+    from .prompt_library import minimax_prompt_library, minimax_prompt_library_op, minimax_prompt_thumb
+
+    _register_route(routes, "GET", "/minimax/director/prompt_library", minimax_prompt_library)
+    _register_route(routes, "POST", "/minimax/director/prompt_library", minimax_prompt_library_op)
+    _register_route(routes, "GET", "/minimax/director/prompt_thumb", minimax_prompt_thumb)
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")
     return True

@@ -144,7 +144,7 @@ function emptyThumb(box, name) {
     box.textContent = loraInitials(stem);
 }
 
-function makeThumb(name, meta, sizeClass) {
+export function makeThumb(name, meta, sizeClass) {
     const box = document.createElement("span");
     box.className = `mmx-lora-thumb ${sizeClass}`;
     const preview = meta?.preview;

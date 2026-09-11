@@ -1502,6 +1502,17 @@ def execute_director_plan_core(
         completed_refine_passes[seg.index] = pass_clips
         segment_export_lengths[seg.index] = int(chunk.shape[0])
 
+        # Prompt library history: this group's prompt + LoRAs with a looping thumbnail.
+        try:
+            from .prompt_library import record_prompt_history
+
+            record_prompt_history(
+                node_id, seg, plan, chunk,
+                seed=seed, group=ui_idx + 1, groups=timeline_seg_total,
+            )
+        except Exception as exc:
+            log.warning("Prompt history skipped: %s", exc)
+
         #「分段导出」: flush mp4 as soon as this segment succeeds (crash-safe).
         # Confirmation hold has no final/second-pass clip yet: save only _pre.
         if hold_after_first:
