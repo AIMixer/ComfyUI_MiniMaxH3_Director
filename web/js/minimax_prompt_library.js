@@ -233,12 +233,15 @@ function mergeLoras(current, incoming) {
  * The editor flushes visible prompt fields back into the timeline before it
  * re-renders, so a field still showing the old text would undo the apply.
  */
-function syncVisiblePromptFields(editor, kind, index, value) {
+function syncVisiblePromptFields(editor, kind, index, group) {
+    const value = group.prompt;
     const fields = [];
     if (kind === "segments") {
-        editor.batchList
-            ?.querySelectorAll?.(`textarea[data-f="prompt"][data-batch-prompt-index="${index}"]`)
-            .forEach((field) => fields.push(field));
+        // Same lookup as flushBatchPromptInputs: segment id first, render index otherwise.
+        const selector = group.id
+            ? `textarea[data-f="prompt"][data-batch-seg-id="${CSS.escape(String(group.id))}"]`
+            : `textarea[data-f="prompt"][data-batch-prompt-index="${index}"]`;
+        editor.batchList?.querySelectorAll?.(selector).forEach((field) => fields.push(field));
         if (editor.segPrompt && editor.selectedIndex === index) fields.push(editor.segPrompt);
     } else if (editor.fl2vUi?.prompt && editor._fl2vPromptSegIndex === index) {
         fields.push(editor.fl2vUi.prompt);
@@ -260,7 +263,7 @@ export function applyPromptEntry(editor, entry, indices, opts = _applyPrefs) {
             const current = String(group.prompt || "").trim();
             group.prompt = opts.mode === "append" && current ? joinPrompt(current, entry.prompt) : entry.prompt;
             if (kind === "segments") editor.writeExternalGroupPrompt?.(i, group.prompt);
-            syncVisiblePromptFields(editor, kind, i, group.prompt);
+            syncVisiblePromptFields(editor, kind, i, group);
         }
         if (opts.loras) {
             const incoming = normalizeLoraRows(entry.loras);
