@@ -38,6 +38,8 @@ const _applyPrefs = { prompt: true, loras: true, mode: "replace" };
 function tf(key, vars = {}) {
     let text = t(key);
     for (const [name, value] of Object.entries(vars)) text = text.split(`{${name}}`).join(String(value));
+    // "{n} group{s}": English plural, empty for exactly one.
+    text = text.split("{s}").join(Number(vars.n) === 1 ? "" : "s");
     return text;
 }
 
