@@ -11,6 +11,7 @@ Only H×W are scaled; the time axis is preserved. Audio is not touched.
 from __future__ import annotations
 
 import glob
+import inspect
 import logging
 import os
 import re
@@ -189,9 +190,76 @@ class LatentResizer3D(nn.Module):
         self.norm_out = _normalization(channels)
         self.conv_out = nn.Conv3d(channels, in_channels, 3, padding=1)
 
-    def forward(self, x, scale: float, target_size: tuple[int, int, int]):
+    def _temporal_kernel(self) -> int:
+        """Temporal dwconv kernel (fallback 5). Used as chunk overlap."""
+        for block in list(self.in_blocks) + list(self.out_blocks):
+            if isinstance(block, TemporalConv):
+                return int(block.dwconv.weight.shape[2])
+        return 5
+
+    def forward(
+        self,
+        x,
+        scale: float,
+        target_size: tuple[int, int, int],
+        enable_chunking: bool = False,
+    ):
         if tuple(target_size) == tuple(x.shape[-3:]):
             return x
+
+        b, c, t = x.shape[0], x.shape[1], x.shape[2]
+        chunk = 24
+        overlap = self._temporal_kernel()
+
+        if not enable_chunking or t <= chunk:
+            return self._forward_seg(x, scale, target_size)
+
+        log.info(
+            "H3 latent upscaler temporal chunking: T=%d chunk=%d overlap=%d",
+            t,
+            chunk,
+            overlap,
+        )
+        size = (int(target_size[0]), int(target_size[1]), int(target_size[2]))
+        x_padded = F.pad(x, (0, 0, 0, 0, overlap, overlap), mode="replicate")
+        out_full = torch.zeros(b, c, t, size[-2], size[-1], device=x.device, dtype=x.dtype)
+        weight_full = torch.zeros(1, 1, t, 1, 1, device=x.device, dtype=x.dtype)
+
+        start = 0
+        while start < t:
+            seg_start = start
+            seg_end = min(t, start + chunk)
+            out_start = max(0, seg_start - overlap)
+            out_end = min(t, seg_end + overlap)
+            lo = max(0, out_start - overlap)
+            hi = min(t + 2 * overlap, out_end + overlap)
+            seg = x_padded[:, :, lo:hi]
+            seg_out = self._forward_seg(seg, scale, (hi - lo, size[-2], size[-1]))
+            s0 = (out_start + overlap) - lo
+            n_valid = out_end - out_start
+            valid_out = seg_out[:, :, s0 : s0 + n_valid]
+
+            weight = torch.ones(n_valid, device=x.device, dtype=x.dtype)
+            if seg_start > out_start:
+                blend_len = seg_start - out_start
+                weight[:blend_len] = (
+                    torch.arange(1, blend_len + 1, device=x.device, dtype=x.dtype)
+                    / (blend_len + 1)
+                )
+            if out_end > seg_end:
+                blend_len = out_end - seg_end
+                weight[-blend_len:] = (
+                    torch.arange(blend_len, 0, -1, device=x.device, dtype=x.dtype)
+                    / (blend_len + 1)
+                )
+            w = weight.view(1, 1, n_valid, 1, 1)
+            out_full[:, :, out_start:out_end] += valid_out * w
+            weight_full[:, :, out_start:out_end] += w
+            start += chunk
+
+        return out_full / weight_full.clamp(min=1e-8)
+
+    def _forward_seg(self, x, scale: float, target_size: tuple[int, int, int]):
         scale_emb = torch.tensor(
             [float(scale) - 1.0], dtype=x.dtype, device=x.device
         ).unsqueeze(0)
@@ -317,6 +385,31 @@ def load_h3_latent_upscaler(name: str, device: torch.device, dtype: torch.dtype)
     return model.to(device=device, dtype=dtype)
 
 
+def _upscaler_accepts_chunking(model) -> bool:
+    """True for in-repo LatentResizer3D; wired third-party nets usually do not."""
+    if hasattr(model, "_forward_seg"):
+        return True
+    try:
+        params = inspect.signature(model.forward).parameters
+    except (TypeError, ValueError):
+        return False
+    if "enable_chunking" in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _forward_upscaler(model, x, *, scale: float, target_size: tuple[int, int, int], enable_chunking: bool):
+    kwargs = {"scale": scale, "target_size": target_size}
+    if _upscaler_accepts_chunking(model):
+        kwargs["enable_chunking"] = bool(enable_chunking)
+    elif enable_chunking:
+        log.warning(
+            "H3 latent upscaler %s has no enable_chunking; running a full forward.",
+            type(model).__name__,
+        )
+    return model(x, **kwargs)
+
+
 def _as_bcthw(samples: torch.Tensor) -> tuple[torch.Tensor, str]:
     """Director video latents are [B,C,T,H,W] or [C,T,H,W] (same as video_from_latent)."""
     if samples.ndim == 5:
@@ -335,6 +428,7 @@ def upscale_h3_video_latent(
     source_height: int,
     model_name: str = "",
     model=None,
+    enable_latent_chunking: bool = False,
 ) -> dict:
     """Spatially upscale MiniMax H3 video latent to a pixel canvas (×16 VAE)."""
     if model is None and (not model_name or str(model_name).startswith("(")):
@@ -382,7 +476,13 @@ def upscale_h3_video_latent(
     x = (x - mean) / std
     try:
         with torch.no_grad():
-            out = model(x, scale=scale, target_size=(t_size, dst_h, dst_w))
+            out = _forward_upscaler(
+                model,
+                x,
+                scale=scale,
+                target_size=(t_size, dst_h, dst_w),
+                enable_chunking=bool(enable_latent_chunking),
+            )
         out = out * std + mean
         out = out.to(device="cpu", dtype=orig_dtype).contiguous()
     finally:

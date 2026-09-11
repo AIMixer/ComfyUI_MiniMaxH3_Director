@@ -204,6 +204,57 @@ class MiniMaxH3DirectorRefine:
                         ),
                     },
                 ),
+                "enable_latent_chunking": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "H3 latent 放大的时间分块（省显存，默认关）。"
+                            "开：latent 超过 24 帧时按 24 帧切块、重叠区加权融合，"
+                            "放大网峰值更低，长段不易在这一步 OOM；接缝可能和整段前向不同。"
+                            "≤24 帧仍走整段。关则与现在完全一致。"
+                        ),
+                    },
+                ),
+                "enable_tiling": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "二采空间分块（省显存，默认关）。"
+                            "开：沿画面长边切开视频 latent，每步分块前向再叠回；"
+                            "音频整段参与，不切空间。"
+                            "关：整幅一次采样，与现在完全一致。"
+                            "mode=latent_upscale（不二采）时无效。"
+                        ),
+                    },
+                ),
+                "tile_count": (
+                    "INT",
+                    {
+                        "default": 2,
+                        "min": 1,
+                        "max": 8,
+                        "step": 1,
+                        "tooltip": (
+                            "分块数量。越大单块显存越低，但前向次数更多、更慢。"
+                            "1 等同不分块。"
+                        ),
+                    },
+                ),
+                "tile_overlap": (
+                    "INT",
+                    {
+                        "default": 128,
+                        "min": 0,
+                        "max": 2048,
+                        "step": 64,
+                        "tooltip": (
+                            "块间重叠，单位为输出像素（步长 64）。"
+                            "越大接缝越轻，单块也越大，省显存越少。"
+                        ),
+                    },
+                ),
             },
         }
 
@@ -242,6 +293,10 @@ class MiniMaxH3DirectorRefine:
         height=720,
         skip_fl2v=True,
         confirm_first_pass=False,
+        enable_latent_chunking=False,
+        enable_tiling=False,
+        tile_count=2,
+        tile_overlap=128,
         latent_upscale_model=None,
         upscale_model=None,
         h3_latent_model="",
@@ -289,6 +344,10 @@ class MiniMaxH3DirectorRefine:
             target_height=target_height,
             skip_fl2v=skip_fl2v,
             confirm_first_pass=bool(confirm_first_pass),
+            enable_latent_chunking=bool(enable_latent_chunking),
+            enable_tiling=bool(enable_tiling),
+            tile_count=tile_count,
+            tile_overlap=tile_overlap,
             upscale_method=upscale_method,
             sample_model=refine_model if refine_model is not None else model,
             latent_upscale_model=latent_upscale_model if latent_upscale_model is not None else h3_latent_model,
