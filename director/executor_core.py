@@ -1315,7 +1315,13 @@ def execute_director_plan_core(
                 if same_pre:
                     pre_chunk = chunk
                 elif pre_chunk is not None:
-                    pre_chunk = match_export_opening_grade(pre_chunk, prev_export)
+                    # 一采 must grade against the previous 一采 tail. Using the
+                    # refined export here pulls 864 openings toward a 1376
+                    # second-pass look and makes the first-pass join pop.
+                    prev_pre = completed_pre_refine.get(prev_idx)
+                    if prev_pre is None or int(prev_pre.shape[0]) < 1:
+                        prev_pre = prev_export
+                    pre_chunk = match_export_opening_grade(pre_chunk, prev_pre)
         if hold_after_first and pre_chunk is chunk:
             pre_chunk = chunk.clone()
         decode_s = time.perf_counter() - t_decode
