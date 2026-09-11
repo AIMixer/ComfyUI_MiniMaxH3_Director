@@ -56,11 +56,13 @@ from .h3_motion_context import (
     continuity_export_len,
     generation_frame_budget,
     handoff_end_frame,
+    select_continuity_pin_latent,
     snap_context_frames,
     trim_context_prefix,
     trim_export_tail,
 )
 from .segment_cache import (
+    load_first_pass_av_latent,
     load_first_pass_cache,
     load_first_pass_frames_stale,
     load_segment_audio,
@@ -286,8 +288,7 @@ def _release_segment_file_ref_audios(plan: DirectorPlan, seg) -> None:
 
 def _prune_continuity_working_set(
     next_segment_index: int,
-    av_latents: dict[int, dict],
-    refine_passes: dict[int, list[tuple[str, torch.Tensor]]],
+    *working_sets: dict,
 ) -> None:
     """Keep only the direct predecessor needed by the next segment.
 
@@ -296,7 +297,7 @@ def _prune_continuity_working_set(
     """
     current = int(next_segment_index)
     keep = current - 1
-    for working_set in (av_latents, refine_passes):
+    for working_set in working_sets:
         for index in tuple(working_set):
             if int(index) < current and int(index) != keep:
                 working_set.pop(index, None)
@@ -528,6 +529,7 @@ def execute_director_plan_core(
     completed_pre_refine: dict[int, torch.Tensor] = {}
     completed_refine_passes: dict[int, list[tuple[str, torch.Tensor]]] = {}
     completed_av_latents: dict[int, dict] = {}
+    completed_first_pass_av: dict[int, dict] = {}
     completed_av_handoff: dict[int, dict] = {}
     completed_audios: dict[int, dict] = {}
     # Segments actually executed by _run_one_segment in THIS run.
@@ -606,6 +608,7 @@ def execute_director_plan_core(
         continuity_active = is_continuity_active(plan, seg)
         prev_tail = None
         prev_av = None
+        prev_first_pass_av = None
         prev_audio = None
         prev_end_frame = None
         prev_idx = seg.index - 1
@@ -645,6 +648,13 @@ def execute_director_plan_core(
                 )
                 if prev_av is not None:
                     completed_av_latents[prev_idx] = prev_av
+            prev_first_pass_av = completed_first_pass_av.get(prev_idx)
+            if prev_first_pass_av is None and prev_seg is not None:
+                prev_first_pass_av = load_first_pass_av_latent(
+                    node_id, prev_seg, plan, allow_stale=True
+                )
+                if prev_first_pass_av is not None:
+                    completed_first_pass_av[prev_idx] = prev_first_pass_av
             prev_handoff = completed_av_handoff.get(prev_idx)
             if prev_handoff is None and prev_seg is not None:
                 prev_handoff = load_segment_handoff_meta(
@@ -802,6 +812,7 @@ def execute_director_plan_core(
                 audio_mode != AUDIO_MODE_MUTE
                 and (prev_av is not None or prev_audio is not None)
             )
+            prev_av = select_continuity_pin_latent(latent, prev_first_pass_av, prev_av)
             if is_continue_mode(plan):
                 from .h3_latent_continue import (
                     apply_latent_continue,
@@ -1103,6 +1114,7 @@ def execute_director_plan_core(
             )
 
         first_pass_samples = samples
+        completed_first_pass_av[seg.index] = first_pass_samples
         first_pass_gpu = None
         pre_export = None
         run_refine = will_refine and not hold_after_first
@@ -1147,7 +1159,7 @@ def execute_director_plan_core(
             target_len=target_len,
             keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
         )
-        if will_refine and not skip_first_sample:
+        if (will_refine or continuity_active) and not skip_first_sample:
             save_first_pass_cache(
                 node_id,
                 seg,
@@ -1405,6 +1417,7 @@ def execute_director_plan_core(
         _prune_continuity_working_set(
             seg.index,
             completed_av_latents,
+            completed_first_pass_av,
             completed_refine_passes,
         )
         if export_segments_mode:
@@ -1485,6 +1498,11 @@ def execute_director_plan_core(
             )
             if cached_av is not None:
                 completed_av_latents[seg.index] = cached_av
+            cached_first = load_first_pass_av_latent(
+                node_id, seg, plan, allow_stale=True
+            )
+            if cached_first is not None:
+                completed_first_pass_av[seg.index] = cached_first
             cached_handoff = load_segment_handoff_meta(
                 node_id, seg, plan, allow_stale=used_stale
             )

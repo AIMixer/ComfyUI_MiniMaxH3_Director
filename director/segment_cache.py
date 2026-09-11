@@ -424,6 +424,42 @@ def _av_latent_to_cpu(av_latent: dict) -> dict:
     return out
 
 
+def load_first_pass_av_latent(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+    *,
+    allow_stale: bool = False,
+) -> dict | None:
+    """Load ``.pre.av.pt`` for continuity pin. Source-video mismatch still rejects."""
+    if not node_id:
+        return None
+    root = _cache_root(node_id)
+    if root is None:
+        return None
+    idx = seg.index
+    meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+    latent_path = root / f"seg_{idx:04d}.pre.av.pt"
+    if not latent_path.is_file():
+        return None
+    try:
+        if meta_path.is_file():
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = first_pass_cache_fingerprint(seg, plan)
+            if stored != expected:
+                if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
+                    return None
+                if not allow_stale:
+                    return None
+        payload = torch.load(latent_path, map_location="cpu", weights_only=False)
+        if not isinstance(payload, dict) or "samples" not in payload:
+            return None
+        return payload
+    except Exception as exc:
+        log.debug("Segment %d first-pass AV latent skipped: %s", idx + 1, exc)
+        return None
+
+
 def load_segment_av_latent(
     node_id: str | None,
     seg: SegmentPlan,
