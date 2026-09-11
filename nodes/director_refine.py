@@ -255,6 +255,39 @@ class MiniMaxH3DirectorRefine:
                         ),
                     },
                 ),
+                "clear_vram_before_refine": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "一采后清理显存：在可选的一采解码/暂存完成后，"
+                            "于 latent 放大或二采开始前卸载模型并清空 CUDA 缓存。"
+                        ),
+                    },
+                ),
+                # Keep newly added widgets at the end so existing workflow
+                # widget positions (enable_tiling/tile_count/tile_overlap)
+                # remain compatible.
+                "decode_first_pass": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "是否解码一采：关闭后不在一采与二采之间执行视频 VAE 解码，"
+                            "可降低一采到二采之间的显存峰值；images_pre_refine 将回退为最终输出。"
+                        ),
+                    },
+                ),
+                "stage_first_pass_images": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "是否暂存一采图像：关闭后不把一采图像传给放大/二采，"
+                            "二采直接使用一采 AV latent；对 H3 latent 放大最省显存，像素放大仍会自行解码。"
+                        ),
+                    },
+                ),
             },
         }
 
@@ -277,7 +310,9 @@ class MiniMaxH3DirectorRefine:
         "width / height are the resolved target canvas (×32). "
         "Does not sample by itself — no IMAGE output. "
         "confirm_first_pass: first Queue writes first-pass cache; "
-        "second Queue with the same seed runs refine only."
+        "second Queue with the same seed runs refine only. "
+        "clear_vram_before_refine unloads first-pass models before refine; "
+        "decode_first_pass / stage_first_pass_images can disable the first-pass image path to save VRAM."
     )
 
     def pack(
@@ -293,6 +328,9 @@ class MiniMaxH3DirectorRefine:
         height=720,
         skip_fl2v=True,
         confirm_first_pass=False,
+        clear_vram_before_refine=True,
+        decode_first_pass=True,
+        stage_first_pass_images=True,
         enable_latent_chunking=False,
         enable_tiling=False,
         tile_count=2,
@@ -344,6 +382,9 @@ class MiniMaxH3DirectorRefine:
             target_height=target_height,
             skip_fl2v=skip_fl2v,
             confirm_first_pass=bool(confirm_first_pass),
+            clear_vram_before_refine=bool(clear_vram_before_refine),
+            decode_first_pass=bool(decode_first_pass),
+            stage_first_pass_images=bool(stage_first_pass_images),
             enable_latent_chunking=bool(enable_latent_chunking),
             enable_tiling=bool(enable_tiling),
             tile_count=tile_count,
