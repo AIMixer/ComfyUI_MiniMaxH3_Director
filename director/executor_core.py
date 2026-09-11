@@ -9,7 +9,7 @@ from typing import Any
 
 import torch
 
-from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge
+from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge, limit_ref_image_dict
 from ..lib.task_modes import SUPPORTED_TASK_KEYS
 from ..nodes.conditioning import run_minimax_conditioning
 from .core_sampling import sample_single_stage
@@ -38,6 +38,8 @@ from .plan import (
     DirectorPlan,
     plan_summary,
     prepare_segment_clip,
+    official_ref_image_size,
+    ref_image_long_preset_px,
     resolve_ref_image_size,
     ref_audios_to_dict,
     ref_videos_to_dict,
@@ -264,6 +266,15 @@ def _build_minimax_inputs(
                 cache=getattr(plan, "audio_decode_cache", None),
             )
 
+    long_px = ref_image_long_preset_px(resolve_ref_image_size(seg, plan))
+    if ref_images and long_px:
+        ref_images, n_resized = limit_ref_image_dict(ref_images, long_px, "long")
+        if n_resized:
+            log.info(
+                "Director refs: long-edge %dpx — resized %d image(s).",
+                long_px,
+                n_resized,
+            )
     return first_frame, last_frame, ref_images, ref_videos, ref_audios, ref_video_audios
 
 
@@ -799,7 +810,7 @@ def execute_director_plan_core(
             ref_videos=ref_videos,
             ref_video_audios=ref_video_audios,
             ref_audios=ref_audios,
-            ref_image_size=resolve_ref_image_size(seg, plan),
+            ref_image_size=official_ref_image_size(resolve_ref_image_size(seg, plan)),
         )
         cond_s = time.perf_counter() - t_cond
 
