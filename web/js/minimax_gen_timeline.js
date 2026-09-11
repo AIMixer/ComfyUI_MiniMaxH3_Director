@@ -166,11 +166,11 @@ export function resolutionFromSelector(aspectRatio, megapixels, multiple = MINIM
 export const IMAGE_BATCH_TASKS = new Set();
 export const FL2V_TASKS = new Set(["fl2v"]);
 /** Blank-canvas / subject-ref batch generation (not source-video editing). */
-export const VIDEO_BATCH_TASKS = new Set(["t2v", "i2v", "r2v", "mixed"]);
-export const MIXED_SEGMENT_TASKS = new Set(["t2v", "i2v", "fl2v", "r2v"]);
+export const VIDEO_BATCH_TASKS = new Set(["t2v", "i2v", "r2v", "addguide", "mixed"]);
+export const MIXED_SEGMENT_TASKS = new Set(["t2v", "i2v", "fl2v", "addguide", "r2v"]);
 export const PROMPT_BATCH_TASKS = new Set([...VIDEO_BATCH_TASKS, ...FL2V_TASKS]);
 /** Tasks that never use source-video upload toolbar. v2v/rv2v use Bernini-style video timeline. */
-export const NO_VIDEO_UPLOAD_TASKS = new Set(["t2v", "i2v", "r2v", "mixed"]);
+export const NO_VIDEO_UPLOAD_TASKS = new Set(["t2v", "i2v", "r2v", "addguide", "mixed"]);
 
 export function resolveTaskKey(taskTypeValue) {
     let value = String(taskTypeValue || "").split(",[object Object]", 1)[0].trim();
@@ -278,7 +278,7 @@ export function refVideoPromptTag(index) {
 }
 
 /** Tasks that never show reference-image slots (v2v = source-video edit only). */
-const NO_REF_IMAGE_TASKS = new Set(["v2v", "mv2v", "ads2v", "t2v", "i2v", "fl2v"]);
+const NO_REF_IMAGE_TASKS = new Set(["v2v", "mv2v", "ads2v", "t2v", "i2v", "fl2v", "addguide"]);
 
 export function taskUsesReferenceImages(taskKey) {
     if (NO_REF_IMAGE_TASKS.has(taskKey)) return false;
@@ -438,6 +438,8 @@ export function newBatchSegment(overrides = {}) {
         refs: [],
         refAudios: [],
         refVideos: [],
+        timedGuides: [],
+        timedAudioGuides: [],
         genImage: { imageFile: "" },
         previewB64: "",
         previewFrames: [],

@@ -26,7 +26,7 @@ from .plan import DirectorPlan, SegmentPlan
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.mp4_export")
 
-VIDEO_EXPORT_TASKS = frozenset({"t2v", "i2v", "r2v", "fl2v", "v2v", "rv2v"})
+VIDEO_EXPORT_TASKS = frozenset({"t2v", "i2v", "addguide", "r2v", "fl2v", "v2v", "rv2v"})
 
 
 def new_segment_mp4_run_dir(plan: DirectorPlan) -> Path | None:

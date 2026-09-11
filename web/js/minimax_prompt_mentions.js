@@ -165,7 +165,7 @@ function makeMentionMenuThumb(item) {
     return thumb;
 }
 
-function listAvailableMentions(refs, audios, videos) {
+function listAvailableMentions(refs, audios, videos, mentions) {
     const items = [];
     for (const r of [...(refs || [])]
         .filter((x) => x?.imageFile || x?.imageB64)
@@ -201,6 +201,14 @@ function listAvailableMentions(refs, audios, videos) {
             label: refAudioLabel(index),
             tag: refAudioPromptTag(index),
             thumb: "",
+        });
+    }
+    for (const item of mentions || []) {
+        if (!item?.tag || !item?.label) continue;
+        items.push({
+            ...item,
+            kind: item.kind || "image",
+            thumb: item.thumb || "",
         });
     }
     return items;
@@ -369,7 +377,7 @@ export function serializeTokenEditor(editor) {
 export function hydrateTokenEditor(editor, text, getMedia, options = {}) {
     if (!editor) return;
     const media = typeof getMedia === "function" ? getMedia() : {};
-    const items = listAvailableMentions(media.refs, media.audios, media.videos);
+    const items = listAvailableMentions(media.refs, media.audios, media.videos, media.mentions);
     const source = String(text ?? "");
     editor.textContent = "";
     let cursor = 0;
@@ -392,7 +400,7 @@ export function hydrateTokenEditor(editor, text, getMedia, options = {}) {
 function refreshTokenStates(editor, getMedia) {
     if (!editor) return;
     const media = typeof getMedia === "function" ? getMedia() : {};
-    const items = listAvailableMentions(media.refs, media.audios, media.videos);
+    const items = listAvailableMentions(media.refs, media.audios, media.videos, media.mentions);
     for (const chip of editor.querySelectorAll(`.${TOKEN_CLASS}`)) {
         const kind = chip.dataset.kind || "image";
         const ordinal1 = Number(chip.dataset.ordinal) || 1;
@@ -964,7 +972,7 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
     const renderMenu = (query) => {
         const m = ensureMenu();
         const media = typeof getMedia === "function" ? getMedia() : {};
-        const all = listAvailableMentions(media.refs, media.audios, media.videos);
+        const all = listAvailableMentions(media.refs, media.audios, media.videos, media.mentions);
         const q = (query || "").toLowerCase();
         filtered = all.filter((item) => {
             if (!q) return true;
@@ -978,13 +986,15 @@ export function wirePromptImageMentions(editorHost, textarea, getMedia) {
         m.innerHTML = "";
         const title = document.createElement("div");
         title.className = "bd-mention-title";
-        title.textContent = t("mention.title");
+        title.textContent = media.mentionTitle || t("mention.title");
         m.appendChild(title);
 
         if (!filtered.length) {
             const empty = document.createElement("div");
             empty.className = "bd-mention-empty";
-            empty.textContent = all.length ? t("mention.emptyFilter") : t("mention.emptyNoUpload");
+            empty.textContent = all.length
+                ? t("mention.emptyFilter")
+                : (media.mentionEmpty || t("mention.emptyNoUpload"));
             m.appendChild(empty);
         } else {
             filtered.forEach((item, i) => {

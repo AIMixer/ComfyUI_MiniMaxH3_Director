@@ -113,6 +113,13 @@ import {
     toggleLocale,
 } from "./minimax_i18n.js";
 import { bindPackActions } from "./minimax_pack.js";
+import {
+    ADDGUIDE_STYLES,
+    sanitizeTimedAudioGuides,
+    sanitizeTimedGuides,
+    validateAddGuideExternalGroups,
+    validateAllAddGuideSegments,
+} from "./minimax_addguide.js";
 
 const RULER_H = 24;
 const SEG_LABEL_H = 20;
@@ -312,6 +319,7 @@ function sanitizeSegmentForPayload(seg) {
         previewFrames,
         previewMime,
         imageB64,
+        _selectedGuideId,
         ...rest
     } = seg;
     return {
@@ -319,6 +327,8 @@ function sanitizeSegmentForPayload(seg) {
         refs: Array.isArray(rest.refs) ? rest.refs.map(sanitizeRefImage) : [],
         refAudios: Array.isArray(rest.refAudios) ? rest.refAudios.map(sanitizeRefAudio) : [],
         refVideos: Array.isArray(rest.refVideos) ? rest.refVideos.map(sanitizeRefVideo) : [],
+        timedGuides: sanitizeTimedGuides(rest),
+        timedAudioGuides: sanitizeTimedAudioGuides(rest),
         genImage: rest.genImage
             ? { imageFile: rest.genImage.imageFile || "", fileName: rest.genImage.fileName || "" }
             : undefined,
@@ -1243,6 +1253,7 @@ const STYLES = `
 .bd-gen-fc-row{display:flex;align-items:center;gap:6px;margin-top:6px}
 ${IMAGE_BATCH_STYLES}
 ${FL2V_STYLES}
+${ADDGUIDE_STYLES}
 @media(max-width:768px){
 .bd-prompt-layout,.bd-prompt-layout.bd-rv2v-layout,.bd-prompt-layout.bd-v2v-layout,.bd-prompt-layout.bd-v2v-layout.bd-v2v-with-live{grid-template-columns:1fr}
 .bd-prompt-layout.bd-v2v-layout.bd-v2v-with-live>.bd-live-sample{order:3;min-height:160px}
@@ -2166,29 +2177,78 @@ class MiniMaxH3DirectorEditor {
     }
 
     updateExternalGroupsBanner() {
-        const el = this.externalGroupsMsgEl || this.root?.querySelector('[data-r="external-groups-msg"]');
-        if (!el) return;
+        const el = this.externalGroupsMsgEl
+            || this.root?.querySelector('[data-r="external-groups-msg"]');
+
         const i2v = this.hasExternalI2vGroups();
         const r2v = this.hasExternalR2vGroups();
-        const active = i2v || r2v;
+        const connected = i2v || r2v;
+
+        const taskKey = resolveTaskKey(
+            this.getTaskKey?.() || this.taskTypeWidget?.value,
+        );
+
+        const isAddGuide = taskKey === "addguide";
+
+        if (isAddGuide) {
+            if (el) {
+                el.textContent = "";
+                el.classList.add("hidden");
+            }
+
+            this.root?.classList.remove("bd-external-groups");
+
+            if (this.isR2vBatch?.()) setR2vToolbar(this, true);
+            else if (this.isFl2vMode?.()) setFl2vToolbar(this, true);
+            else {
+                updateR2vToolbarBtns(this);
+                updateFl2vToolbarBtns(this);
+            }
+
+            const notice = this.batchI2vNotice;
+            if (!notice) return;
+
+            if (connected) {
+                notice.textContent = t("batch.notice.addguideExternal");
+                notice.classList.add("visible");
+            } else {
+                notice.textContent = "";
+                notice.classList.remove("visible");
+            }
+
+            return;
+        }
+
+        if (!el) return;
+
+        const active = connected;
+
         el.classList.toggle("hidden", !active);
         this.root?.classList.toggle("bd-external-groups", active);
-        // Refresh add/delete visibility when external wiring toggles.
+
         if (this.isR2vBatch?.()) setR2vToolbar(this, true);
         else if (this.isFl2vMode?.()) setFl2vToolbar(this, true);
         else {
             updateR2vToolbarBtns(this);
             updateFl2vToolbarBtns(this);
         }
+
         if (!active) {
             el.textContent = "";
             return;
         }
+
         const specs = collectExternalGroupSpecs(this);
         const n = specs?.length || 0;
-        const base = i2v ? t("external.i2vActive") : t("external.r2vActive");
-        const count = n > 0 ? ` (${t("external.groupCount", { n })})` : "";
-        el.textContent = `${base}${count} ${t("external.durationHint")}`;
+        const base = i2v
+            ? t("external.i2vActive")
+            : t("external.r2vActive");
+        const count = n > 0
+            ? ` (${t("external.groupCount", { n })})`
+            : "";
+
+        el.textContent =
+            `${base}${count} ${t("external.durationHint")}`;
     }
 
     /**
@@ -2196,6 +2256,7 @@ class MiniMaxH3DirectorEditor {
      * widget so execution (and the next sync) don't revive stale graph text.
      */
     writeExternalGroupPrompt(segIndex, prompt) {
+        if (resolveTaskKey(this.getTaskKey?.() || this.taskTypeWidget?.value) === "addguide") return;
         if (!this.hasExternalI2vGroups?.() && !this.hasExternalR2vGroups?.()) return;
         const nodes = collectExternalGroupNodes(this);
         const node = nodes?.[segIndex];
@@ -2218,6 +2279,10 @@ class MiniMaxH3DirectorEditor {
     /** Mirror graph-wired Group count/duration into the Director timeline UI. */
     syncExternalGroupsTimeline() {
         this.updateExternalGroupsBanner();
+        if (resolveTaskKey(this.getTaskKey?.() || this.taskTypeWidget?.value) === "addguide") {
+            this._externalGroupsSyncSig = null;
+            return;
+        }
         // Keep any in-progress Director textarea edits before rebuilding from graph.
         if (this.isImageBatch?.()) flushBatchPromptInputs(this);
         if (this.isFl2vMode?.()) flushFl2vPromptDraft(this);
@@ -2595,8 +2660,12 @@ class MiniMaxH3DirectorEditor {
                         genImage: clean.genImage || { imageFile: "" },
                         startImage: clean.startImage || null,
                         endImage: clean.endImage || null,
+                        timedGuides: clean.timedGuides || [],
+                        timedAudioGuides: clean.timedAudioGuides || [],
                         // Persist per-segment「引用上段」(default true when unset).
-                        continuityFromPrev: isSegmentContinuityFromPrev(clean, i),
+                        continuityFromPrev: resolveSegmentTaskKey(clean, taskKey) === "addguide"
+                            ? false
+                            : isSegmentContinuityFromPrev(clean, i),
                         refImageSize: resolveSegmentRefImageSize(clean, this.timeline.output),
                     };
                 }),
@@ -2623,11 +2692,14 @@ class MiniMaxH3DirectorEditor {
                     prompt: this.timeline.global?.prompt || "",
                 },
                 output: normalizeOutputContinuity({ ...this.timeline.output }),
-                segments: this.timeline.segments.map((s) => {
+                segments: this.timeline.segments.map((s, i) => {
                 const clean = sanitizeSegmentForPayload(s);
                 return {
                     ...clean,
                     frameCount: clean.frameCount ?? clean.length,
+                    continuityFromPrev: resolveSegmentTaskKey(clean, taskKey) === "addguide"
+                        ? false
+                        : isSegmentContinuityFromPrev(clean, i),
                 };
             }),
             ...this._runSelectionPayload(),
@@ -4883,7 +4955,8 @@ class MiniMaxH3DirectorEditor {
             const del = this.root?.querySelector('[data-a="del"]');
             if (del) {
                 if (showBatchTrack) {
-                    const externalLocked = !!(this.hasExternalI2vGroups?.() || this.hasExternalR2vGroups?.());
+                    const externalLocked = this.getTaskKey() !== "addguide"
+                        && !!(this.hasExternalI2vGroups?.() || this.hasExternalR2vGroups?.());
                     if (externalLocked) {
                         del.classList.add("hidden");
                         del.disabled = true;
@@ -8297,10 +8370,13 @@ class MiniMaxH3DirectorEditor {
     }
 
     async chooseAudioInput(opts = {}) {
+        const allowVideo = opts.allowVideo !== false;
         const choice = await this.showInputMediaPicker({
-            kind: "reference_audio",
+            kind: allowVideo ? "reference_audio" : "audio",
             title: opts.title || t("mediaPicker.pickAudio"),
-            accept: "audio/*,video/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma,.mp4,.mov,.webm,.mkv,.avi,.m4v,.mpg,.mpeg,.mts,.ts",
+            accept: allowVideo
+                ? "audio/*,video/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma,.mp4,.mov,.webm,.mkv,.avi,.m4v,.mpg,.mpeg,.mts,.ts"
+                : "audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma",
             currentValue: opts.currentValue || "",
         });
         if (!choice) return null;
@@ -8626,6 +8702,10 @@ class MiniMaxH3DirectorEditor {
         for (let r = 1; r < ordered.length; r++) {
             const left = ordered[r - 1];
             const right = ordered[r];
+            const globalTaskKey = resolveTaskKey(
+                this.getTaskKey?.() || this.taskTypeWidget?.value || "",
+            );
+            if (resolveSegmentTaskKey(right.seg, globalTaskKey) === "addguide") continue;
             const leftEnd = (left.seg.start || 0) + (left.seg.length || 0);
             if (Math.abs(leftEnd - (right.seg.start || 0)) > 2) continue;
             joints.push({
@@ -8741,6 +8821,13 @@ class MiniMaxH3DirectorEditor {
         if (!(rightIndex > 0)) return;
         const seg = this.timeline.segments?.[rightIndex];
         if (!seg) return;
+        const globalTaskKey = resolveTaskKey(
+            this.getTaskKey?.() || this.taskTypeWidget?.value || "",
+        );
+        if (resolveSegmentTaskKey(seg, globalTaskKey) === "addguide") {
+            seg.continuityFromPrev = false;
+            return;
+        }
         const next = !isSegmentContinuityFromPrev(seg, rightIndex);
         seg.continuityFromPrev = next;
         if (this.isFl2vMode()) {
@@ -12592,6 +12679,20 @@ app.registerExtension({
             const orig = app.queuePrompt.bind(app);
             app.queuePrompt = function (...args) {
                 flushDirectors();
+                const graph = app.graph ?? app.canvas?.graph;
+                const errors = [];
+                for (const node of graph?._nodes ?? graph?.nodes ?? []) {
+                    const editor = node._minimaxEditor;
+                    if (editor) {
+                        errors.push(...validateAddGuideExternalGroups(editor));
+                        errors.push(...validateAllAddGuideSegments(editor));
+                    }
+                }
+                if (errors.length) {
+                    const message = errors.join("\n");
+                    alert(message);
+                    return Promise.reject(new Error(message));
+                }
                 clearAllDirectorRunStatus();
                 return orig(...args);
             };
@@ -12885,4 +12986,3 @@ app.registerExtension({
         };
     },
 });
-

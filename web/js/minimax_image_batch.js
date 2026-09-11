@@ -39,9 +39,15 @@ import { refreshPromptTokenEditors, teardownPromptImageMentions, wirePromptImage
 import { t } from "./minimax_i18n.js";
 import { createFl2vSlotPair, normalizeImageRef } from "./minimax_fl2v.js";
 import {
+    appendAddGuideEditor,
+    getAddGuidePromptMentions,
+    normalizeAddGuideSegment,
+} from "./minimax_addguide.js";
+import {
     hasDuplicateReferenceAudio,
     isReferenceAudioSourceFile,
     prepareLocalReferenceAudio,
+    probePreparedAudioDuration,
 } from "./minimax_ref_audio.js";
 
 const _players = new WeakMap();
@@ -891,6 +897,10 @@ export function normalizeImageBatchSegments(editor) {
         if (taskKey === "r2v" || resolveSegmentTaskKey(seg, taskKey) === "r2v") {
             seg.refImageSize = resolveSegmentRefImageSize(seg, editor.timeline?.output);
         }
+        if (resolveSegmentTaskKey(seg, taskKey) === "addguide") {
+            normalizeAddGuideSegment(seg);
+            seg.continuityFromPrev = false;
+        }
         if (!seg.id) seg.id = newBatchSegment().id;
         start += fc;
     }
@@ -899,8 +909,10 @@ export function normalizeImageBatchSegments(editor) {
 }
 
 export function addImageBatchGroup(editor) {
-    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
+    const externalLocked = taskKey !== "addguide"
+        && (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
+    if (externalLocked) return;
     const prev = editor.timeline.segments?.[editor.timeline.segments.length - 1];
     const followType = taskKey === "mixed"
         ? resolveSegmentTaskKey(prev, taskKey)
@@ -920,7 +932,8 @@ export function addImageBatchGroup(editor) {
 }
 
 export function deleteImageBatchGroup(editor, index) {
-    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
+    const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
+    if (taskKey !== "addguide" && (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.())) return;
     if (editor.timeline.segments.length <= 1) return;
     // Persist drafts while DOM still matches the current array, then splice.
     flushBatchPromptInputs(editor);
@@ -1012,6 +1025,14 @@ function applyBatchSegmentTaskType(editor, index, nextKey) {
     }
     if (key === "i2v" && !live.genImage?.imageFile && live.startImage?.imageFile) {
         live.genImage = { ...live.startImage };
+    }
+    if (key === "addguide") {
+        live.startImage = normalizeImageRef(live.startImage)
+            || normalizeImageRef(live.genImage)
+            || null;
+        live.endImage = normalizeImageRef(live.endImage) || null;
+        normalizeAddGuideSegment(live);
+        live.continuityFromPrev = false;
     }
     editor.commit?.(false, { syncTimeline: true });
     editor.flushTimelineSync?.();
@@ -1112,6 +1133,119 @@ function bindMixedFl2vSlots(slotsEl, editor, index) {
             e.stopPropagation();
         };
     });
+}
+
+function applyAddGuideImage(editor, index, kind, guideId, ref) {
+    const seg = editor.timeline.segments?.[index];
+    if (!seg) return;
+    normalizeAddGuideSegment(seg);
+    const normalizedBase = normalizeImageRef(ref);
+    const normalized = normalizedBase ? { ...(ref || {}), ...normalizedBase } : null;
+    if (kind === "start") {
+        seg.startImage = normalized;
+        seg.genImage = normalized ? { ...normalized } : { imageFile: "" };
+    } else if (kind === "end") {
+        seg.endImage = normalized;
+    } else {
+        const guide = seg.timedGuides.find((item) => item.id === guideId);
+        if (guide) guide.image = normalized;
+    }
+    editor.commit?.(true, { syncTimeline: true });
+    editor.flushTimelineSync?.();
+    editor.renderImageBatchGroups?.();
+    editor.scheduleRender?.();
+}
+
+function uploadAddGuideImage(editor, index, kind, guideId) {
+    pickFile("image/*,.jpg,.jpeg,.png,.webp,.bmp,.gif", async (file) => {
+        try {
+            if (!isBatchImageFile(file)) throw new Error("Not an image file");
+            const uploaded = await uploadImage(file);
+            const imageFile = relPath(uploaded);
+            if (!imageFile) throw new Error("Upload returned empty filename");
+            let dims = { width: 0, height: 0 };
+            try { dims = await readImageDimensions(file); } catch { /* optional */ }
+            applyAddGuideImage(editor, index, kind, guideId, { imageFile, ...dims });
+        } catch (err) {
+            console.error("[MiniMax H3Director] AddGuide upload failed:", err);
+            alert(t("upload.alertFailed", { err: err?.message || err }));
+        }
+    });
+}
+
+async function pickAddGuideImage(editor, index, kind, guideId) {
+    try {
+        const seg = editor.timeline.segments?.[index];
+        normalizeAddGuideSegment(seg);
+        const current = kind === "start"
+            ? seg?.startImage?.imageFile
+            : (kind === "end"
+                ? seg?.endImage?.imageFile
+                : seg?.timedGuides?.find((item) => item.id === guideId)?.image?.imageFile);
+        const picked = await editor.chooseImageInput({
+            title: t("addguide.chooseImage"),
+            currentValue: current || "",
+        });
+        if (!picked?.imageFile) return;
+        applyAddGuideImage(editor, index, kind, guideId, picked);
+    } catch (err) {
+        console.error("[MiniMax H3Director] AddGuide existing-image pick failed:", err);
+        alert(t("upload.alertFailed", { err: err?.message || err }));
+    }
+}
+
+function applyAddGuideAudio(editor, index, guideId, prepared) {
+    const seg = editor.timeline.segments?.[index];
+    if (!seg) return;
+    normalizeAddGuideSegment(seg);
+    const guide = seg.timedAudioGuides.find((item) => item.id === guideId);
+    if (!guide) return;
+    const rel = String(prepared?.relPath || prepared?.audioFile || "").replace(/\\/g, "/");
+    if (!rel) return;
+    guide.audio = {
+        audioFile: rel,
+        fileName: prepared.fileName || rel.split("/").pop() || rel,
+        type: prepared.type || "input",
+        subfolder: prepared.subfolder || "",
+        durationSec: Math.max(0, Number(prepared.durationSec) || 0),
+    };
+    editor.commit?.(true, { syncTimeline: true });
+    editor.flushTimelineSync?.();
+    editor.renderImageBatchGroups?.();
+    editor.scheduleRender?.();
+}
+
+function uploadAddGuideAudio(editor, index, guideId) {
+    pickFile("audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.wma", async (file) => {
+        try {
+            if (!isReferenceAudioSourceFile(file)) throw new Error(t("addguide.error.audioFile"));
+            const prepared = await prepareLocalReferenceAudio(file);
+            prepared.durationSec = await probePreparedAudioDuration(prepared);
+            applyAddGuideAudio(editor, index, guideId, prepared);
+        } catch (err) {
+            console.error("[MiniMax H3Director] Audio Guide upload failed:", err);
+            alert(t("upload.refAudioFailed", { err: err?.message || err }));
+        }
+    });
+}
+
+async function pickAddGuideAudio(editor, index, guideId) {
+    try {
+        const seg = editor.timeline.segments?.[index];
+        normalizeAddGuideSegment(seg);
+        const current = seg?.timedAudioGuides?.find((item) => item.id === guideId)?.audio?.audioFile;
+        const picked = await editor.chooseAudioInput({
+            title: t("addguide.chooseAudio"),
+            currentValue: current || "",
+            allowVideo: false,
+        });
+        if (!picked?.relPath) return;
+        picked.durationSec = await probePreparedAudioDuration(picked);
+        applyAddGuideAudio(editor, index, guideId, picked);
+    } catch (err) {
+        console.error("[MiniMax H3Director] Audio Guide existing-audio pick failed:", err);
+        alert(t("upload.refAudioFailed", { err: err?.message || err }));
+    }
 }
 
 function applySegSourceImage(editor, index, imageFile, width = 0, height = 0) {
@@ -2437,7 +2571,8 @@ export function renderImageBatchGroups(editor) {
             ? t(hintKey)
             : t(isVideo ? "batch.hint.defaultVideo" : "batch.hint.defaultImage");
     }
-    const externalLocked = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
+    const externalConnected = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
+    const externalLocked = key !== "addguide" && externalConnected;
     if (editor.batchI2vNotice) {
         const needsRefs = key === "r2i" || key === "r2v";
         const global = editor.timeline.global || {};
@@ -2456,8 +2591,10 @@ export function renderImageBatchGroups(editor) {
         ));
         // External graph media may exist as tensors even when UI path sync failed —
         // don't scare users with a false "will degrade to t2v" notice.
-        if (key === "mixed" && externalLocked) {
-            editor.batchI2vNotice.textContent = t("batch.notice.mixedExternal");
+        if ((key === "mixed" || key === "addguide") && externalConnected) {
+            editor.batchI2vNotice.textContent = t(
+                key === "addguide" ? "batch.notice.addguideExternal" : "batch.notice.mixedExternal",
+            );
             editor.batchI2vNotice.classList.add("visible");
         } else if (needsRefs && !hasAnyMedia && !externalLocked) {
             editor.batchI2vNotice.textContent = t(key === "r2v" ? "batch.notice.r2vNoRefs" : "batch.notice.r2iNoRefs");
@@ -2507,12 +2644,14 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         const { runningIdx, fps, externalLocked } = ctx;
         const isR2v = key === "r2v";
         const isFl2v = key === "fl2v";
+        const isAddGuide = key === "addguide";
         const card = document.createElement("div");
         const layoutClass = isR2v
             ? "bd-batch-r2v"
-            : (isFl2v ? "bd-batch-fl2v"
-                : (variant === "source" ? "bd-batch-source"
-                    : (variant === "refs" ? "bd-batch-refs" : "bd-batch-plain")));
+            : (isAddGuide ? "bd-batch-addguide"
+                : (isFl2v ? "bd-batch-fl2v"
+                    : (variant === "source" ? "bd-batch-source"
+                        : (variant === "refs" ? "bd-batch-refs" : "bd-batch-plain"))));
         card.className = `bd-batch-card ${layoutClass}`;
         card.dataset.batchIndex = String(index);
         const runSelectOn = !!(editor.isRunSelectEnabled?.() && editor.supportsRunSelect?.());
@@ -2523,7 +2662,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         if (runSelectOn && runEnabled) card.classList.add("run-on");
         if (runSelectOn && !runEnabled) card.classList.add("run-skipped");
         card.onclick = (e) => {
-            if (e.target.closest?.("button, input, textarea, select, .bd-batch-ref, .bd-batch-audio, .bd-batch-video, .bd-batch-src, .bd-r2v-section, .bd-r2v-play, .bd-fl2v-slot, .bd-fl2v-slot-wrap, .x, video, audio")) {
+            if (e.target.closest?.('button, input, textarea, select, [contenteditable="true"], .bd-token-wrap, .bd-token-editor, .bd-batch-ref, .bd-batch-audio, .bd-batch-video, .bd-batch-src, .bd-r2v-section, .bd-r2v-play, .bd-fl2v-slot, .bd-fl2v-slot-wrap, .x, video, audio')) {
                 return;
             }
             selectBatchGroup(editor, index);
@@ -2576,7 +2715,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         }
         // Per-segment continuity (master「段间引导」must be on; skip segment 1).
         const masterCont = isContinuityMasterEnabled(editor.timeline?.output);
-        if (masterCont && index > 0 && isVideo) {
+        if (masterCont && index > 0 && isVideo && !isAddGuide) {
             const contLabel = document.createElement("label");
             contLabel.className = "bd-batch-continuity";
             contLabel.title = t("tooltip.segmentContinuityFromPrev");
@@ -2686,6 +2825,17 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                     secInput._t = null;
                     secFocused = false;
                     applySec();
+                    if (isAddGuide) editor.renderImageBatchGroups?.();
+                };
+                secInput.onkeydown = (event) => {
+                    event.stopPropagation();
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    clearTimeout(secInput._t);
+                    secInput._t = null;
+                    secFocused = false;
+                    applySec();
+                    if (isAddGuide) editor.renderImageBatchGroups?.();
                 };
             }
             meta.appendChild(secRow);
@@ -2706,7 +2856,14 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         head.appendChild(meta);
         card.appendChild(head);
 
-        if (isFl2v) {
+        if (isAddGuide) {
+            appendAddGuideEditor(card, editor, seg, index, {
+                upload: (kind, guideId) => uploadAddGuideImage(editor, index, kind, guideId),
+                pick: (kind, guideId) => void pickAddGuideImage(editor, index, kind, guideId),
+                uploadAudio: (guideId) => uploadAddGuideAudio(editor, index, guideId),
+                pickAudio: (guideId) => void pickAddGuideAudio(editor, index, guideId),
+            });
+        } else if (isFl2v) {
             const media = document.createElement("div");
             media.className = "bd-batch-media";
             const slots = createFl2vSlotPair({
@@ -2827,18 +2984,32 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                         : (live.refVideos || []),
                 };
             });
+        } else if (isAddGuide) {
+            wirePromptImageMentions(editor, promptEl, () => {
+                const live = (editor.timeline.segments || []).find((s) => s?.id && s.id === segId)
+                    || editor.timeline.segments?.[segIndex]
+                    || seg;
+                return {
+                    mentions: getAddGuidePromptMentions(live),
+                    mentionTitle: t("addguide.mentionTitle"),
+                    mentionEmpty: t("addguide.mentionEmpty"),
+                };
+            });
         }
 
-        const preview = document.createElement("div");
-        preview.className = "bd-batch-preview";
-        renderPreview(preview, seg, index === runningIdx, isVideo, seg.previewFps || fps, editor);
+        let preview = null;
+        if (!isAddGuide) {
+            preview = document.createElement("div");
+            preview.className = "bd-batch-preview";
+            renderPreview(preview, seg, index === runningIdx, isVideo, seg.previewFps || fps, editor);
+        }
 
         if (isR2v && r2vMain) {
             r2vMain.appendChild(prompts);
-            r2vMain.appendChild(preview);
+            if (preview) r2vMain.appendChild(preview);
         } else {
             card.appendChild(prompts);
-            card.appendChild(preview);
+            if (preview) card.appendChild(preview);
         }
 
         list.appendChild(card);
@@ -2928,9 +3099,10 @@ export function getImageBatchUiHeight(editor) {
     const key = resolveTaskKey(editor?.getTaskKey?.() || editor?.taskTypeWidget?.value);
     const segs = editor?.timeline?.segments || [];
     const anyR2v = key === "r2v" || (key === "mixed" && segs.some((s) => resolveSegmentTaskKey(s, key) === "r2v"));
+    const anyAddGuide = key === "addguide" || (key === "mixed" && segs.some((s) => resolveSegmentTaskKey(s, key) === "addguide"));
     // r2v cards are tall; list scrolls inside BATCH_LIST_MAX_H — do NOT sum full card
     // heights into node size or the DOM widget grows a huge empty region below.
-    const rowH = anyR2v ? 420 : (key === "mixed" ? 200 : (isVideoBatchTask(key) ? 155 : 130));
+    const rowH = (anyR2v || anyAddGuide) ? 440 : (key === "mixed" ? 200 : (isVideoBatchTask(key) ? 155 : 130));
     const showPicker = solo && (editor?.timeline?.segments?.length || 0) > 1 && !editor?.usesBatchTimeline?.();
     const pickerH = showPicker ? 56 : 0;
     const listContentH = n * rowH + Math.max(0, n - 1) * BATCH_LIST_GAP + pickerH;
@@ -3276,7 +3448,9 @@ export function setR2vToolbar(editor, enabled) {
     editor.root?.querySelector('[data-r="equal-n"]')?.classList.toggle("hidden", enabled);
     editor.root?.querySelector(".bd-mode")?.classList.toggle("hidden", enabled);
 
-    const externalLocked = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
+    const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
+    const externalLocked = taskKey !== "addguide"
+        && !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
     const del = editor.root?.querySelector('[data-a="del"]');
     if (del) {
         if (externalLocked) {

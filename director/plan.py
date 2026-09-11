@@ -35,6 +35,7 @@ from .gen_timeline import (
     build_gen_director_plan,
     is_gen_timeline,
 )
+from .timed_guides import H3_NATIVE_FPS, SegmentTimedAudioGuide, SegmentTimedGuide
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director")
 
@@ -177,6 +178,8 @@ class SegmentPlan:
     ref_audios: list[SegmentRefAudio] = field(default_factory=list)
     ref_videos: list[SegmentRefVideo] = field(default_factory=list)
     ref_video_audios: list[SegmentRefAudio] = field(default_factory=list)
+    timed_guides: list[SegmentTimedGuide] = field(default_factory=list)
+    timed_audio_guides: list[SegmentTimedAudioGuide] = field(default_factory=list)
     reference_video_meta: dict = field(default_factory=dict)
     reference_video_start_frame: int = 0
     negative_prompt: str = ""
@@ -1029,12 +1032,16 @@ def plan_summary(plan: DirectorPlan) -> str:
             pinned = [
                 seg.index + 1
                 for seg in plan.segments
-                if seg.index > 0 and getattr(seg, "continuity_from_prev", True)
+                if seg.index > 0
+                and seg.task_key != "addguide"
+                and getattr(seg, "continuity_from_prev", True)
             ]
             skipped_pin = [
                 seg.index + 1
                 for seg in plan.segments
-                if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
+                if seg.index > 0
+                and seg.task_key != "addguide"
+                and not getattr(seg, "continuity_from_prev", True)
             ]
             keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
             lines.append(
@@ -1050,7 +1057,9 @@ def plan_summary(plan: DirectorPlan) -> str:
                 )
         for seg in plan.segments:
             pin_note = ""
-            if plan.continuity_enabled and seg.index > 0:
+            if seg.task_key == "addguide":
+                pin_note = " — continuity disabled for addguide"
+            elif plan.continuity_enabled and seg.index > 0:
                 pin_note = (
                     " — pin←prev"
                     if getattr(seg, "continuity_from_prev", True)
@@ -1061,6 +1070,44 @@ def plan_summary(plan: DirectorPlan) -> str:
                 f"{seg.frame_count}f — {seg.task_key}{pin_note} — "
                 f"{seg.prompt[:60]}{'…' if len(seg.prompt) > 60 else ''}"
             )
+            if seg.task_key == "addguide":
+                guides = list(getattr(seg, "timed_guides", None) or [])
+                audio_guides = list(getattr(seg, "timed_audio_guides", None) or [])
+                frames = ", ".join(f"F{guide.frame_index}" for guide in guides) or "none"
+                times = ", ".join(
+                    f"{guide.frame_index / H3_NATIVE_FPS:.3f}s" for guide in guides
+                ) or "none"
+                has_first = any(int(getattr(ref, "index", -1)) == 0 for ref in seg.refs)
+                has_last = any(int(getattr(ref, "index", -1)) == 1 for ref in seg.refs)
+                lines.append(
+                    f"     frames: {seg.frame_count}; first_frame: {'yes' if has_first else 'no'}; "
+                    f"last_frame: {'yes' if has_last else 'no'}; timed_guides: {len(guides)}"
+                )
+                lines.append(f"     guide_frames: {frames}; guide_times: {times}")
+                if audio_guides:
+                    ordered_audio = sorted(
+                        audio_guides,
+                        key=lambda guide: (int(guide.frame_index), str(guide.id)),
+                    )
+                    for audio_index, guide in enumerate(ordered_audio, 1):
+                        source = float(getattr(guide, "source_duration_sec", 0.0) or 0.0)
+                        next_frame = (
+                            ordered_audio[audio_index].frame_index
+                            if audio_index < len(ordered_audio)
+                            else None
+                        )
+                        from .timed_guides import audio_guide_effective_duration
+                        effective = audio_guide_effective_duration(
+                            guide,
+                            next_frame_index=next_frame,
+                            frame_count=seg.frame_count,
+                        )
+                        lines.append(
+                            f"     AG{audio_index}: F{guide.frame_index} "
+                            f"({guide.frame_index / H3_NATIVE_FPS:.3f}s); "
+                            f"source={guide.audio_file or 'missing'}; "
+                            f"duration={source:.3f}s; effective={effective:.3f}s"
+                        )
         return "\n".join(lines)
 
     mode_label = (

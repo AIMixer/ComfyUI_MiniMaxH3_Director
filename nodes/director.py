@@ -5,6 +5,11 @@ from __future__ import annotations
 import comfy.samplers
 
 from ..director.executor_core import execute_director_plan_core
+from ..director.external_groups import (
+    ADDGUIDE_EXTERNAL_GROUP_ERROR,
+    connected_external_group_inputs,
+)
+from ..lib.task_prompts import resolve_task_key
 from .director_common import (
     finalize_director_outputs,
     prepare_director_plan,
@@ -61,7 +66,7 @@ class MiniMaxH3Director:
                 ),
                 "audio_vae": (
                     "VAE",
-                    {"tooltip": "MiniMax H3 audio VAE (minimax_h3_audio_vae). Required for r2v / v2v / rv2v."},
+                    {"tooltip": "MiniMax H3 audio VAE (minimax_h3_audio_vae). Required for r2v / v2v / rv2v and AddGuide audio guides."},
                 ),
                 "clip": (
                     "CLIP",
@@ -73,6 +78,7 @@ class MiniMaxH3Director:
                 "i2v_groups": (
                     "MMX_DIR_GROUP",
                     {
+                        "lazy": True,
                         "tooltip": (
                             "External Image to Video group(s) (t2v / i2v / fl2v). "
                             "When connected, overrides UI cards for execution (external priority). "
@@ -83,6 +89,7 @@ class MiniMaxH3Director:
                 "r2v_groups": (
                     "MMX_DIR_GROUP",
                     {
+                        "lazy": True,
                         "tooltip": (
                             "External Reference to Video group(s). "
                             "When connected, overrides UI cards for execution (external priority). "
@@ -155,8 +162,26 @@ class MiniMaxH3Director:
                     },
                 ),
             },
-            "hidden": {"unique_id": "UNIQUE_ID"},
+            "hidden": {"unique_id": "UNIQUE_ID", "prompt": "PROMPT"},
         }
+
+    def check_lazy_status(
+        self,
+        task_type,
+        prompt=None,
+        unique_id=None,
+        i2v_groups=None,
+        r2v_groups=None,
+        **_kwargs,
+    ):
+        if resolve_task_key(task_type) == "addguide":
+            return []
+        values = {"i2v_groups": i2v_groups, "r2v_groups": r2v_groups}
+        return [
+            name
+            for name in connected_external_group_inputs(prompt, unique_id)
+            if values[name] is None
+        ]
 
     @classmethod
     def VALIDATE_INPUTS(cls, input_types=None, **_kwargs):
@@ -194,7 +219,7 @@ class MiniMaxH3Director:
     DESCRIPTION = (
         "MiniMax H3 Director: MiniMaxH3ImageToVideo / ReferenceToVideo conditioning, "
         "single-stage KSampler + MiniMaxH3SigmaShift, LTXVSeparateAVLatent decode. "
-        "Supports t2v / i2v / fl2v / r2v / v2v / rv2v. "
+        "Supports t2v / i2v / fl2v / addguide / r2v / v2v / rv2v / mixed. "
         "Optional i2v_groups / r2v_groups accept multi-group packs from Director Group nodes "
         "(external priority over UI cards). Optional refine accepts MiniMax H3 Director Refine "
         "(second sample / upscale). images_pre_refine is the first-pass video before refine. "
@@ -216,6 +241,7 @@ class MiniMaxH3Director:
         total_frames,
         timeline_data,
         unique_id=None,
+        prompt=None,
         i2v_groups=None,
         r2v_groups=None,
         refine=None,
@@ -232,6 +258,12 @@ class MiniMaxH3Director:
         **kwargs,
     ):
         del kwargs
+
+        if (
+            resolve_task_key(task_type) == "addguide"
+            and connected_external_group_inputs(prompt, unique_id)
+        ):
+            raise ValueError(ADDGUIDE_EXTERNAL_GROUP_ERROR)
 
         plan = prepare_director_plan(
             timeline_data=timeline_data,

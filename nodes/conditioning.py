@@ -52,6 +52,18 @@ def _load_minimax_nodes():
     return MiniMaxH3ImageToVideo, MiniMaxH3ReferenceToVideo
 
 
+def _load_minimax_addguide_node():
+    """Load AddGuide only when that task is executed (older ComfyUI stays usable)."""
+    try:
+        from comfy_extras.nodes_minimax_h3 import MiniMaxH3AddGuide
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError(
+            "MiniMax H3 AddGuide requires a ComfyUI version that provides "
+            "MiniMaxH3AddGuide. Please update ComfyUI."
+        ) from exc
+    return MiniMaxH3AddGuide
+
+
 def _unpack_positive_latent(out):
     args = None
     if hasattr(out, "args"):
@@ -61,6 +73,148 @@ def _unpack_positive_latent(out):
     if args and len(args) >= 2:
         return args[0], args[1]
     raise RuntimeError(f"MiniMax H3 conditioning returned unexpected output: {type(out)!r}")
+
+
+def _unpack_positive(out):
+    args = out.args if hasattr(out, "args") else out
+    if isinstance(args, (tuple, list)) and args:
+        return args[0]
+    raise RuntimeError(f"MiniMax H3 AddGuide returned unexpected output: {type(out)!r}")
+
+
+def apply_minimax_timed_guides(
+    positive,
+    latent,
+    *,
+    vae,
+    timed_guides,
+    audio_vae=None,
+    timed_audio_guides=None,
+    frame_count=None,
+    audio_cache=None,
+):
+    """Apply picture/audio guides in frame order, coalescing same-frame AV guides."""
+
+    guides = sorted(
+        list(timed_guides or []),
+        key=lambda guide: (
+            int(getattr(guide, "frame_index", 0)),
+            str(getattr(guide, "id", "")),
+        ),
+    )
+    audio_guides = sorted(
+        list(timed_audio_guides or []),
+        key=lambda guide: (
+            int(getattr(guide, "frame_index", 0)),
+            str(getattr(guide, "id", "")),
+        ),
+    )
+
+    if not guides and not audio_guides:
+        return positive
+
+    if audio_guides and audio_vae is None:
+        raise ValueError("Audio Guide requires the Director audio_vae input.")
+
+    prepared_audio = {}
+
+    if audio_guides:
+        from ..lib.audio_io import load_reference_audio
+        from ..director.timed_guides import (
+            audio_guide_effective_duration,
+            trim_audio_guide,
+        )
+
+        count = int(frame_count or 0)
+
+        for index, guide in enumerate(audio_guides):
+            frame_index = int(guide.frame_index)
+
+            audio = getattr(guide, "audio", None)
+            if not isinstance(audio, dict) or audio.get("waveform") is None:
+                audio = load_reference_audio(
+                    str(getattr(guide, "audio_path", "") or ""),
+                    cache=audio_cache,
+                )
+                guide.audio = audio
+
+            if isinstance(audio, dict) and audio.get("waveform") is not None:
+                sample_rate = int(audio.get("sample_rate") or 0)
+                if sample_rate > 0:
+                    guide.source_duration_sec = (
+                        float(audio["waveform"].shape[-1]) / sample_rate
+                    )
+
+            next_frame = (
+                int(audio_guides[index + 1].frame_index)
+                if index + 1 < len(audio_guides)
+                else None
+            )
+
+            effective = audio_guide_effective_duration(
+                guide,
+                next_frame_index=next_frame,
+                frame_count=count,
+            )
+            guide.effective_duration_sec = effective
+
+            prepared_audio[frame_index] = trim_audio_guide(
+                audio,
+                effective,
+            )
+
+    by_frame = {}
+
+    for guide in guides:
+        frame_index = int(guide.frame_index)
+        slot = by_frame.setdefault(frame_index, {})
+
+        if "image" in slot:
+            raise ValueError(
+                f"More than one Picture Guide resolved to F{frame_index}."
+            )
+
+        slot["image"] = guide.tensor
+
+    for guide in audio_guides:
+        frame_index = int(guide.frame_index)
+        slot = by_frame.setdefault(frame_index, {})
+
+        if "audio" in slot:
+            raise ValueError(
+                f"More than one Audio Guide resolved to F{frame_index}."
+            )
+
+        slot["audio"] = prepared_audio[frame_index]
+
+    MiniMaxH3AddGuide = _load_minimax_addguide_node()
+    guided = positive
+
+    for frame_index in sorted(by_frame):
+        slot = by_frame[frame_index]
+
+        kwargs = {}
+
+        image = slot.get("image")
+        if image is not None:
+            kwargs["vae"] = vae
+            kwargs["image"] = image
+
+        audio = slot.get("audio")
+        if audio is not None:
+            kwargs["audio_vae"] = audio_vae
+            kwargs["audio"] = audio
+
+        guided = _unpack_positive(
+            MiniMaxH3AddGuide.execute(
+                guided,
+                latent,
+                frame_index,
+                **kwargs,
+            )
+        )
+
+    return guided
 
 
 def _reference_images_dict_from_kwargs(kwargs: dict) -> dict | None:

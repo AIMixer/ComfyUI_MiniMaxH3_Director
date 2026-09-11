@@ -10,6 +10,7 @@ class MiniMaxH3Task(str, Enum):
     T2V = "t2v"
     I2V = "i2v"
     FL2V = "fl2v"
+    ADD_GUIDE = "addguide"
     R2V = "r2v"
     V2V = "v2v"
     RV2V = "rv2v"
@@ -19,6 +20,7 @@ TASK_DESCRIPTIONS = {
     MiniMaxH3Task.T2V: "Text-to AV (no keyframes or references)",
     MiniMaxH3Task.I2V: "Image-to AV — first keyframe conditioning",
     MiniMaxH3Task.FL2V: "First+last keyframe AV",
+    MiniMaxH3Task.ADD_GUIDE: "Timed image guides in one ImageToVideo sampling",
     MiniMaxH3Task.R2V: "Reference-to AV — subject images (+ optional tags) in prompt",
     MiniMaxH3Task.V2V: "Video edit — source timeline clip as <Video 1> reference",
     MiniMaxH3Task.RV2V: "Video edit with reference images — source <Video 1> + <Picture N>",
