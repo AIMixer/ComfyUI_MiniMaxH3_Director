@@ -496,7 +496,40 @@ def install_continue_prefix_remask(model, latent: dict, sigmas) -> Any:
                 )
         except Exception as exc:
             log.debug("Director continue: APPLY_MODEL wrapper skipped (%s).", exc)
+        try:
+            setattr(patched, "_director_continue_remask", state)
+        except Exception:
+            pass
         return patched
     except Exception as exc:
         log.warning("Director continue: prefix remask not installed (%s); static mask only.", exc)
         return model
+
+
+def uninstall_continue_prefix_remask(model) -> None:
+    """Drop per-sample remask hooks so the clone can be collected after sampling."""
+    if model is None:
+        return
+    state = getattr(model, "_director_continue_remask", None)
+    if state is not None:
+        try:
+            state.current_video_mask = None
+        except Exception:
+            pass
+        try:
+            delattr(model, "_director_continue_remask")
+        except Exception:
+            pass
+    try:
+        options = getattr(model, "model_options", None)
+        if isinstance(options, dict):
+            options.pop("denoise_mask_function", None)
+    except Exception:
+        pass
+    try:
+        from comfy.patcher_extension import WrappersMP
+
+        if callable(getattr(model, "remove_wrappers_with_key", None)):
+            model.remove_wrappers_with_key(WrappersMP.APPLY_MODEL, _WRAPPER_KEY)
+    except Exception:
+        pass

@@ -12,7 +12,7 @@ import torch
 from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge, limit_ref_image_dict
 from ..lib.task_modes import SUPPORTED_TASK_KEYS
 from ..nodes.conditioning import run_minimax_conditioning
-from .core_sampling import sample_single_stage
+from .core_sampling import ShiftedModelCache, sample_single_stage
 from .refine_pack import (
     confirm_first_pass_enabled,
     first_pass_sigmas_override,
@@ -476,6 +476,7 @@ def execute_director_plan_core(
         reports.append("Live preview: ON — 采样中 TAE 动态预览（成片看下游 CreateVideo / SaveVideo）。")
     else:
         reports.append("Live preview: OFF — 跳过采样预览。")
+    shift_cache = ShiftedModelCache()
     if clear_vram_between_segments:
         reports.append("VRAM: 段间清理显存已开启（最后一段不清理）。")
     if audio_mode == AUDIO_MODE_MUTE:
@@ -1122,6 +1123,7 @@ def execute_director_plan_core(
                 on_step_preview=_report_step_preview if live_tae_preview else None,
                 preview_every=1,
                 after_shift=after_shift,
+                shift_cache=shift_cache,
             )
 
         first_pass_samples = samples
@@ -1254,6 +1256,7 @@ def execute_director_plan_core(
                 prev_refine_av=completed_av_latents.get(prev_idx) if prev_idx >= 0 else None,
                 prev_end_frame=prev_end_frame,
                 prev_tail=prev_tail,
+                shift_cache=shift_cache,
             )
         elif hold_after_first:
             refine_note = (
@@ -1650,6 +1653,9 @@ def execute_director_plan_core(
             if same_as_final
             else concat_continuous_chunks(pre_source, export_segments, plan)
         )
+    shift_cache.clear()
+    if clear_vram_between_segments:
+        cleanup_segment_vram(enabled=True, unload_models=False)
     return (
         combined,
         segment_outputs,

@@ -581,6 +581,7 @@ def apply_segment_refine(
     prev_refine_av=None,
     prev_end_frame: int | None = None,
     prev_tail: torch.Tensor | None = None,
+    shift_cache=None,
 ) -> tuple[dict, str]:
     """Run optional refine/upscale second sample. Never raises — returns first-pass on failure.
 
@@ -791,6 +792,7 @@ def apply_segment_refine(
                 enable_tiling=bool(pack.get("enable_tiling", False)),
                 tile_count=int(pack.get("tile_count") or 2),
                 tile_overlap=int(pack.get("tile_overlap") or 128),
+                shift_cache=shift_cache,
             )
             last_ok = work
             if on_pass is not None:
