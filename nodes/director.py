@@ -229,6 +229,9 @@ class MiniMaxH3Director:
         shift_audio=3.0,
         clear_vram_between_segments=True,
         export_source_images=False,
+        clear_ram_between_segments=False,
+        offload_segments_to_disk=False,
+        save_group_videos=False,
         **kwargs,
     ):
         del kwargs
@@ -266,6 +269,9 @@ class MiniMaxH3Director:
                     shift_video=shift_video,
                     shift_audio=shift_audio,
                     clear_vram_between_segments=clear_vram_between_segments,
+                    clear_ram_between_segments=clear_ram_between_segments,
+                    offload_segments_to_disk=offload_segments_to_disk,
+                    save_group_videos=save_group_videos,
                 )
             )
 

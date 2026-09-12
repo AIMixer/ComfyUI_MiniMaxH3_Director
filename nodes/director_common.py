@@ -99,6 +99,53 @@ def director_perf_inputs() -> dict:
                 ),
             },
         ),
+        "clear_ram_between_segments": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "段间清理内存：每段采样前卸载模型，"
+                    "并执行与 RAM-Cleanup 节点相同的系统内存清理（文件缓存 + 各进程工作集）。"
+                ),
+            },
+        ),
+        "offload_segments_to_disk": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "完成片段转存磁盘：每段采样前把上一段已完成的画面移到磁盘缓存以释放内存，"
+                    "最后合成时再读回。"
+                ),
+            },
+        ),
+        "save_group_videos": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "每组完成后保存视频：每组生成完立即把该组视频（含音频）存到 "
+                    "output/minimax_seg_export/<时间>/，后面崩溃也能留住已完成的部分。"
+                ),
+            },
+        ),
+        "rerun_when_done": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": "完成后询问重跑：整次运行结束后弹出提示，可换新 seed 立即重跑或停止。",
+            },
+        ),
+        "rerun_after_seconds": (
+            "INT",
+            {
+                "default": 60,
+                "min": 0,
+                "max": 3600,
+                "step": 5,
+                "tooltip": "无人响应时 N 秒后自动换新 seed 重跑，一直循环直到点「停止」；0 = 只提示不自动。",
+            },
+        ),
     }
 
 
