@@ -97,6 +97,14 @@ Restart ComfyUI.
 3. Enter `https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director.git` and install
 4. Restart ComfyUI
 
+## Updating
+
+Open any `MiniMaxH3Director` node and click **Check update** on the right side of its toolbar. When new commits are available, the dialog shows the current and latest versions plus recent commits. Confirm **Update now** to fast-forward only this plugin, then restart ComfyUI to load the new version. The plugin never checks in the background or modifies files silently.
+
+In-app updates require an independent Git checkout, a branch that tracks a same-named remote branch, a clean worktree, and an empty generation queue. Cancelling the confirmation leaves files unchanged. The completion dialog calls out dependency-file changes. Non-Git installs, diverged history, and local changes are never forcibly overwritten; use ComfyUI Manager or update manually instead.
+
+The updater never restarts ComfyUI automatically. Save the current workflow, then restart manually when the completion dialog asks you to.
+
 ## Models & workflow downloads
 
 Full pack (**MiniMax H3 weights** + **example JSON workflows**):
