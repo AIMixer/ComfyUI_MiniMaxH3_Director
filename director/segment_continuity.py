@@ -1657,14 +1657,25 @@ def concat_continuous_chunks(
 
     Generation settling burn-in handles flash/pulse. Concat RGB morphs are OFF
     (00035: body0/hold→pop caused 拖影 and stutter pulses).
+
+    A segment with ``continuity_from_prev = False`` is an intentional hard cut
+    (a new shot): its seam gets **no** exposure/soften/bridge pass. Otherwise the
+    first frames of the new shot are pulled toward the previous shot's tail
+    brightness, which reads as a visible brightness flash exactly at the cut.
     """
-    del segments
     if not chunks:
         raise ValueError("concat_continuous_chunks: no chunks")
     if not getattr(plan, "continuity_enabled", False) or len(chunks) < 2:
         return cat_frames_variable_size(chunks)
     fixed: list[torch.Tensor] = [chunks[0]]
     for i in range(1, len(chunks)):
+        seg = segments[i] if i < len(segments) else None
+        hard_cut = seg is not None and not bool(
+            getattr(seg, "continuity_from_prev", True)
+        )
+        if hard_cut:
+            fixed.append(chunks[i])
+            continue
         left = _unfreeze_held_tail(fixed[-1])
         if CONTINUITY_HOLD_POP_ON_TAIL:
             left = _break_hold_pop_window(left, from_end=True)
