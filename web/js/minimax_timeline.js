@@ -113,6 +113,11 @@ import {
     toggleLocale,
 } from "./minimax_i18n.js";
 import { bindPackActions } from "./minimax_pack.js";
+import {
+    attachExternalGroupsWitness,
+    injectExternalGroupsWitness,
+    setExternalGroupSpecsProvider,
+} from "./minimax_external_witness.js";
 
 const RULER_H = 24;
 const SEG_LABEL_H = 20;
@@ -2123,6 +2128,25 @@ class MiniMaxH3DirectorEditor {
         this.heightWidget = this.widget("height");
         this.refMaxWidget = this.widget("ref_max_size");
 
+        // Refresh the external-group witness while the prompt is built, so an
+        // upstream edit made after the last timeline write can never leave a
+        // stale witness in the submitted timeline_data.
+        if (this.timelineWidget && !this.timelineWidget._mmxWitnessSerialized) {
+            const widget = this.timelineWidget;
+            const previous = typeof widget.serializeValue === "function"
+                ? widget.serializeValue
+                : null;
+            widget._mmxWitnessSerialized = true;
+            widget.serializeValue = function (targetNode) {
+                const raw = previous
+                    ? previous.call(widget, targetNode)
+                    : widget.value;
+                return typeof raw === "string"
+                    ? injectExternalGroupsWitness(targetNode ?? node, raw)
+                    : raw;
+            };
+        }
+
         const initTotal = Math.max(0, parseInt(this.totalFramesWidget?.value || 124, 10));
         const initFps = coerceTimelineFps(this.frameRateWidget?.value || 24);
         this.timeline = parseTimeline(this.timelineWidget?.value, initTotal, initFps);
@@ -2723,7 +2747,13 @@ class MiniMaxH3DirectorEditor {
         if (this.isImageBatch?.()) flushBatchPromptInputs(this);
         if (this.isFl2vMode?.()) flushFl2vPromptDraft(this);
         this.syncFromWidgets();
-        this.timelineWidget.value = JSON.stringify(this.buildTimelinePayload());
+        // Graph-wired external groups are invisible to widget-only readers
+        // (cache-status panel / backend at execute time), so ship a witness of
+        // the group wiring inside timeline_data itself. See
+        // minimax_external_witness.js.
+        const payload = this.buildTimelinePayload();
+        attachExternalGroupsWitness(this.node, payload);
+        this.timelineWidget.value = JSON.stringify(payload);
         this.node.setDirtyCanvas(true, false);
     }
 
@@ -12321,6 +12351,53 @@ function patchUpstreamAudioWidgetSync(graph, node, inputName) {
     patchUpstreamWidgetSync(graph, node, inputName, ["audio", "audio_path", "video", "video_path", "file", "filename"]);
 }
 
+/** Widget names that carry a prompt string on upstream text nodes. */
+const PROMPT_SOURCE_WIDGETS = [
+    "prompt", "text", "value", "string", "text_str", "positive_prompt", "content",
+];
+
+/** First non-empty string widget on `node`, by the names above. */
+function readPromptWidgetValue(node) {
+    for (const name of PROMPT_SOURCE_WIDGETS) {
+        const value = nodeWidgetValue(node, name);
+        if (typeof value === "string" && value) return value;
+    }
+    return null;
+}
+
+/**
+ * Text the run will actually receive on this input: follow the link upstream and
+ * read the source node's own string widget, walking through STRING passthroughs
+ * (string concat / reroute-style helpers).
+ */
+function readLinkedPromptText(graph, node, inputName = "prompt", depth = 0) {
+    if (!graph || !node || depth > 8) return null;
+    const src = linkedSourceNode(graph, node, inputName);
+    if (!src) return null;
+    const direct = readPromptWidgetValue(src);
+    if (direct != null) return direct;
+    for (const inp of src.inputs || []) {
+        if (inp?.link == null || String(inp.type || "").toUpperCase() !== "STRING") continue;
+        const up = readLinkedPromptText(graph, src, inp.name, depth + 1);
+        if (up != null) return up;
+    }
+    return null;
+}
+
+/**
+ * Effective prompt of a group. When its `prompt` input is wired, the group's own
+ * widget is empty (the link owns the value) — reading only the widget made every
+ * prompt edit report「外接组其他参数」 instead of「外接组提示词」, and left the
+ * Director card showing an empty prompt.
+ */
+function resolveExternalGroupPrompt(graph, node) {
+    const own = String(nodeWidgetValue(node, "prompt") ?? "");
+    const inp = (node?.inputs || []).find((i) => i?.name === "prompt");
+    if (inp?.link == null) return own;
+    const linked = readLinkedPromptText(graph, node, "prompt");
+    return linked != null ? linked : own;
+}
+
 /** Collect Autogrow / legacy slots matching `(?:^|\.)prefix_(\\d+)$`. */
 function collectAutogrowSlotRefs(graph, node, prefix, resolvePath, toRef, patchSync) {
     const found = new Map();
@@ -12341,12 +12418,15 @@ function collectAutogrowSlotRefs(graph, node, prefix, resolvePath, toRef, patchS
 function readExternalGroupSpec(node, graph = null) {
     const g = graph || app.graph || app.canvas?.graph;
     const durRaw = Number(nodeWidgetValue(node, "duration_sec"));
-    const prompt = String(nodeWidgetValue(node, "prompt") ?? "");
+    const prompt = resolveExternalGroupPrompt(g, node);
     const cls = node?.comfyClass || node?.type || "";
     const firstImageFile = resolveLinkedImageFile(g, node, "first_frame");
     const lastImageFile = resolveLinkedImageFile(g, node, "last_frame");
     patchUpstreamImageWidgetSync(g, node, "first_frame");
     patchUpstreamImageWidgetSync(g, node, "last_frame");
+    // Editing the prompt on the upstream text node must refresh the Director card
+    // (and the cache verdict) just like editing the group's own widget does.
+    patchUpstreamWidgetSync(g, node, "prompt", PROMPT_SOURCE_WIDGETS);
 
     let refImages = [];
     let refVideos = [];
@@ -12436,22 +12516,47 @@ function passthroughUpstreamLinkId(node) {
     return linked.length ? linked[0].link : null;
 }
 
-function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs") {
+/**
+ * A leaf group packer: one node = one group = one segment. Any node emitting
+ * MMX_DIR_GROUP counts, so a third-party packer gets its real duration/prompt
+ * instead of falling back to a placeholder.
+ */
+function isExternalGroupLeafNode(node) {
+    if (!node) return false;
+    const cls = String(node.comfyClass || node.type || "");
+    if (EXTERNAL_GROUP_NODE_TYPES.has(cls)) return true;
+    return (node.outputs || []).some((o) => String(o?.type || "") === "MMX_DIR_GROUP");
+}
+
+/** A fan-in: takes group slots and re-emits a group list (ours or third-party). */
+function isExternalCombineNode(node) {
+    if (!node) return false;
+    const cls = String(node.comfyClass || node.type || "");
+    if (cls === EXTERNAL_COMBINE_NODE_TYPE) return true;
+    const takesGroups = (node.inputs || []).some(
+        (i) => String(i?.type || "") === "MMX_DIR_GROUP" || combineGroupSlotIndex(i?.name) != null,
+    );
+    const emitsGroup = (node.outputs || []).some(
+        (o) => String(o?.type || "") === "MMX_DIR_GROUP",
+    );
+    return takesGroups && emitsGroup;
+}
+
+function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs", slotLabel = "") {
     if (linkId == null || depth > 16) return [];
     const rec = graphLinkRecord(graph, linkId);
     if (!rec) return [];
     const node = graph.getNodeById?.(rec.originId);
     if (!node) return [];
-    const cls = node.comfyClass || node.type || "";
 
     // Walk through Reroute / rgthree Reroute / other virtual passthroughs.
     if (isExternalGroupPassthroughNode(node)) {
         const upstream = passthroughUpstreamLinkId(node);
         if (upstream == null) return [];
-        return expandExternalGroupLink(graph, upstream, depth + 1, mode);
+        return expandExternalGroupLink(graph, upstream, depth + 1, mode, slotLabel);
     }
 
-    if (cls === EXTERNAL_COMBINE_NODE_TYPE) {
+    if (isExternalCombineNode(node)) {
         const out = [];
         const slots = (node.inputs || [])
             .filter(isCombineGroupSlot)
@@ -12463,12 +12568,19 @@ function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs") {
             });
         for (const input of slots) {
             if (input.link == null) continue;
-            out.push(...expandExternalGroupLink(graph, input.link, depth + 1, mode));
+            const label = slotLabel || String(input.name || "");
+            out.push(...expandExternalGroupLink(graph, input.link, depth + 1, mode, label));
         }
         return out;
     }
-    if (EXTERNAL_GROUP_NODE_TYPES.has(cls)) {
-        return mode === "nodes" ? [node] : [readExternalGroupSpec(node, graph)];
+    if (isExternalGroupLeafNode(node)) {
+        if (mode === "nodes") return [node];
+        const spec = readExternalGroupSpec(node, graph);
+        // Kept off the UI fields above: the witness and the panel need the node
+        // itself to digest that group's own subtree.
+        spec.slot = slotLabel || "";
+        spec.groupNode = node;
+        return [spec];
     }
     // Unknown upstream packer — still reserve one slot for run-select/timeline.
     if (mode === "nodes") return [null];
@@ -12480,6 +12592,8 @@ function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs") {
         lastImageFile: null,
         refImages: [],
         refVideos: [],
+        slot: slotLabel || "",
+        groupNode: null,
         refAudios: [],
     }];
 }
@@ -12512,11 +12626,53 @@ function collectExternalGroupNodes(editor) {
     return nodes.length ? nodes : null;
 }
 
+/** First connected group port on a Director node, or null. */
+function firstConnectedGroupPort(node) {
+    for (const name of ["i2v_groups", "r2v_groups"]) {
+        const inp = (node?.inputs || []).find((i) => String(i?.name) === name);
+        if (inp && inp.link != null) return name;
+    }
+    return null;
+}
+
+/**
+ * Ordered leaf groups of a Director node — the same order the backend runs
+ * (Combine slots sorted by index, reroutes transparent). The first-pass cache
+ * witness borrows this so panel and run always agree on segment count and
+ * per-segment duration.
+ */
+function collectExternalGroupChain(node) {
+    const port = firstConnectedGroupPort(node);
+    if (!port) return null;
+    const graph = app.graph ?? app.canvas?.graph;
+    const inp = (node?.inputs || []).find((i) => String(i?.name) === port);
+    if (!graph || inp?.link == null) return null;
+    const specs = expandExternalGroupLink(graph, inp.link, 0, "specs");
+    if (!specs.length) return null;
+    return specs.map((spec, index) => ({
+        slot: spec.slot || `group_${index}`,
+        node: spec.groupNode || null,
+        nodeLabel: spec.groupNode
+            ? `${spec.groupNode.id}:${spec.groupNode.comfyClass || spec.groupNode.type || ""}`
+            : "",
+        durationSec: spec.durationSec,
+        prompt: spec.prompt,
+    }));
+}
+
+// The cache-status witness needs exactly this chain: one record per group, in
+// run order, with each group's own duration and resolved prompt.
+setExternalGroupSpecsProvider(collectExternalGroupChain);
+
 function notifyDirectorsSyncExternalGroups() {
     const graph = app.graph ?? app.canvas?.graph;
     for (const node of graph?._nodes ?? graph?.nodes ?? []) {
         if (!isMiniMaxH3DirectorNode(node)) continue;
         node._minimaxEditor?.syncExternalGroupsTimeline?.();
+        // The Refine card keeps its own verdict (匹配 / 不匹配); writing the
+        // timeline widget does not fire Director.onWidgetChanged, so ask it to
+        // re-check now that the card has been rebuilt from the edited group.
+        node._mmxRefreshFirstPassCache?.(250);
     }
 }
 
@@ -12705,12 +12861,33 @@ app.registerExtension({
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         const cls = nodeType?.comfyClass || nodeData?.name || "";
-        if (EXTERNAL_GROUP_NODE_TYPES.has(cls) || cls === EXTERNAL_COMBINE_NODE_TYPE) {
+        // Any node that can emit a Director group list (our packers, the Combine,
+        // and third-party packers declaring the same socket type).
+        const emitsGroups = Array.isArray(nodeData?.output)
+            && nodeData.output.some((type) => String(type || "").split(",").includes("MMX_DIR_GROUP"));
+        if (EXTERNAL_GROUP_NODE_TYPES.has(cls) || cls === EXTERNAL_COMBINE_NODE_TYPE || emitsGroups) {
             const onConnectionsChange = nodeType.prototype.onConnectionsChange;
             nodeType.prototype.onConnectionsChange = function (...args) {
                 const out = onConnectionsChange?.apply(this, args);
                 // Combine/Group wiring changes do not fire Director.onConnectionsChange.
                 queueMicrotask(() => notifyDirectorsSyncExternalGroups());
+                return out;
+            };
+            const onWidgetChanged = nodeType.prototype.onWidgetChanged;
+            nodeType.prototype.onWidgetChanged = function (name, value, oldValue, widget) {
+                const out = onWidgetChanged?.apply(this, arguments);
+                // Widget values are committed through the value store, which calls
+                // node.onWidgetChanged(name, value, oldValue, widget) for every
+                // widget type — including V3/comfy_api ones, where widget.callback
+                // is not reliably the function the store invokes. Deferred so the
+                // new value is already readable when the card re-reads the group.
+                // `_mmxSkipExternalSync` marks a Director→Group write-through: that
+                // path already synced, so echoing it back would be a wasted round.
+                if (name === "duration_sec" || name === "prompt") {
+                    if (!widget?._mmxSkipExternalSync) {
+                        queueMicrotask(() => notifyDirectorsSyncExternalGroups());
+                    }
+                }
                 return out;
             };
             const onCreated = nodeType.prototype.onNodeCreated;
