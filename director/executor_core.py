@@ -1133,11 +1133,16 @@ def execute_director_plan_core(
         run_refine = will_refine and not hold_after_first
         if will_refine:
             cached_frames = pre_cache.get("frames") if skip_first_sample else None
-            if isinstance(cached_frames, torch.Tensor) and cached_frames.numel() > 0:
+            refine_cfg = getattr(plan, "refine", None) or {}
+            decode_first_pass = bool(refine_cfg.get("decode_first_pass", True))
+            stage_first_pass_images = bool(refine_cfg.get("stage_first_pass_images", True))
+            if decode_first_pass and isinstance(cached_frames, torch.Tensor) and cached_frames.numel() > 0:
                 pre_export = cached_frames.detach().cpu().float()
-                if run_refine and isinstance(getattr(plan, "refine", None), dict) and refine_needs_canvas(plan.refine):
+                if run_refine and stage_first_pass_images and isinstance(refine_cfg, dict) and refine_needs_canvas(refine_cfg):
+                    # Reuse cached first-pass frames for pixel upscalers or
+                    # continuity re-pin; avoid decoding the cached latent again.
                     first_pass_gpu = pre_export
-            else:
+            elif decode_first_pass:
                 try:
                     report_director_progress(
                         node_id, segment_index=progress_index, segment_total=seg_total,
@@ -1159,12 +1164,23 @@ def execute_director_plan_core(
         pack = getattr(plan, "refine", None)
         upscale_frames = (
             first_pass_gpu
-            if run_refine and isinstance(pack, dict) and refine_needs_canvas(pack)
+            if run_refine and stage_first_pass_images and isinstance(pack, dict) and refine_needs_canvas(pack)
             else None
         )
         if first_pass_gpu is not None and upscale_frames is None:
             del first_pass_gpu
             first_pass_gpu = None
+        # Match the fusion workflow boundary: release first-pass model/VAE
+        # allocations after optional decode/staging and before refine starts.
+        if (
+            bool((getattr(plan, "refine", None) or {}).get("clear_vram_before_refine", True))
+            and run_refine
+        ):
+            cleanup_segment_vram(enabled=True, unload_models=True)
+            reports.append(
+                f"Segment {ui_idx + 1}/{timeline_seg_total}: "
+                "VRAM cleanup between first pass and refine"
+            )
         export_len = continuity_export_len(
             trim_frames=trim_frames,
             sample_len=sample_len,
