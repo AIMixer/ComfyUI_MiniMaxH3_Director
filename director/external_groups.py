@@ -362,8 +362,10 @@ def build_plan_from_external_groups(
         _load_refs,
         concat_common_segment_prompt,
         merge_indexed_refs,
+        drop_unusable_audio_prompt_tags,
         reinforce_r2v_prompt,
         resolve_ref_image_size,
+        usable_ref_audio_indices,
     )
 
     timeline = _parse_timeline_meta(timeline_data)
@@ -515,27 +517,21 @@ def build_plan_from_external_groups(
                 )
             )
         else:
-            # r2v — per-group media + Director timeline.global common media/prompt
+            # r2v — keep native stills; official match / Director max-cap resize later.
             refs = []
             for idx, tensor in sorted((g.get("ref_images") or {}).items()):
-                fitted = _fit_image(
-                    tensor, width=seg_w, height=seg_h, output_mode=seg_mode, ref_max_size=ref_max
-                )
-                refs.append(SegmentRef(index=int(idx), tensor=fitted[:1].clone()))
+                img = tensor.unsqueeze(0) if tensor.ndim == 3 else tensor
+                refs.append(SegmentRef(index=int(idx), tensor=img[:1].clone()))
             if common_refs_raw:
                 common_fitted = []
                 for cref in common_refs_raw:
-                    fitted = _fit_image(
-                        cref.tensor,
-                        width=seg_w,
-                        height=seg_h,
-                        output_mode=seg_mode,
-                        ref_max_size=ref_max,
-                    )
+                    img = cref.tensor
+                    if img.ndim == 3:
+                        img = img.unsqueeze(0)
                     common_fitted.append(
                         SegmentRef(
                             index=int(cref.index),
-                            tensor=fitted[:1].clone(),
+                            tensor=img[:1].clone(),
                             image_file=getattr(cref, "image_file", "") or "",
                         )
                     )
@@ -558,11 +554,13 @@ def build_plan_from_external_groups(
                 SegmentRefAudio(index=int(idx), audio=aud, audio_file="")
                 for idx, aud in sorted((g.get("ref_video_audios") or {}).items())
             ]
+            audio_idxs = usable_ref_audio_indices(ref_audios)
+            prompt = drop_unusable_audio_prompt_tags(prompt, audio_idxs)
             prompt = reinforce_r2v_prompt(
                 prompt,
                 ref_indices=[r.index for r in refs],
                 video_indices=[v.index for v in ref_videos],
-                audio_indices=[a.index for a in ref_audios],
+                audio_indices=audio_idxs,
             )
             row = timeline_row_for_index(timeline, int(src_index))
             if not row and isinstance(g, dict):
@@ -609,6 +607,7 @@ def build_plan_from_external_groups(
     raw["editMode"] = "segment"
 
     from .segment_continuity import (
+        resolve_continuity_keep_tail,
         resolve_continuity_mode,
         resolve_continuity_redraw,
         resolve_continuity_settings,
@@ -619,6 +618,7 @@ def build_plan_from_external_groups(
     )
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
+    continuity_keep_tail = resolve_continuity_keep_tail(timeline)
 
     return DirectorPlan(
         frame_rate=fps,
@@ -643,5 +643,6 @@ def build_plan_from_external_groups(
         continuity_overlap_frames=continuity_overlap,
         continuity_mode=continuity_mode,
         continuity_redraw=continuity_redraw,
+        continuity_keep_tail=continuity_keep_tail,
         global_ref_audios=list(common_audios_raw) if family == "r2v" else [],
     )

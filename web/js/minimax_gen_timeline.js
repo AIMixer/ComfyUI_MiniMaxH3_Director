@@ -388,20 +388,34 @@ export function isSegmentContinuityFromPrev(segOrShot, index) {
     return false;
 }
 
-/** Official MiniMaxH3ReferenceToVideo combo: match | max. Default match. */
-export function normalizeRefImageSize(value) {
+export const REF_IMAGE_LONG_PRESETS = [1024, 1280, 1536];
+export const REF_IMAGE_SIZE_OPTIONS = ["match", ...REF_IMAGE_LONG_PRESETS.map(String), "max"];
+
+/** match | 1024 | 1280 | 1536 | max. Official node only sees match | max. */
+export function normalizeRefImageSize(value, extra = null) {
     const raw = String(value || "match").trim().toLowerCase();
-    return raw === "max" ? "max" : "match";
+    if (raw === "max") {
+        const edge = String(extra?.refImageLimitEdge ?? extra?.ref_image_limit_edge ?? "").toLowerCase();
+        const px = Number(extra?.refImageLimitPx ?? extra?.ref_image_limit_px);
+        if ((edge === "long" || edge === "longest" || edge === "long_edge") && REF_IMAGE_LONG_PRESETS.includes(px)) {
+            return String(px);
+        }
+        return "max";
+    }
+    const digits = raw.replace(/[^\d]/g, "");
+    const n = Number(digits);
+    if (REF_IMAGE_LONG_PRESETS.includes(n)) return String(n);
+    return "match";
 }
 
 /** Per-group/segment first; `fallback` may be a string or output object. */
 export function resolveSegmentRefImageSize(seg, fallback) {
     const fromSeg = seg?.refImageSize ?? seg?.ref_image_size;
     if (fromSeg != null && String(fromSeg).trim() !== "") {
-        return normalizeRefImageSize(fromSeg);
+        return normalizeRefImageSize(fromSeg, seg);
     }
     if (fallback && typeof fallback === "object") {
-        return normalizeRefImageSize(fallback.refImageSize ?? fallback.ref_image_size);
+        return normalizeRefImageSize(fallback.refImageSize ?? fallback.ref_image_size, fallback);
     }
     return normalizeRefImageSize(fallback);
 }
@@ -425,6 +439,7 @@ export function newBatchSegment(overrides = {}) {
     }
     const refImageSize = normalizeRefImageSize(
         overrides.refImageSize ?? overrides.ref_image_size,
+        overrides,
     );
     return {
         id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),

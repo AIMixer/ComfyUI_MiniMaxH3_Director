@@ -26,6 +26,7 @@ import {
     refAudioLabel,
     refImageLabel,
     refVideoLabel,
+    REF_IMAGE_SIZE_OPTIONS,
     resolveSegmentRefImageSize,
     resolveSegmentTaskKey,
     resolveTaskKey,
@@ -502,7 +503,7 @@ export const IMAGE_BATCH_STYLES = `
 .bd-batch-fc input{width:72px;background:#181818;border:1px solid #444;border-radius:5px;color:#eee;padding:5px 8px;font-size:13px}
 .bd-batch-r2v .bd-batch-fc input{width:76px;background:#161616;border-color:#3a3a3a;border-radius:6px;padding:5px 8px;font-size:13px}
 .bd-batch-refsize{display:flex;align-items:center;gap:6px;color:#c8c8c8;font-size:12px;background:#0e0e0e;border:1px solid #2a2a2a;border-radius:8px;padding:5px 10px;white-space:nowrap}
-.bd-batch-refsize select{background:#161616;border:1px solid #3a3a3a;border-radius:6px;color:#eee;padding:5px 6px;font-size:12px;max-width:88px}
+.bd-batch-refsize select{background:#161616;border:1px solid #3a3a3a;border-radius:6px;color:#eee;padding:5px 6px;font-size:12px;max-width:132px}
 .bd-batch-del{background:transparent;border:1px solid #553;color:#f88;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer}
 .bd-batch-r2v .bd-batch-del{border-radius:8px;padding:5px 10px;font-size:11px;border-color:#4a3030;color:#f0a0a0}
 .bd-batch-del:disabled{border-color:#3a3a3a;color:#777;opacity:.55;cursor:not-allowed}
@@ -2126,9 +2127,11 @@ function renderRefSlot(el, ref, slot, index, editor) {
     }
 }
 
-function frameSrc(b64) {
+function frameSrc(b64, mime) {
     if (!b64) return "";
-    return b64.startsWith("data:") ? b64 : `data:image/jpeg;base64,${b64}`;
+    if (b64.startsWith("data:")) return b64;
+    const kind = (typeof mime === "string" && mime.includes("/")) ? mime : "image/jpeg";
+    return `data:${kind};base64,${b64}`;
 }
 
 function loadFrameImages(frames) {
@@ -2163,7 +2166,7 @@ function mountLivePreview(el, seg, badgeText) {
     const img = document.createElement("img");
     img.className = "bd-live-preview";
     img.alt = "live preview";
-    img.src = frameSrc(seg.previewB64);
+    img.src = frameSrc(seg.previewB64, seg.previewMime);
     const badge = document.createElement("div");
     badge.className = "bd-batch-live-badge";
     badge.textContent = badgeText || t("batch.generating");
@@ -2283,7 +2286,7 @@ function renderImagePreview(el, seg, running, editor) {
     }
     if (seg.previewB64) {
         const img = document.createElement("img");
-        img.src = frameSrc(seg.previewB64);
+        img.src = frameSrc(seg.previewB64, seg.previewMime);
         img.alt = "preview";
         el.appendChild(img);
         return;
@@ -2404,7 +2407,7 @@ function renderBatchGroupPicker(editor, ctx) {
             const img = document.createElement("img");
             img.className = "bd-batch-pick-thumb";
             img.alt = "";
-            img.src = frameSrc(thumbSrc);
+            img.src = frameSrc(thumbSrc, seg.previewMime);
             chip.appendChild(img);
         }
         chip.onclick = (e) => {
@@ -2610,7 +2613,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             sizeSel.className = "bd-select";
             const curSize = resolveSegmentRefImageSize(seg, editor.timeline?.output);
             seg.refImageSize = curSize;
-            for (const opt of ["match", "max"]) {
+            for (const opt of REF_IMAGE_SIZE_OPTIONS) {
                 const o = document.createElement("option");
                 o.value = opt;
                 o.setAttribute("data-i18n", `output.refImageSize.${opt}`);
@@ -2846,6 +2849,8 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
     const seg = editor.timeline.segments[segmentIndex];
     if (!seg) return;
     seg.previewB64 = imageB64 || "";
+    if (extra.mime) seg.previewMime = extra.mime;
+    else if (!extra.live) seg.previewMime = "image/jpeg";
     if (extra.step != null) seg.previewStep = extra.step;
     if (extra.total_steps != null) seg.previewTotalSteps = extra.total_steps;
     if (Array.isArray(extra.frames) && extra.frames.length) {
@@ -2880,11 +2885,11 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
             if (!img) {
                 mountLivePreview(preview, seg, badgeText);
             } else {
-                img.src = frameSrc(imageB64);
+                img.src = frameSrc(imageB64, extra.mime || seg.previewMime);
                 if (badge) badge.textContent = badgeText;
             }
             const pickThumb = editor.batchPicker?.querySelector?.(`.bd-batch-pick[data-batch-index="${segmentIndex}"] img.bd-batch-pick-thumb`);
-            if (pickThumb) pickThumb.src = frameSrc(imageB64);
+            if (pickThumb) pickThumb.src = frameSrc(imageB64, extra.mime || seg.previewMime);
             return;
         }
         const pick = editor.batchPicker?.querySelector?.(`.bd-batch-pick[data-batch-index="${segmentIndex}"]`);
@@ -2897,7 +2902,7 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
                 img.alt = "";
                 pick.appendChild(img);
             }
-            img.src = frameSrc(imageB64);
+            img.src = frameSrc(imageB64, extra.mime || seg.previewMime);
         }
         return;
     }

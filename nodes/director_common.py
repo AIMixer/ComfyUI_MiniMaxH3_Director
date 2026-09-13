@@ -341,7 +341,12 @@ def _layout_image_batches(
         images_out = segment_outputs
         frame_count = sum(int(s.shape[0]) for s in segment_outputs)
         return images_out, frame_count
-    combined = pad_or_trim_frames(combined, plan.total_frames).cpu().float()
+    # 「保完整」segments are longer than the UI total; cropping here would
+    # cut the kept remainder and desync concatenated audio.
+    if getattr(plan, "continuity_enabled", False) and getattr(plan, "continuity_keep_tail", True):
+        combined = combined.cpu().float()
+    else:
+        combined = pad_or_trim_frames(combined, plan.total_frames).cpu().float()
     return [combined], int(combined.shape[0])
 
 

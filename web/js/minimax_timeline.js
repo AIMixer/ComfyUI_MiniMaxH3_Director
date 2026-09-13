@@ -156,6 +156,21 @@ function isContinuityEnabled(output) {
     return false;
 }
 
+function isContinuityKeepTail(output) {
+    if (!output) return true;
+    const raw = output.continuityKeepTail ?? output.continuity_keep_tail;
+    if (raw === undefined || raw === null) return true;
+    if (raw === true || raw === 1) return true;
+    if (raw === false || raw === 0) return false;
+    if (typeof raw === "string") {
+        const s = raw.trim().toLowerCase();
+        if (s === "") return true;
+        if (s === "false" || s === "0" || s === "no" || s === "off") return false;
+        return true;
+    }
+    return true;
+}
+
 /** Whether段间引导 controls apply for the current task + segment count. */
 function isContinuityEligible(editor) {
     if (!editor) return false;
@@ -180,8 +195,8 @@ const CONTINUITY_FRAME_CHOICES = [5, 22, 39, 56];
 /** Official Motion Context baseline recommendation. */
 const DEFAULT_CONTINUITY_FRAMES = 22;
 const DEFAULT_CONTINUITY_MODE = "guide";
-const DEFAULT_CONTINUITY_REDRAW = 0.65;
-const MIN_CONTINUITY_REDRAW = 0.40;
+const DEFAULT_CONTINUITY_REDRAW = 0.10;
+const MIN_CONTINUITY_REDRAW = 0;
 const MAX_CONTINUITY_REDRAW = 0.95;
 
 function normalizeContinuityMode(raw) {
@@ -233,6 +248,7 @@ function normalizeOutputContinuity(output = {}) {
         continuityRedraw: snapContinuityRedraw(
             output.continuityRedraw ?? output.continuity_redraw ?? DEFAULT_CONTINUITY_REDRAW,
         ),
+        continuityKeepTail: isContinuityKeepTail(output),
         audioMode: normalizeAudioMode(output.audioMode ?? output.audio_mode),
         refImageSize: normalizeRefImageSize(output.refImageSize ?? output.ref_image_size),
     };
@@ -294,6 +310,7 @@ function sanitizeSegmentForPayload(seg) {
     const {
         previewB64,
         previewFrames,
+        previewMime,
         imageB64,
         ...rest
     } = seg;
@@ -1091,7 +1108,7 @@ const STYLES = `
 .bd-seg-head{display:flex;align-items:center;justify-content:flex-start;gap:10px;flex-wrap:wrap;min-width:0}
 .bd-seg-head>b{flex-shrink:0;margin:0}
 .bd-seg-refsize{display:inline-flex;align-items:center;gap:6px;color:#c8c8c8;font-size:11px;white-space:nowrap;margin-left:auto;flex-shrink:0}
-.bd-seg-refsize select{max-width:88px}
+.bd-seg-refsize select{max-width:132px}
 .bd-seg-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
 .bd-seg-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
 .bd-seg-head .bd-meta,.bd-panel.bd-v2v-panel .bd-seg-head .bd-meta,.bd-panel.bd-rv2v-panel .bd-seg-head .bd-meta{color:#8a8a8a;font-size:11px;line-height:1.45;padding:0;min-width:0}
@@ -1875,6 +1892,7 @@ function parseTimeline(raw, totalFrames, fps) {
             continuityEnabled: false, continuityOverlapFrames: DEFAULT_CONTINUITY_FRAMES,
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
+            continuityKeepTail: true,
         },
         runSelectEnabled: false,
         runSelection: [],
@@ -1943,6 +1961,7 @@ function parseTimeline(raw, totalFrames, fps) {
             continuityOverlapFrames: data.output?.continuityOverlapFrames ?? data.output?.continuity_overlap_frames,
             continuityMode: data.output?.continuityMode ?? data.output?.continuity_mode,
             continuityRedraw: data.output?.continuityRedraw ?? data.output?.continuity_redraw,
+            continuityKeepTail: data.output?.continuityKeepTail ?? data.output?.continuity_keep_tail,
         });
         // Infer aspectRatio from saved width/height when older payloads omitted the label.
         if (!data.output.aspectRatio && data.output.width > 0 && data.output.height > 0) {
@@ -2890,9 +2909,13 @@ class MiniMaxH3DirectorEditor {
                     </select>
                     <span data-r="segment-continuity-redraw-wrap" hidden>
                         <span class="bd-meta" data-i18n="output.continuityRedraw">重绘幅度</span>
-                        <input type="number" class="bd-num" data-r="segment-continuity-redraw" min="0.40" max="0.95" step="0.05" value="0.65" style="width:56px" data-i18n-title="tooltip.continuityRedraw">
+                        <input type="number" class="bd-num" data-r="segment-continuity-redraw" min="0" max="0.95" step="0.05" value="0.10" style="width:56px" data-i18n-title="tooltip.continuityRedraw">
                     </span>
                 </span>
+                <label data-r="segment-continuity-keep-tail-wrap" hidden data-i18n-title="tooltip.continuityKeepTail">
+                    <input type="checkbox" data-r="segment-continuity-keep-tail" checked>
+                    <span data-i18n="output.continuityKeepTail">保完整</span>
+                </label>
             </span>
             <button type="button" class="bd-btn bd-btn-live-preview" data-a="live-tae-preview" data-i18n="toolbar.liveTaePreview" data-i18n-title="tooltip.liveTaePreview">实时预览</button>`;
         this.mainBody.appendChild(outputBar);
@@ -3002,6 +3025,9 @@ class MiniMaxH3DirectorEditor {
                         <span data-i18n="output.refImageSize.label">参考图尺寸</span>
                         <select class="bd-select" data-r="seg-ref-image-size">
                             <option value="match" data-i18n="output.refImageSize.match">match</option>
+                            <option value="1024" data-i18n="output.refImageSize.1024">最长边 1024</option>
+                            <option value="1280" data-i18n="output.refImageSize.1280">最长边 1280</option>
+                            <option value="1536" data-i18n="output.refImageSize.1536">最长边 1536</option>
                             <option value="max" data-i18n="output.refImageSize.max">max</option>
                         </select>
                     </label>
@@ -3202,6 +3228,8 @@ class MiniMaxH3DirectorEditor {
         this.segmentContinuityMode = this.root.querySelector('[data-r="segment-continuity-mode"]');
         this.segmentContinuityRedrawWrap = this.root.querySelector('[data-r="segment-continuity-redraw-wrap"]');
         this.segmentContinuityRedraw = this.root.querySelector('[data-r="segment-continuity-redraw"]');
+        this.segmentContinuityKeepTailWrap = this.root.querySelector('[data-r="segment-continuity-keep-tail-wrap"]');
+        this.segmentContinuityKeepTail = this.root.querySelector('[data-r="segment-continuity-keep-tail"]');
         this.outPreview = this.root.querySelector('[data-r="out-preview"]');
         this.runStatusEl = this.root.querySelector('[data-r="run-status"]');
         this.runTitleEl = this.root.querySelector('[data-r="run-title"]');
@@ -3514,6 +3542,11 @@ class MiniMaxH3DirectorEditor {
             this.segmentContinuityRedraw.onchange = applyRedraw;
             this.segmentContinuityRedraw.addEventListener("keydown", (e) => e.stopPropagation());
             this.segmentContinuityRedraw.addEventListener("keyup", (e) => e.stopPropagation());
+        }
+        if (this.segmentContinuityKeepTail) {
+            this.segmentContinuityKeepTail.onchange = () => {
+                this.onOutputField("continuityKeepTail", this.segmentContinuityKeepTail.checked);
+            };
         }
         if (this.segContinuityFromPrevCb) {
             this.segContinuityFromPrevCb.onchange = () => {
@@ -6087,6 +6120,7 @@ class MiniMaxH3DirectorEditor {
             continuityEnabled: false, continuityOverlapFrames: DEFAULT_CONTINUITY_FRAMES,
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
+            continuityKeepTail: true,
         };
         // Prefer ResolutionSelector fields; backfill from width/height when missing.
         // Custom keeps explicit width/height and does not recompute from megapixels.
@@ -6143,6 +6177,9 @@ class MiniMaxH3DirectorEditor {
             this.segmentContinuityRedraw.value = String(
                 snapContinuityRedraw(out.continuityRedraw ?? DEFAULT_CONTINUITY_REDRAW),
             );
+        }
+        if (this.segmentContinuityKeepTail) {
+            this.segmentContinuityKeepTail.checked = isContinuityKeepTail(out);
         }
         this.syncFrameRateUI(this.timeline.frameRate);
         this.updateOutputModeUI();
@@ -6212,6 +6249,16 @@ class MiniMaxH3DirectorEditor {
             this.segmentContinuityRedraw.value = String(redraw);
             this.timeline.output.continuityRedraw = redraw;
         }
+        if (this.segmentContinuityKeepTailWrap) {
+            this.segmentContinuityKeepTailWrap.hidden = !masterOn;
+            this.segmentContinuityKeepTailWrap.setAttribute("aria-hidden", masterOn ? "false" : "true");
+            this.segmentContinuityKeepTailWrap.title = masterOn ? t("tooltip.continuityKeepTail") : "";
+        }
+        if (this.segmentContinuityKeepTail && this.timeline?.output) {
+            const keepTail = isContinuityKeepTail(this.timeline.output);
+            this.segmentContinuityKeepTail.checked = keepTail;
+            this.timeline.output.continuityKeepTail = keepTail;
+        }
         this.syncSegmentContinuityFromPrevUI();
         this.syncSegmentRefImageSizeUI();
     }
@@ -6244,6 +6291,12 @@ class MiniMaxH3DirectorEditor {
         if (!show) return;
         const seg = this.timeline.segments?.[this.selectedIndex ?? 0];
         const value = resolveSegmentRefImageSize(seg, this.timeline.output);
+        if (![...sel.options].some((o) => o.value === value)) {
+            const extra = document.createElement("option");
+            extra.value = value;
+            extra.textContent = value;
+            sel.appendChild(extra);
+        }
         sel.value = value;
         if (seg && seg.refImageSize !== value) seg.refImageSize = value;
         wrap.title = t("tooltip.refImageSize");
@@ -6435,6 +6488,7 @@ class MiniMaxH3DirectorEditor {
             continuityEnabled: false, continuityOverlapFrames: DEFAULT_CONTINUITY_FRAMES,
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
+            continuityKeepTail: true,
         };
         if (key === "aspectRatio") {
             if (isCustomAspectRatio(value)) {
@@ -6491,6 +6545,8 @@ class MiniMaxH3DirectorEditor {
             this.timeline.output.continuityMode = normalizeContinuityMode(value);
         } else if (key === "continuityRedraw") {
             this.timeline.output.continuityRedraw = snapContinuityRedraw(value);
+        } else if (key === "continuityKeepTail") {
+            this.timeline.output.continuityKeepTail = !!value;
         }
         this.syncOutputUIFromTimeline();
         if (this.isFl2vMode()) updateFl2vDetailUI(this);
@@ -6576,6 +6632,7 @@ class MiniMaxH3DirectorEditor {
             continuityRedraw: snapContinuityRedraw(
                 prevOut.continuityRedraw ?? prevOut.continuity_redraw ?? DEFAULT_CONTINUITY_REDRAW,
             ),
+            continuityKeepTail: isContinuityKeepTail(prevOut),
         };
         if (this.widthWidget) this.widthWidget.value = resolved.width;
         if (this.heightWidget) this.heightWidget.value = resolved.height;
@@ -6607,6 +6664,7 @@ class MiniMaxH3DirectorEditor {
             continuityEnabled: false, continuityOverlapFrames: DEFAULT_CONTINUITY_FRAMES,
             continuityMode: DEFAULT_CONTINUITY_MODE,
             continuityRedraw: DEFAULT_CONTINUITY_REDRAW,
+            continuityKeepTail: true,
         };
         if (this.timeline.output.audioMode == null) {
             this.timeline.output.audioMode = "generate";
@@ -6658,6 +6716,11 @@ class MiniMaxH3DirectorEditor {
             this.timeline.output.continuityRedraw = snapContinuityRedraw(
                 this.timeline.output.continuityRedraw,
             );
+        }
+        if (continuityEligible && this.segmentContinuityKeepTail) {
+            this.timeline.output.continuityKeepTail = !!this.segmentContinuityKeepTail.checked;
+        } else {
+            this.timeline.output.continuityKeepTail = isContinuityKeepTail(this.timeline.output);
         }
         this.syncOutputToWidgets();
     }
@@ -11578,7 +11641,8 @@ class MiniMaxH3DirectorEditor {
         this._liveSampleTotal = detail.total_steps ?? detail.totalSteps ?? null;
         this._liveSampleSeg = detail.segment_index ?? detail.segmentIndex ?? null;
 
-        const src = b64.startsWith("data:") ? b64 : `data:image/jpeg;base64,${b64}`;
+        const mime = (typeof detail.mime === "string" && detail.mime) ? detail.mime : "image/jpeg";
+        const src = b64.startsWith("data:") ? b64 : `data:${mime};base64,${b64}`;
         if (this.liveSampleImg) {
             this.liveSampleImg.src = src;
             this.liveSampleImg.classList.remove("hidden");
@@ -12561,6 +12625,7 @@ app.registerExtension({
                         live: !!detail?.live,
                         step: detail?.step,
                         total_steps: detail?.total_steps,
+                        mime: detail?.mime,
                     },
                 );
                 return;
@@ -12579,6 +12644,7 @@ app.registerExtension({
                 for (const seg of editor.timeline.segments || []) {
                     seg.previewB64 = "";
                     seg.previewFrames = [];
+                    seg.previewMime = "";
                     seg.previewLive = false;
                     seg.previewStep = null;
                     seg.previewTotalSteps = null;

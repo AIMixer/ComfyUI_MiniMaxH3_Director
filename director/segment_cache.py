@@ -18,7 +18,7 @@ import torch
 
 import folder_paths
 
-from .h3_latent_continue import CONTINUE_PIPELINE_ID
+from .h3_latent_continue import CONTINUE_PIPELINE_ID, clamp_seam_min_mask
 from .h3_motion_context import CONTINUITY_PIPELINE_ID, trim_context_prefix, trim_export_tail
 from .plan import DirectorPlan, SegmentPlan, resolve_ref_image_size
 
@@ -90,6 +90,27 @@ def _cache_root(node_id: str) -> Path | None:
         return None
 
 
+def _ref_audio_file_stamp(audio: Any, fallback_index: int) -> str:
+    """Fingerprint fragment for one reference audio.
+
+    Keying on the uploaded filename alone misses the case where the user keeps
+    the same slot/filename but replaces the audio content. Stamp the source
+    file's mtime+size so a content swap invalidates the first-pass cache.
+    """
+    index = getattr(audio, "index", fallback_index)
+    name = getattr(audio, "audio_file", "") or ""
+    path = getattr(audio, "audio_path", "") or ""
+    stamp = ""
+    if path:
+        try:
+            st = os.stat(path)
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+            stamp = f"{mtime_ns}:{int(st.st_size)}"
+        except OSError:
+            stamp = ""
+    return f"aud{index}:{name}:{stamp}"
+
+
 def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
     """Identity that affects first-pass sampling (no Refine settings)."""
     ref_files = sorted(
@@ -97,7 +118,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         for ref in seg.refs
     )
     ref_audio_files = sorted(
-        f"aud{getattr(a, 'index', i)}:{(getattr(a, 'audio_file', '') or '')}"
+        _ref_audio_file_stamp(a, i)
         for i, a in enumerate(getattr(seg, "ref_audios", None) or [])
     )
     ref_video_files = sorted(
@@ -109,7 +130,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         or seg.reference_video_meta.get("fileName")
         or ""
     ).strip()
-    return {
+    payload = {
         "index": seg.index,
         "start": seg.start_frame,
         "end": seg.end_frame,
@@ -137,7 +158,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
             else "off"
         ),
         "continuity_redraw": (
-            round(float(getattr(plan, "continuity_redraw", 0.65) or 0.65), 2)
+            round(clamp_seam_min_mask(getattr(plan, "continuity_redraw", 0.10)), 2)
             if plan.continuity_enabled
             and str(getattr(plan, "continuity_mode", "guide") or "guide") == "continue"
             else 0
@@ -149,6 +170,10 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
             else CONTINUITY_PIPELINE_ID
         ),
     }
+    if plan.continuity_enabled and bool(getattr(plan, "continuity_keep_tail", True)):
+        payload["continuity_keep_tail"] = True
+    return payload
+
 
 
 def first_pass_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
@@ -397,6 +422,42 @@ def _av_latent_to_cpu(av_latent: dict) -> dict:
         else:
             out[key] = value
     return out
+
+
+def load_first_pass_av_latent(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+    *,
+    allow_stale: bool = False,
+) -> dict | None:
+    """Load ``.pre.av.pt`` for continuity pin. Source-video mismatch still rejects."""
+    if not node_id:
+        return None
+    root = _cache_root(node_id)
+    if root is None:
+        return None
+    idx = seg.index
+    meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+    latent_path = root / f"seg_{idx:04d}.pre.av.pt"
+    if not latent_path.is_file():
+        return None
+    try:
+        if meta_path.is_file():
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = first_pass_cache_fingerprint(seg, plan)
+            if stored != expected:
+                if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
+                    return None
+                if not allow_stale:
+                    return None
+        payload = torch.load(latent_path, map_location="cpu", weights_only=False)
+        if not isinstance(payload, dict) or "samples" not in payload:
+            return None
+        return payload
+    except Exception as exc:
+        log.debug("Segment %d first-pass AV latent skipped: %s", idx + 1, exc)
+        return None
 
 
 def load_segment_av_latent(
