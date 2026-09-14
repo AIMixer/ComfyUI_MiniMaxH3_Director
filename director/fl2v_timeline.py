@@ -119,6 +119,9 @@ def _normalize_shots(raw_shots: list | None, *, frame_rate: float = 24.0) -> lis
             row["continuityFromPrev"] = item.get("continuityFromPrev")
         elif "continuity_from_prev" in item:
             row["continuity_from_prev"] = item.get("continuity_from_prev")
+        # Per-shot LoRA stack; this row is a whitelist, so carry it explicitly.
+        if "loras" in item:
+            row["loras"] = item.get("loras")
         out.append(row)
         cursor += fc
     return out
@@ -631,6 +634,8 @@ def build_fl2v_director_plan(
     source_clips: list[torch.Tensor] = []
     selected_plan_indices: list[int] = []
     plan_index = 0
+    from .segment_loras import normalize_lora_rows
+
     for shot in shots:
         start_kf = shot.get("start")
         end_kf = shot.get("end")
@@ -713,6 +718,7 @@ def build_fl2v_director_plan(
                     shot if isinstance(shot, dict) else {},
                     segment_index=plan_index,
                 ),
+                loras=normalize_lora_rows(shot.get("loras") if isinstance(shot, dict) else None),
             )
         )
         plan_index += 1

@@ -5,6 +5,7 @@
  */
 
 import { api } from "../../scripts/api.js";
+import { createLoraSection, normalizeLoraRows } from "./minimax_segment_loras.js";
 import {
     defaultDurationSec,
     defaultFrameCount,
@@ -193,6 +194,9 @@ export function newFl2vShot(overrides = {}) {
     if (overrides.continuityFromPrev != null || overrides.continuity_from_prev != null) {
         shot.continuityFromPrev = overrides.continuityFromPrev ?? overrides.continuity_from_prev;
     }
+    // Same trap for the per-shot LoRA stack. Keep the array reference so rows
+    // being edited on a card survive the rebuild.
+    if (Array.isArray(overrides.loras)) shot.loras = overrides.loras;
     return shot;
 }
 
@@ -310,6 +314,7 @@ export function flattenFl2vShotsToSegments(editor) {
             prompt: shot.prompt || "",
             negativePrompt: shot.negativePrompt || DEFAULT_FL2V_NEGATIVE,
             continuityFromPrev: isSegmentContinuityFromPrev(shot, i),
+            loras: normalizeLoraRows(shot.loras),
             taskType: "",
             refs: [],
             // Do not mark start when end-only — canvas badges / thumbs key off these.
@@ -1273,6 +1278,13 @@ function renderFl2vShotCards(editor) {
             editor.updateDomWidgetHeight?.();
         };
         secInput?.addEventListener("change", applySec);
+        // Per-shot LoRA stack. Stop pointer/click here: a click on the dropdown
+        // must not bubble into the card and re-render it while the menu opens.
+        const loraSection = createLoraSection(editor, shot, () => editor.timeline.shots?.[i]);
+        for (const evt of ["click", "pointerdown", "mousedown", "dragstart"]) {
+            loraSection.addEventListener(evt, (e) => e.stopPropagation());
+        }
+        card.appendChild(loraSection);
         ui.shotsEl.appendChild(card);
     });
 }
@@ -1548,6 +1560,7 @@ export function buildFl2vPayloadFields(editor) {
         prompt: s.prompt || "",
         negativePrompt: s.negativePrompt || DEFAULT_FL2V_NEGATIVE,
         continuityFromPrev: isSegmentContinuityFromPrev(s, i),
+        loras: normalizeLoraRows(s.loras),
         startImage: s.startImage
             ? {
                 imageFile: s.startImage.imageFile || "",
@@ -1577,6 +1590,7 @@ export function buildFl2vPayloadFields(editor) {
             prompt: s.prompt || "",
             negativePrompt: s.negativePrompt || DEFAULT_FL2V_NEGATIVE,
             continuityFromPrev: isSegmentContinuityFromPrev(s, i),
+            loras: normalizeLoraRows(s.loras),
             isStartFrame: !!(s.genImage?.imageFile || s.imageFile),
             isEndFrame: !!s.endImage?.imageFile,
             genImage: {
