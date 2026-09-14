@@ -202,8 +202,8 @@ const CONTINUITY_FRAME_CHOICES = [5, 22, 39, 56];
 /** Official Motion Context baseline recommendation. */
 const DEFAULT_CONTINUITY_FRAMES = 22;
 const DEFAULT_CONTINUITY_MODE = "guide";
-const DEFAULT_CONTINUITY_REDRAW = 0.65;
-const MIN_CONTINUITY_REDRAW = 0.40;
+const DEFAULT_CONTINUITY_REDRAW = 0.10;
+const MIN_CONTINUITY_REDRAW = 0;
 const MAX_CONTINUITY_REDRAW = 0.95;
 
 function normalizeContinuityMode(raw) {
@@ -1118,7 +1118,7 @@ const STYLES = `
 .bd-seg-head{display:flex;align-items:center;justify-content:flex-start;gap:10px;flex-wrap:wrap;min-width:0}
 .bd-seg-head>b{flex-shrink:0;margin:0}
 .bd-seg-refsize{display:inline-flex;align-items:center;gap:6px;color:#c8c8c8;font-size:11px;white-space:nowrap;margin-left:auto;flex-shrink:0}
-.bd-seg-refsize select{max-width:88px}
+.bd-seg-refsize select{max-width:132px}
 .bd-seg-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
 .bd-seg-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
 .bd-seg-head .bd-meta,.bd-panel.bd-v2v-panel .bd-seg-head .bd-meta,.bd-panel.bd-rv2v-panel .bd-seg-head .bd-meta{color:#8a8a8a;font-size:11px;line-height:1.45;padding:0;min-width:0}
@@ -2981,7 +2981,7 @@ class MiniMaxH3DirectorEditor {
                     </select>
                     <span data-r="segment-continuity-redraw-wrap" hidden>
                         <span class="bd-meta" data-i18n="output.continuityRedraw">重绘幅度</span>
-                        <input type="number" class="bd-num" data-r="segment-continuity-redraw" min="0.40" max="0.95" step="0.05" value="0.65" style="width:56px" data-i18n-title="tooltip.continuityRedraw">
+                        <input type="number" class="bd-num" data-r="segment-continuity-redraw" min="0" max="0.95" step="0.05" value="0.10" style="width:56px" data-i18n-title="tooltip.continuityRedraw">
                     </span>
                 </span>
                 <label data-r="segment-continuity-keep-tail-wrap" hidden data-i18n-title="tooltip.continuityKeepTail">
@@ -3097,6 +3097,9 @@ class MiniMaxH3DirectorEditor {
                         <span data-i18n="output.refImageSize.label">参考图尺寸</span>
                         <select class="bd-select" data-r="seg-ref-image-size">
                             <option value="match" data-i18n="output.refImageSize.match">match</option>
+                            <option value="1024" data-i18n="output.refImageSize.1024">最长边 1024</option>
+                            <option value="1280" data-i18n="output.refImageSize.1280">最长边 1280</option>
+                            <option value="1536" data-i18n="output.refImageSize.1536">最长边 1536</option>
                             <option value="max" data-i18n="output.refImageSize.max">max</option>
                         </select>
                     </label>
@@ -6361,6 +6364,12 @@ class MiniMaxH3DirectorEditor {
         if (!show) return;
         const seg = this.timeline.segments?.[this.selectedIndex ?? 0];
         const value = resolveSegmentRefImageSize(seg, this.timeline.output);
+        if (![...sel.options].some((o) => o.value === value)) {
+            const extra = document.createElement("option");
+            extra.value = value;
+            extra.textContent = value;
+            sel.appendChild(extra);
+        }
         sel.value = value;
         if (seg && seg.refImageSize !== value) seg.refImageSize = value;
         wrap.title = t("tooltip.refImageSize");
