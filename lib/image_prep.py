@@ -33,6 +33,55 @@ def assert_minimax_canvas(width: int, height: int) -> None:
     )
 
 
+def fit_edge_limit(
+    image: torch.Tensor,
+    max_px: int,
+    *,
+    edge: str = "short",
+    stride: int = 2,
+) -> torch.Tensor:
+    """Downscale only so short or long edge is at most ``max_px``. Never upscale."""
+    rgb = image[..., :3]
+    squeezed = False
+    if rgb.ndim == 3:
+        rgb = rgb.unsqueeze(0)
+        squeezed = True
+    height, width = int(rgb.shape[1]), int(rgb.shape[2])
+    current = min(height, width) if str(edge).strip().lower() == "short" else max(height, width)
+    limit = max(int(stride), int(max_px))
+    if current <= limit:
+        return image if not squeezed else rgb
+    scale = limit / float(current)
+    new_h = max(stride, int(round(height * scale / stride) * stride))
+    new_w = max(stride, int(round(width * scale / stride) * stride))
+    if new_h == height and new_w == width:
+        return image if not squeezed else rgb
+    out = common_upscale(
+        rgb.movedim(-1, 1), new_w, new_h, "area", "disabled"
+    ).movedim(1, -1)
+    return out[0] if squeezed and image.ndim == 3 else out
+
+
+def limit_ref_image_dict(
+    images: dict | None,
+    max_px: int,
+    edge: str = "short",
+) -> tuple[dict | None, int]:
+    """Apply :func:`fit_edge_limit` to each H3 ``ref_image_*`` tensor."""
+    if not images:
+        return images, 0
+    changed = 0
+    out: dict = {}
+    for key, tensor in images.items():
+        if tensor is None:
+            continue
+        resized = fit_edge_limit(tensor, max_px, edge=edge)
+        if resized is not tensor and tuple(resized.shape[-3:-1]) != tuple(tensor.shape[-3:-1]):
+            changed += 1
+        out[key] = resized
+    return out or None, changed
+
+
 def fit_long_edge(image: torch.Tensor, max_edge: int, stride: int = 32) -> torch.Tensor:
     """Long-edge fit with MiniMax H3 canvas snap (default stride 32).
 

@@ -915,7 +915,7 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
             "continuityEnabled": False,
             "continuityOverlapFrames": 22,
             "continuityMode": "guide",
-            "continuityRedraw": 0.65,
+            "continuityRedraw": 0.10,
         },
         "segments": segments or [{
             "id": "g0",

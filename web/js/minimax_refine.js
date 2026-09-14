@@ -499,6 +499,7 @@ function syncRefineWidgetVisibility(node) {
     const showH3Model = latentOnly || (upscale && method === "h3_latent");
     setWidgetVisible(node, "upscale_method", upscale);
     setWidgetVisible(node, "latent_upscale_model", showH3Model);
+    setWidgetVisible(node, "enable_latent_chunking", showH3Model);
     setWidgetVisible(node, "h3_latent_model", false);
     setWidgetVisible(node, "upscale_model", false);
     setWidgetVisible(node, "schedule", false);
@@ -509,6 +510,10 @@ function syncRefineWidgetVisibility(node) {
     setWidgetVisible(node, "sampler", !latentOnly);
     setWidgetVisible(node, "passes", !latentOnly);
     setWidgetVisible(node, "seed_mode", !latentOnly);
+    setWidgetVisible(node, "enable_tiling", !latentOnly);
+    const tilingOn = !latentOnly && Boolean(widgetValue(widgetByName(node, "enable_tiling")));
+    setWidgetVisible(node, "tile_count", tilingOn);
+    setWidgetVisible(node, "tile_overlap", tilingOn);
     setWidgetVisible(node, "target_width", false);
     setWidgetVisible(node, "target_height", false);
     ensureFirstPassCacheUI(node);
@@ -552,6 +557,7 @@ function installRefineResolutionUI(node) {
     };
     hookWidget(node, "mode", () => syncRefineWidgetVisibility(node));
     hookWidget(node, "upscale_method", () => syncRefineWidgetVisibility(node));
+    hookWidget(node, "enable_tiling", () => syncRefineWidgetVisibility(node));
     hookWidget(node, "aspect_ratio", onAspect);
     hookWidget(node, "megapixels", () => syncRefineComputedSize(node));
     hookWidget(node, "width", () => {
@@ -571,7 +577,7 @@ function installRefineResolutionUI(node) {
         const prev = node.onWidgetChanged;
         node.onWidgetChanged = function (name, ...rest) {
             const r = prev?.apply(this, [name, ...rest]);
-            if (name === "mode" || name === "upscale_method" || name === "aspect_ratio" || name === "megapixels") {
+            if (name === "mode" || name === "upscale_method" || name === "aspect_ratio" || name === "megapixels" || name === "enable_tiling") {
                 migrateRefineWidgets(this);
                 syncRefineWidgetVisibility(this);
             }
