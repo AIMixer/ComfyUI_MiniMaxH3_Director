@@ -64,6 +64,7 @@ from .h3_motion_context import (
     trim_export_tail,
 )
 from .segment_cache import (
+    has_first_pass_cache,
     load_first_pass_av_latent,
     load_first_pass_cache,
     load_first_pass_frames_stale,
@@ -101,8 +102,19 @@ def _segment_disk_cache_needed(
     will_refine: bool,
     hold_after_first: bool,
 ) -> bool:
-    """Disk cache is for partial re-run / refine / continuity — not single-shot r2v."""
-    if will_refine or hold_after_first:
+    """Disk cache is for partial re-run / refine / continuity — not single-shot r2v.
+
+    ``hold_after_first`` means refine has NOT run yet (confirm-first-pass hold):
+    ``chunk`` at the call site is still the un-refined first-pass decode. Writing
+    that into the final-cache slot (``seg_XXXX.pt``) would let a later, unselected
+    「全部导出」merge treat a segment that only ever got a first pass as if it were
+    a finished two-pass result — wrong resolution/content, no warning. The first
+    pass already has its own cache (``seg_XXXX.pre.*``); the final slot must wait
+    for an actual refine pass.
+    """
+    if hold_after_first:
+        return False
+    if will_refine:
         return True
     if plan.continuity_enabled:
         return True
@@ -548,6 +560,10 @@ def execute_director_plan_core(
     # completed_* also get export-fill hydrations from disk; this set does not.
     resampled_this_run: set[int] = set()
     held_for_confirmation = False
+    # Segments held after first pass THIS run (no refine yet). Guards the
+    # phase-align resave below from writing their un-refined chunk into the
+    # final-cache slot via a path that bypasses _segment_disk_cache_needed.
+    held_indices: set[int] = set()
     # True export lengths (post continuity trim). Kept after「分段导出」
     # replaces older IMAGE slots with 1-frame posters.
     segment_export_lengths: dict[int, int] = {}
@@ -556,7 +572,7 @@ def execute_director_plan_core(
     def _run_one_segment(
         seg, *, progress_index: int
     ) -> tuple[torch.Tensor, dict[str, Any] | None, torch.Tensor]:
-        nonlocal held_for_confirmation
+        nonlocal held_for_confirmation, held_indices
         if seg.task_key not in SUPPORTED_TASK_KEYS:
             raise ValueError(
                 f"Task '{seg.task_key}' is not supported on MiniMax H3 Director. "
@@ -574,6 +590,8 @@ def execute_director_plan_core(
         skip_first_sample = pre_cache is not None
         hold_after_first = confirm_first and will_refine and not skip_first_sample
         held_for_confirmation = held_for_confirmation or hold_after_first
+        if hold_after_first:
+            held_indices.add(seg.index)
         meta = {
             "frames_label": frames_label(seg),
             "task_key": seg.task_key,
@@ -625,13 +643,25 @@ def execute_director_plan_core(
         prev_end_frame = None
         prev_idx = seg.index - 1
         if continuity_active:
-            if prev_idx in passthrough_indices:
+            prev_seg = all_segments[prev_idx] if prev_idx >= 0 else None
+            prev_first_pass_av = completed_first_pass_av.get(prev_idx)
+            if prev_first_pass_av is None and prev_seg is not None:
+                prev_first_pass_av = load_first_pass_av_latent(
+                    node_id, prev_seg, plan, allow_stale=True
+                )
+                if prev_first_pass_av is not None:
+                    completed_first_pass_av[prev_idx] = prev_first_pass_av
+            if prev_idx in passthrough_indices and prev_first_pass_av is None:
+                # Only block when prev truly has no usable AV data at all — a
+                # prev that was only source-passthrough-filled because its
+                # first pass was never confirmed into a final cache (fix for
+                # the hold/final-cache bug) still has a valid .pre.av.pt and
+                # can pin motion context via the fallback below.
                 raise ValueError(
                     f"段间连贯：片段 #{seg.index + 1} 的前一段 #{prev_idx + 1} "
                     "是源视频透传（未采样/无有效缓存），不能作为 motion context。"
                     "请先运行该段，或将其纳入「选择运行」。"
                 )
-            prev_seg = all_segments[prev_idx] if prev_idx >= 0 else None
             prev_from_this_run = prev_idx in resampled_this_run
             try:
                 prev_tail = resolve_prev_segment_output(
@@ -660,13 +690,8 @@ def execute_director_plan_core(
                 )
                 if prev_av is not None:
                     completed_av_latents[prev_idx] = prev_av
-            prev_first_pass_av = completed_first_pass_av.get(prev_idx)
-            if prev_first_pass_av is None and prev_seg is not None:
-                prev_first_pass_av = load_first_pass_av_latent(
-                    node_id, prev_seg, plan, allow_stale=True
-                )
-                if prev_first_pass_av is not None:
-                    completed_first_pass_av[prev_idx] = prev_first_pass_av
+            # prev_first_pass_av already resolved above (needed for the
+            # passthrough_indices guard before it could raise).
             prev_handoff = completed_av_handoff.get(prev_idx)
             if prev_handoff is None and prev_seg is not None:
                 prev_handoff = load_segment_handoff_meta(
@@ -940,18 +965,28 @@ def execute_director_plan_core(
                         prev_handoff["export_frames"] = int(prev_chunk.shape[0])
                         prev_handoff["phase_align_trim"] = int(prev_export_trim)
                         completed_av_handoff[prev_idx] = prev_handoff
-                        save_segment_cache(
-                            node_id,
-                            prev_seg,
-                            plan,
-                            prev_chunk,
-                            av_latent=completed_av_latents.get(prev_idx),
-                            handoff=prev_handoff,
-                            audio=completed_audios.get(prev_idx),
-                            replace_audio=False,
-                        )
+                        # prev_idx held (first-pass only, not refined) this run:
+                        # prev_chunk is the un-refined decode. Do not let this
+                        # resave path write it into the final-cache slot — same
+                        # rule as _segment_disk_cache_needed's hold_after_first.
+                        if prev_idx not in held_indices:
+                            save_segment_cache(
+                                node_id,
+                                prev_seg,
+                                plan,
+                                prev_chunk,
+                                av_latent=completed_av_latents.get(prev_idx),
+                                handoff=prev_handoff,
+                                audio=completed_audios.get(prev_idx),
+                                replace_audio=False,
+                            )
                         # Rewrite incremental mp4 so mid-run files match trimmed length.
-                        if hold_after_first:
+                        # Keyed on prev_seg's own hold status, not the current
+                        # segment's `hold_after_first` — a held prev's chunk is
+                        # still un-refined regardless of whether *this* segment
+                        # got held too, and an already-refined prev must not be
+                        # relabeled "_pre" just because this segment is held.
+                        if prev_idx in held_indices:
                             pre_path = maybe_export_segment_mp4(
                                 mp4_run_dir,
                                 plan,
@@ -1539,14 +1574,24 @@ def execute_director_plan_core(
             output_segments.append(seg)
             continue
 
+        # Not selected + no final cache: tell the user whether this segment was
+        # never run, or only got a first pass (confirm-hold) that never reached
+        # refine — the two look identical otherwise (both fall through to
+        # passthrough/skip below).
+        stage_note = (
+            "已完成一采、尚未二采"
+            if has_first_pass_cache(node_id, seg)
+            else "从未执行过一采"
+        )
+
         # Not selected + no cache: v2v/rv2v may fill from source video; gen batch must not
         # splice gray placeholders. If neither works, skip the slot (do not fail the run).
         fill = segment_passthrough_chunk(plan, seg)
         if fill is None:
             skipped_no_cache.append(seg.index + 1)
             reports.append(
-                f"Segment {seg.index + 1}/{len(all_segments)}: skipped — no cache "
-                "(outside run selection; omitted from merge)"
+                f"Segment {seg.index + 1}/{len(all_segments)}: skipped — no final cache "
+                f"({stage_note}; outside run selection; omitted from merge)"
             )
             continue
         completed_outputs[seg.index] = fill
@@ -1554,7 +1599,7 @@ def execute_director_plan_core(
         passthrough_indices.append(seg.index)
         reports.append(
             f"Segment {seg.index + 1}/{len(all_segments)}: source passthrough "
-            f"({fill.shape[0]} frames, not sampled — outside run selection)"
+            f"({fill.shape[0]} frames, not sampled — {stage_note}; outside run selection)"
         )
         output_chunks.append(fill)
         output_pre_chunks.append(fill)

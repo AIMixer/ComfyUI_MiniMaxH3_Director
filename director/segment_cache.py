@@ -698,6 +698,22 @@ def _trim_stale_first_pass_frames(
     return frames
 
 
+def has_first_pass_cache(node_id: str | None, seg: SegmentPlan) -> bool:
+    """Cheap existence check for the first-pass frame cache (no tensor load).
+
+    Used where callers only need "does a one-pass render exist for this
+    segment" (e.g. export-report messaging), not the frames themselves —
+    avoids the full torch.load + uint8->float32 conversion that
+    :func:`load_first_pass_frames_stale` does for actual frame retrieval.
+    """
+    if not node_id:
+        return False
+    root = _cache_root(node_id)
+    if root is None:
+        return False
+    return (root / f"seg_{seg.index:04d}.pre.pt").is_file()
+
+
 def load_first_pass_frames_stale(
     node_id: str | None,
     seg: SegmentPlan,
