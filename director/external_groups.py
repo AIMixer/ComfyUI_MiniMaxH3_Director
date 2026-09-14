@@ -517,27 +517,21 @@ def build_plan_from_external_groups(
                 )
             )
         else:
-            # r2v — per-group media + Director timeline.global common media/prompt
+            # r2v — keep native stills; official match / Director max-cap resize later.
             refs = []
             for idx, tensor in sorted((g.get("ref_images") or {}).items()):
-                fitted = _fit_image(
-                    tensor, width=seg_w, height=seg_h, output_mode=seg_mode, ref_max_size=ref_max
-                )
-                refs.append(SegmentRef(index=int(idx), tensor=fitted[:1].clone()))
+                img = tensor.unsqueeze(0) if tensor.ndim == 3 else tensor
+                refs.append(SegmentRef(index=int(idx), tensor=img[:1].clone()))
             if common_refs_raw:
                 common_fitted = []
                 for cref in common_refs_raw:
-                    fitted = _fit_image(
-                        cref.tensor,
-                        width=seg_w,
-                        height=seg_h,
-                        output_mode=seg_mode,
-                        ref_max_size=ref_max,
-                    )
+                    img = cref.tensor
+                    if img.ndim == 3:
+                        img = img.unsqueeze(0)
                     common_fitted.append(
                         SegmentRef(
                             index=int(cref.index),
-                            tensor=fitted[:1].clone(),
+                            tensor=img[:1].clone(),
                             image_file=getattr(cref, "image_file", "") or "",
                         )
                     )

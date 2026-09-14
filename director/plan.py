@@ -74,11 +74,62 @@ MIN_CONTINUITY_OVERLAP = 5
 MAX_CONTINUITY_OVERLAP = 56
 REF_IMAGE_SIZE_MATCH = "match"
 REF_IMAGE_SIZE_MAX = "max"
+REF_IMAGE_LONG_PRESETS = (1024, 1280, 1536)
+REF_IMAGE_SIZE_CHOICES = (
+    REF_IMAGE_SIZE_MATCH,
+    *(str(px) for px in REF_IMAGE_LONG_PRESETS),
+    REF_IMAGE_SIZE_MAX,
+)
 
 
 def normalize_ref_image_size(value) -> str:
-    raw = str(value or "").strip().lower()
-    return REF_IMAGE_SIZE_MAX if raw == REF_IMAGE_SIZE_MAX else REF_IMAGE_SIZE_MATCH
+    """``match`` | ``1024`` | ``1280`` | ``1536`` | ``max``."""
+    raw = str(value or "").strip().lower().replace("long", "").replace("_", "").replace(":", "")
+    raw = raw.replace("edge", "").replace("px", "").strip()
+    if raw == REF_IMAGE_SIZE_MAX:
+        return REF_IMAGE_SIZE_MAX
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return REF_IMAGE_SIZE_MATCH
+    if n in REF_IMAGE_LONG_PRESETS:
+        return str(n)
+    return REF_IMAGE_SIZE_MATCH
+
+
+def official_ref_image_size(value) -> str:
+    """Value passed to MiniMaxH3ReferenceToVideo (only match | max)."""
+    return (
+        REF_IMAGE_SIZE_MATCH
+        if normalize_ref_image_size(value) == REF_IMAGE_SIZE_MATCH
+        else REF_IMAGE_SIZE_MAX
+    )
+
+
+def ref_image_long_preset_px(value) -> int | None:
+    """Director long-edge cap, or None for match / official max."""
+    mode = normalize_ref_image_size(value)
+    if mode in {str(px) for px in REF_IMAGE_LONG_PRESETS}:
+        return int(mode)
+    return None
+
+
+def _migrate_ref_image_size(raw, extra=None) -> str:
+    mode = normalize_ref_image_size(raw)
+    src = extra if isinstance(extra, dict) else {}
+    if mode != REF_IMAGE_SIZE_MAX:
+        return mode
+    edge = str(src.get("refImageLimitEdge") or src.get("ref_image_limit_edge") or "").lower()
+    px_raw = src.get("refImageLimitPx")
+    if px_raw is None:
+        px_raw = src.get("ref_image_limit_px")
+    try:
+        px = int(px_raw)
+    except (TypeError, ValueError):
+        return mode
+    if edge in {"long", "longest", "long_edge", "longedge"} and px in REF_IMAGE_LONG_PRESETS:
+        return str(px)
+    return mode
 
 
 def _timeline_dict(plan_or_timeline) -> dict:
@@ -95,21 +146,27 @@ def _legacy_output_ref_image_size(timeline: dict | None) -> str | None:
         raw = out.get("ref_image_size")
     if raw is None or str(raw).strip() == "":
         return None
-    return normalize_ref_image_size(raw)
+    return _migrate_ref_image_size(raw, out)
 
 
 def resolve_ref_image_size(seg_or_data=None, plan_or_timeline=None) -> str:
-    """Per-segment MiniMax ``ref_image_size``; legacy ``output.refImageSize`` as fallback."""
+    """Per-segment mode; legacy ``output.refImageSize`` as fallback."""
     raw = None
+    extra = None
     if isinstance(seg_or_data, dict):
+        extra = seg_or_data
         if "refImageSize" in seg_or_data or "ref_image_size" in seg_or_data:
             raw = seg_or_data.get("refImageSize")
             if raw is None:
                 raw = seg_or_data.get("ref_image_size")
     elif seg_or_data is not None:
         raw = getattr(seg_or_data, "ref_image_size", None)
+        extra = {
+            "refImageLimitEdge": getattr(seg_or_data, "ref_image_limit_edge", None),
+            "refImageLimitPx": getattr(seg_or_data, "ref_image_limit_px", None),
+        }
     if raw is not None and str(raw).strip() != "":
-        return normalize_ref_image_size(raw)
+        return _migrate_ref_image_size(raw, extra)
     legacy = _legacy_output_ref_image_size(_timeline_dict(plan_or_timeline))
     return legacy if legacy is not None else REF_IMAGE_SIZE_MATCH
 
@@ -186,7 +243,7 @@ class SegmentPlan:
     ui_index: int | None = None
     # Per-segment「引用上段」; master「段间引导」must also be on. Default True.
     continuity_from_prev: bool = True
-    # Official MiniMaxH3ReferenceToVideo combo: match | max. Per r2v/rv2v group.
+    # match | 1024 | 1280 | 1536 | max. Official node only sees match | max.
     ref_image_size: str = "match"
 
     @property
@@ -225,7 +282,7 @@ class DirectorPlan:
     continuity_overlap_frames: int = 0
     # "guide" (motion-context keyframes) | "continue" (引导+重绘 / latent remask).
     continuity_mode: str = "guide"
-    continuity_redraw: float = 0.65
+    continuity_redraw: float = 0.10
     # Keep sample-trim remainder (~12f) instead of cropping back to UI length.
     continuity_keep_tail: bool = True
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
@@ -882,10 +939,8 @@ def build_director_plan(
             seg_data if isinstance(seg_data, dict) else {},
             segment_index=seg.index,
         )
-        seg.ref_image_size = resolve_ref_image_size(
-            seg_data if isinstance(seg_data, dict) else {},
-            load_timeline,
-        )
+        data = seg_data if isinstance(seg_data, dict) else {}
+        seg.ref_image_size = resolve_ref_image_size(data, load_timeline)
 
     return DirectorPlan(
         frame_rate=float(timeline.get("frameRate") or frame_rate or 24),
