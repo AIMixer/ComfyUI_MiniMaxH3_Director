@@ -462,9 +462,8 @@ def upscale_h3_video_latent(
         )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Official 3D node defaults to fp32; bf16 GroupNorm on this net can collapse
-    # to NaN/mud and decode as a brown static frame.
-    dtype = torch.float32
+    # Match the fusion workflow's low-memory path: run the 3D upscaler in fp16.
+    dtype = torch.float16
     if model is not None:
         net = model.model if hasattr(model, "model") and not hasattr(model, "conv_in") else model
         model = net.to(device=device, dtype=dtype).eval()
