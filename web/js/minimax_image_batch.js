@@ -395,7 +395,15 @@ function flushBatchDurationInputs(editor) {
     flushBatchPromptInputs(editor);
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
     if (!isVideoBatchTask(taskKey)) return;
+    // With external groups connected the card's seconds field is a read-only
+    // mirror of the group node — the graph is the source of truth. Flushing it
+    // would write the value rendered *before* the group edit back over the
+    // duration `syncExternalGroupsTimeline` just rebuilt, so the panel would keep
+    // showing the old length (only for the segments whose card is in the DOM).
+    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
     for (const input of list.querySelectorAll("input[data-batch-sec-index]")) {
+        // A disabled/readOnly control is a mirror: never write it back anywhere.
+        if (input.disabled || input.readOnly) continue;
         const live = liveBatchSegmentFromEl(editor, input, "data-batch-sec-index");
         if (!live?.seg) continue;
         clearTimeout(input._t);

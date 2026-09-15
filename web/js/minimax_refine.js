@@ -7,6 +7,7 @@ import {
     resolutionFromSelector,
     snapResolutionDim,
 } from "./minimax_gen_timeline.js";
+import { injectExternalGroupsWitness } from "./minimax_external_witness.js";
 
 const REFINE_CLASS = "MiniMaxH3DirectorRefine";
 const DIRECTOR_CLASSES = new Set(["MiniMaxH3Director", "ComfyMiniMaxH3Director"]);
@@ -248,6 +249,77 @@ function directorValue(node, name, fallback) {
     return value == null || value === "" ? fallback : value;
 }
 
+/** Fingerprint key → what the user actually changed. */
+const CACHE_DIFF_LABELS = {
+    seed: "seed",
+    start: "片段起点",
+    end: "片段终点（时间范围变化）",
+    prompt: "提示词",
+    negative: "反向提示词",
+    task_key: "生成模式",
+    width: "宽度",
+    height: "高度",
+    frame_rate: "帧率",
+    output_mode: "输出模式",
+    refs: "参考图片",
+    ref_audios: "参考音频",
+    ref_videos: "参考视频",
+    ref_video: "参考视频",
+    ref_video_start: "参考视频起点",
+    source_video: "源视频",
+    continuity: "段间连续性",
+    continuity_overlap: "上下文帧数",
+    continuity_mode: "引导方式",
+    continuity_redraw: "重绘幅度",
+    continuity_keep_tail: "保完整",
+    cfg: "CFG",
+    steps: "一采步数",
+    sampler: "一采采样器",
+    scheduler: "调度器",
+    sigmas: "一采噪声表",
+    sigmas_source: "一采 SIGMAS 接线",
+    shift_video: "视频 shift",
+    shift_audio: "音频 shift",
+    "<invalid-meta>": "缓存信息损坏",
+    external_wiring: "外接组接线",
+    external_prompt: "外接组提示词",
+    external_length: "外接组时长",
+    external_shift: "外接组时间轴推移",
+    external_media: "外接组参考素材",
+    external_other: "外接组其他参数",
+    external_groups_off: "外接组（缓存写入后接线已断开）",
+};
+
+function diffLabel(key) {
+    return CACHE_DIFF_LABELS[key] || key;
+}
+
+/**
+ * One compact line naming the segments that cannot be reused. 1 group = 1
+ * segment = 1 cache slot, and a segment is compared against its own group only,
+ * so an edit to one group leaves the others matching — listing every segment
+ * would bury that (and the rest of the panel) under a dozen lines.
+ */
+function externalMismatchLine(data) {
+    const rows = Array.isArray(data?.segments) ? data.segments : [];
+    const bad = rows.filter((row) => !row?.matches);
+    if (!bad.length) return "";
+    const reasons = (row) => {
+        const keys = (Array.isArray(row?.diff_keys) ? row.diff_keys : [])
+            .filter((key) => key !== "<missing-cache>");
+        return keys.length ? keys.map(diffLabel).join("、") : "无缓存";
+    };
+    if (bad.length === rows.length && rows.length > 1) {
+        const all = [...new Set(bad.flatMap((row) => reasons(row).split("、")))].join("、");
+        return `不匹配：全部 ${rows.length} 段（${all}）`;
+    }
+    const parts = bad.slice(0, 4).map(
+        (row) => `${row?.slot || `第 ${row?.segment} 段`}（${reasons(row)}）`,
+    );
+    if (bad.length > parts.length) parts.push(`…共 ${bad.length} 段`);
+    return `不匹配：${parts.join("、")}`;
+}
+
 function directorHasSigmasLink(node) {
     const inp = (node?.inputs || []).find((i) => String(i.name) === "sigmas");
     if (!inp) return false;
@@ -263,7 +335,12 @@ function cacheStatusPayload(director) {
     }
     return {
         node_id: String(director.id),
-        timeline_data: String(directorValue(director, "timeline_data", "")),
+        // Keep the graph-wired external-group witness current: the status route
+        // runs on the backend where i2v_groups / r2v_groups links are invisible.
+        timeline_data: injectExternalGroupsWitness(
+            director,
+            String(directorValue(director, "timeline_data", "")),
+        ),
         task_type: String(directorValue(director, "task_type", "")),
         global_prompt: String(directorValue(director, "global_prompt", "")),
         total_frames: Number(directorValue(director, "total_frames", 124)),
@@ -303,38 +380,7 @@ function renderCacheStatus(node, data, kind = "normal") {
     const seeds = Array.isArray(data?.cached_seeds) && data.cached_seeds.length
         ? data.cached_seeds.join(", ")
         : "—";
-    const diffLabels = {
-        seed: "seed",
-        start: "片段起点",
-        end: "片段终点（时间范围变化）",
-        prompt: "提示词",
-        negative: "反向提示词",
-        task_key: "生成模式",
-        width: "宽度",
-        height: "高度",
-        frame_rate: "帧率",
-        output_mode: "输出模式",
-        refs: "参考图片",
-        ref_audios: "参考音频",
-        ref_videos: "参考视频",
-        ref_video: "参考视频",
-        ref_video_start: "参考视频起点",
-        source_video: "源视频",
-        continuity: "段间连续性",
-        continuity_overlap: "上下文帧数",
-        continuity_mode: "引导方式",
-        continuity_redraw: "重绘幅度",
-        continuity_keep_tail: "保完整",
-        cfg: "CFG",
-        steps: "一采步数",
-        sampler: "一采采样器",
-        scheduler: "调度器",
-        sigmas: "一采噪声表",
-        sigmas_source: "一采 SIGMAS 接线",
-        shift_video: "视频 shift",
-        shift_audio: "音频 shift",
-        "<invalid-meta>": "缓存信息损坏",
-    };
+    const diffLabels = CACHE_DIFF_LABELS;
     const diffs = Array.isArray(data?.diff_keys)
         ? data.diff_keys
             .filter((key) => key !== "<missing-cache>")
@@ -353,7 +399,25 @@ function renderCacheStatus(node, data, kind = "normal") {
     lines.push(`当前 seed：${data?.current_seed ?? "—"}`);
     const finalCached = Number(data?.final_cached_count || 0);
     lines.push(`成片缓存：${finalCached}/${total} 段（含音频；部分重跑会接这里）`);
-    if (diffs.length) lines.push(`差异：${diffs.join(", ")}`);
+    if (diffs.length) lines.push(`差异：${diffs.join("、")}`);
+    if (data?.mode === "external_groups") {
+        // External groups are not on the timeline: each segment is compared
+        // against its own group (prompt / duration / its reference slots) plus
+        // the plan-level knobs.
+        lines.push("核对方式：外接组");
+        const mismatch = externalMismatchLine(data);
+        if (mismatch) lines.push(mismatch);
+    }
+    const unverified = Number(data?.unverified_count || 0);
+    if (unverified > 0) {
+        lines.push(`提示：${unverified} 段缓存未记录外接组信息（旧版写入），这些段会重采一次`);
+    }
+    const staleExternal = Number(data?.stale_external_count || 0);
+    if (staleExternal > 0) {
+        lines.push(
+            `提示：${staleExternal} 段缓存由外接组计划写入，当前未检测到外接组接线，这些段会重采一采`,
+        );
+    }
     ui.body.textContent = lines.join("\n");
 }
 

@@ -36,6 +36,131 @@ MMX_DIR_GROUPS = MMX_DIR_GROUP
 I2V_FAMILY = frozenset({"t2v", "i2v", "fl2v"})
 R2V_FAMILY = frozenset({"r2v"})
 
+# timeline_data key carrying the frontend "which graph is wired into the group
+# input" witness (web/js/minimax_external_witness.js). It is stored in the
+# first-pass cache fingerprint so the cache-status panel can detect wiring
+# changes it cannot recompute from widget values alone.
+EXTERNAL_WITNESS_KEY = "externalGroupsWitness"
+_WITNESS_STR_MAX = 120
+# Named buckets of the witness, used to say *what* changed instead of "外接组".
+WITNESS_FACETS = ("wiring", "prompt", "length", "media", "other", "timeline")
+# Group records are capped frontend-side too; this only guards against a hand
+# crafted payload.
+_WITNESS_MAX_GROUPS = 256
+
+
+def _normalize_witness_facets(raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    facets: dict[str, str] = {}
+    for name in WITNESS_FACETS:
+        value = raw.get(name)
+        if value is None:
+            continue
+        facets[name] = str(value).strip()[:_WITNESS_STR_MAX]
+    return facets or None
+
+
+def normalize_external_group_record(raw: Any) -> dict[str, Any] | None:
+    """One witness record per graph-wired group (= one segment / cache slot).
+
+    ``dur`` is the group's own duration in seconds: the cache panel derives the
+    segment's frame count from it exactly like the run does. ``prompt``/``sub``
+    are digests; ``facets`` labels which bucket changed.
+    """
+    if not isinstance(raw, dict):
+        return None
+    record: dict[str, Any] = {
+        "slot": str(raw.get("slot") or "").strip()[:_WITNESS_STR_MAX],
+        "node": str(raw.get("node") or "").strip()[:_WITNESS_STR_MAX],
+        "prompt": str(raw.get("prompt") or "").strip()[:_WITNESS_STR_MAX],
+        "sub": str(raw.get("sub") or "").strip()[:_WITNESS_STR_MAX],
+    }
+    dur = raw.get("dur")
+    if dur is not None:
+        try:
+            record["dur"] = round(float(dur), 6)
+        except (TypeError, ValueError):
+            record["dur"] = None
+    else:
+        record["dur"] = None
+    facets = _normalize_witness_facets(raw.get("facets"))
+    if facets:
+        record["facets"] = facets
+    return record
+
+
+def normalize_external_witness(raw: Any) -> dict[str, Any] | None:
+    """Normalize the frontend external-group witness (``None`` when absent).
+
+    The witness rides inside ``timeline_data`` — the only value the cache-status
+    route and the Director execute path both receive. It is a change-detection
+    token, not user data, hence the narrow, versioned shape.
+
+    ``facets`` (wiring / prompt / length / media / other / timeline) and
+    ``groups`` are optional: older frontends and caches only carry the aggregate
+    ``graph`` digest, in which case the panel reports the category it *can* still
+    name, or nothing.
+    """
+    if not isinstance(raw, dict):
+        return None
+    graph = str(raw.get("graph") or raw.get("digest") or "").strip()[:_WITNESS_STR_MAX]
+    if not graph:
+        return None
+
+    def _text(key: str) -> str:
+        return str(raw.get(key) or "").strip()[:_WITNESS_STR_MAX]
+
+    def _int(key: str, fallback: int) -> int:
+        try:
+            return int(raw.get(key))
+        except (TypeError, ValueError):
+            return fallback
+
+    out: dict[str, Any] = {
+        "v": _int("v", 1),
+        "port": _text("port"),
+        "source": _text("source"),
+        "nodes": _int("nodes", 0),
+        "graph": graph,
+        "timeline": _text("timeline"),
+    }
+    fps = raw.get("fps")
+    if fps is not None:
+        try:
+            fps_value = float(fps)
+        except (TypeError, ValueError):
+            fps_value = None
+        if fps_value and fps_value > 0:
+            out["fps"] = round(fps_value, 6)
+    raw_groups = raw.get("groups")
+    if isinstance(raw_groups, list):
+        groups = [
+            record
+            for record in (
+                normalize_external_group_record(item)
+                for item in raw_groups[:_WITNESS_MAX_GROUPS]
+            )
+            if record is not None
+        ]
+        if groups:
+            out["groups"] = groups
+    # 「选择运行」selection, mirrored by the panel to report the same selected split.
+    raw_sel = raw.get("sel")
+    if isinstance(raw_sel, dict) and raw_sel.get("on") and isinstance(raw_sel.get("idx"), list):
+        picked: list[int] = []
+        for item in raw_sel["idx"][:_WITNESS_MAX_GROUPS]:
+            try:
+                picked.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if picked:
+            out["sel"] = {"on": True, "idx": picked}
+    facets = _normalize_witness_facets(raw.get("facets"))
+    if facets:
+        out["facets"] = facets
+    return out
+
 
 def _as_image_batch(image: Any) -> torch.Tensor | None:
     if image is None:
@@ -339,6 +464,27 @@ def validate_external_group_inputs(
     return task_key, r2v, "r2v"
 
 
+def external_witness_from_timeline(timeline: Any) -> dict[str, Any] | None:
+    if not isinstance(timeline, dict):
+        return None
+    return normalize_external_witness(timeline.get(EXTERNAL_WITNESS_KEY))
+
+
+def external_witness_from_timeline_data(timeline_data: Any) -> dict[str, Any] | None:
+    """Witness out of a raw ``timeline_data`` widget value (JSON text or dict)."""
+    import json
+
+    if isinstance(timeline_data, dict):
+        return external_witness_from_timeline(timeline_data)
+    text = str(timeline_data or "")
+    if not text.strip():
+        return None
+    try:
+        return external_witness_from_timeline(json.loads(text))
+    except Exception:
+        return None
+
+
 def build_plan_from_external_groups(
     groups: list[dict[str, Any]],
     *,
@@ -620,7 +766,7 @@ def build_plan_from_external_groups(
     continuity_redraw = resolve_continuity_redraw(timeline)
     continuity_keep_tail = resolve_continuity_keep_tail(timeline)
 
-    return DirectorPlan(
+    plan = DirectorPlan(
         frame_rate=fps,
         total_frames=total or int(total_frames or 0),
         width=out_w,
@@ -646,3 +792,7 @@ def build_plan_from_external_groups(
         continuity_keep_tail=continuity_keep_tail,
         global_ref_audios=list(common_audios_raw) if family == "r2v" else [],
     )
+    # Stamp the wiring witness so the first-pass cache records which graph
+    # produced these segments (the cache-status panel compares against it).
+    plan.external_groups_witness = external_witness_from_timeline(timeline)
+    return plan
