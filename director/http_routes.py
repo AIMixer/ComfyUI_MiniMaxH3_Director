@@ -638,10 +638,13 @@ def register_routes() -> bool:
         minimax_clear_segment_cache,
     )
     from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
+    from .update import minimax_apply_update, minimax_check_update
 
     _register_route(routes, "POST", "/minimax/director/export_pack", minimax_export_pack)
     _register_route(routes, "GET", "/minimax/director/download_pack", minimax_download_pack)
     _register_route(routes, "POST", "/minimax/director/import_pack", minimax_import_pack)
+    _register_route(routes, "POST", "/minimax/director/update/status", minimax_check_update)
+    _register_route(routes, "POST", "/minimax/director/update/apply", minimax_apply_update)
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")
     return True
