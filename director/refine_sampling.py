@@ -756,6 +756,20 @@ def apply_segment_refine(
                 "Unwire refine_model so the first-pass UNET (Turbo+Sage) is reused, "
                 "or use a matching second-pass UNET."
             )
+        # Force-unload first-pass model before loading the refine model.
+        # Prevents OOM when two ~20GB UNETs (fl2va + ref2va) would coexist
+        # on a 16GB card. The refine_model will be reloaded by the sampler.
+        if refine_model is not model:
+            import gc
+            import comfy.model_management as _mm
+            log.info(
+                "Director refine: unloading first-pass model before second-pass "
+                "(custom refine_model detected, freeing VRAM)"
+            )
+            _mm.unload_all_models()
+            _mm.soft_empty_cache()
+            gc.collect()
+
         # Pass 1 samples after optional upscale; later passes are same-canvas refine only.
         for i in range(n_passes):
             log.info(
