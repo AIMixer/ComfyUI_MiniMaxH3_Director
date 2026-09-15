@@ -448,6 +448,7 @@ const ZH = {
 
     "widget.seed": "种子",
     "widget.clearVram": "段间清理显存",
+    "widget.clearVramBeforeRefine": "二采前清理显存",
     "widget.exportSourceImages": "输出原片到 source_images",
     "widget.grpSample": "采样设置",
     "toolbar.batchDetailSolo": "单显模式",
@@ -469,6 +470,7 @@ const ZH = {
     "widget.grpPerf": "性能",
     "widget.controlAfterGenerate": "生成前后定制",
     "widget.tooltip.clearVram": "段间清理显存：每段结束后卸载模型并清空 CUDA 缓存。",
+    "widget.tooltip.clearVramBeforeRefine": "二采前清理显存：一采结束后、放大或二采开始前卸载模型并清空 CUDA 缓存。默认关。24GB 或一采/二采不同 UNET 时勾上，可降低二采峰值，但每段会多一次加载。",
     "widget.tooltip.exportSourceImages": "将时间轴原片输出到独立的 source_images 口；需另接预览/合成节点，不会改变主 images。默认关以节省内存。",
     "widget.tooltip.sigmas": "可选。一采噪声表，接 BasicScheduler 或 ManualSigmas。接线后覆盖步数和调度器（采样器下拉仍有效）。BasicScheduler 请接 SigmaShift 之后的同一套 H3 MODEL。",
     "common.upload": "选择/上传",
@@ -957,6 +959,7 @@ const EN = {
 
     "widget.seed": "Seed",
     "widget.clearVram": "Clear VRAM between segments",
+    "widget.clearVramBeforeRefine": "Clear VRAM before refine",
     "widget.exportSourceImages": "Export source to source_images",
     "widget.grpSample": "Sampling settings",
     "toolbar.batchDetailSolo": "Solo mode",
@@ -978,6 +981,7 @@ const EN = {
     "widget.grpPerf": "Performance",
     "widget.controlAfterGenerate": "Control after generate",
     "widget.tooltip.clearVram": "Clear VRAM between segments: unload models and empty CUDA cache after each segment.",
+    "widget.tooltip.clearVramBeforeRefine": "Clear VRAM before refine: unload models after the first pass, before upscale or the second sample. Off by default. Turn on for 24GB cards or a separate refine UNET to lower the second-pass peak; each segment reloads models once.",
     "widget.tooltip.exportSourceImages": "Decode the timeline source to the separate source_images output. Connect that output to a preview/compositor; it does not change images. Off by default to save memory.",
     "widget.tooltip.sigmas": "Optional first-pass noise schedule (BasicScheduler or ManualSigmas). When wired, overrides Steps and Scheduler (the sampler dropdown still applies). Wire BasicScheduler after SigmaShift on the same H3 MODEL.",
     "common.upload": "Choose/Upload",

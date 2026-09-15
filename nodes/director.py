@@ -254,6 +254,7 @@ class MiniMaxH3Director:
         shift_video=12.0,
         shift_audio=3.0,
         clear_vram_between_segments=True,
+        clear_vram_before_refine=False,
         export_source_images=False,
         **kwargs,
     ):
@@ -298,6 +299,7 @@ class MiniMaxH3Director:
                     shift_video=shift_video,
                     shift_audio=shift_audio,
                     clear_vram_between_segments=clear_vram_between_segments,
+                    clear_vram_before_refine=clear_vram_before_refine,
                 )
             )
 

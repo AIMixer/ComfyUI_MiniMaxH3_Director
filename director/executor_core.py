@@ -402,6 +402,7 @@ def execute_director_plan_core(
     shift_video: float = 12.0,
     shift_audio: float = 3.0,
     clear_vram_between_segments: bool = True,
+    clear_vram_before_refine: bool = False,
 ) -> tuple[
     torch.Tensor,
     list[torch.Tensor],
@@ -486,6 +487,8 @@ def execute_director_plan_core(
     shift_cache = ShiftedModelCache()
     if clear_vram_between_segments:
         reports.append("VRAM: 段间清理显存已开启（最后一段不清理）。")
+    if clear_vram_before_refine:
+        reports.append("VRAM: 二采前清理显存已开启（一采结束后、二采开始前卸载模型）。")
     if audio_mode == AUDIO_MODE_MUTE:
         reports.append("Audio: muted — skip audio VAE decode, silent AUDIO output.")
     elif audio_mode == AUDIO_MODE_SOURCE:
@@ -1195,6 +1198,14 @@ def execute_director_plan_core(
         if first_pass_gpu is not None and upscale_frames is None:
             del first_pass_gpu
             first_pass_gpu = None
+        # Same-segment peak: first-pass UNET/VAE still resident when refine
+        # starts. Optional unload (default off) frees that before upscale/sample.
+        if clear_vram_before_refine and run_refine:
+            cleanup_segment_vram(enabled=True, unload_models=True)
+            reports.append(
+                f"Segment {ui_idx + 1}/{timeline_seg_total}: "
+                "VRAM cleanup between first pass and refine"
+            )
         export_len = continuity_export_len(
             trim_frames=trim_frames,
             sample_len=sample_len,

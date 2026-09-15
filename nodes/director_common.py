@@ -88,6 +88,17 @@ def director_perf_inputs() -> dict:
                 "tooltip": "段间清理显存：每段结束后卸载模型并清空 CUDA 缓存。",
             },
         ),
+        "clear_vram_before_refine": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "二采前清理显存：一采结束后、放大或二采开始前卸载模型并清空 CUDA 缓存。"
+                    "默认关。24GB 或一采/二采不同 UNET 时勾上，可降低二采峰值，"
+                    "但每段会多一次加载。"
+                ),
+            },
+        ),
         "export_source_images": (
             "BOOLEAN",
             {

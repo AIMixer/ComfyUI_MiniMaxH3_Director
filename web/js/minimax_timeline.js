@@ -503,6 +503,7 @@ const HIDDEN_WIDGETS = [
 const DIRECTOR_WIDGET_LABEL_KEYS = {
     seed: "widget.seed",
     clear_vram_between_segments: "widget.clearVram",
+    clear_vram_before_refine: "widget.clearVramBeforeRefine",
     export_source_images: "widget.exportSourceImages",
     control_after_generate: "widget.controlAfterGenerate",
     "control after generate": "widget.controlAfterGenerate",
@@ -510,6 +511,7 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
 
 const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
+    clear_vram_before_refine: "widget.tooltip.clearVramBeforeRefine",
     export_source_images: "widget.tooltip.exportSourceImages",
 };
 
@@ -1639,7 +1641,11 @@ function moveDirectorDomWidgetToEnd(node) {
     node.widgets.push(widget);
 }
 
-const PERF_WIDGET_ORDER = ["bd_grp_perf", "clear_vram_between_segments"];
+const PERF_WIDGET_ORDER = [
+    "bd_grp_perf",
+    "clear_vram_between_segments",
+    "clear_vram_before_refine",
+];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {
     const dom = node?._minimaxDomWidget;
