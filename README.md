@@ -15,8 +15,9 @@
 | 功能 | 说明 |
 |------|------|
 | **多段时间轴** | 节点内上传视频，支持切分、均分、智能分镜分割（PySceneDetect）、追加；分割点可选中删除；可视化时间轴预览每段范围与缩略图 |
-| **多任务模式** | `task_type`：`t2v`（文生视频）、`i2v`（图生视频）、`fl2v`（首尾帧生视频）、`r2v`（参考主体生视频 / 素材组）、`v2v`（视频转视频）、`rv2v`（参考素材改视频） |
+| **多任务模式** | `task_type`：`t2v`、`i2v`、`fl2v`、`addguide`（定时图片引导）、`r2v`、`v2v`、`rv2v`、`mixed` |
 | **首尾帧 (fl2v)** | 独立首尾帧时间轴：多组关键帧、「添加一组」可只写提示词（文生）、或上传首帧和/或尾帧（官方支持只传尾帧）；开「段间引导」并勾「引用上段」时，空组用上一段末尾 N 帧做运动/音频衔接；拖缘调时长；支持「选择运行」只跑部分组 |
+| **定时引导帧 (addguide)** | 每段在一次 H3 采样中组合可选首帧、1..N 张定时 Guide 与可选尾帧；组内 Timeline 按 H3 原生 24fps 显示时间与 0-based 帧位置，支持拖动、逐帧微调、Mixed 段级选择及 Pack 往返 |
 | **参考素材组 (r2v)** | fl2v 式分组 UI：上方「公共参数」共享参考图/音频与公共提示词（与每组提示词拼接）；每组可再挂图片1–9 / 音频1–3 / 视频1–3；提示词用 `<Picture N>` / `<Video K>` / `<Audio J>`（或 `@` 引用）；时间轴预览与选中状态同步 |
 | **源视频编辑 (v2v / rv2v)** | Bernini 风格源视频时间轴；每段源画面自动绑定 `<Video 1>`；`rv2v` 另可挂参考图（图片1–9）与参考音频（音频1–3） |
 | **选择运行** | 开启后只采样勾选的片段/素材组；未勾选段可用缓存或源画面填充（全部导出时） |
@@ -37,7 +38,7 @@
 **输出：** `images` → `audio` → `fps` → `frame_count` → `source_images` → `report` → `images_pre_refine`
 
 > CLIP Loader 的 **type 必须选 `minimax`**（Qwen3-VL）。  
-> `t2v` / `i2v` / `fl2v` 用 **fl2va** UNET；`r2v` / `v2v` / `rv2v` 用 **ref2va** UNET。
+> `t2v` / `i2v` / `fl2v` / `addguide` 用 **fl2va** UNET；`r2v` / `v2v` / `rv2v` 用 **ref2va** UNET。
 
 `输出原片到 source_images` 只填充独立的 `source_images` 输出，不会改变主 `images`。请将 `source_images` 另接预览或视频合成节点查看；解码失败时运行报告会明确说明，并输出灰色占位而不会冒充生成画面。
 
@@ -53,6 +54,7 @@
 | Video 1–3 | `Video1.mp4` |
 | Audio 1–3 | `Audio1.wav` |
 | start / end (fl2v) | `start.jpg` / `end.jpg` in that group folder |
+| start / guides / end (addguide) | `start.jpg` / `guide_001.png`… / `end.jpg` in that group folder |
 | Upload video (v2v source) | `source_video/` |
 
 ```
@@ -72,6 +74,7 @@ timeline.json
 ## 依赖
 
 请将 **ComfyUI** 升级到 **v0.30.0** 及以上（含官方 MiniMax H3 节点：[PR #15224](https://github.com/comfyanonymous/ComfyUI/pull/15224)、[PR #15228](https://github.com/comfyanonymous/ComfyUI/pull/15228)）。
+`addguide` 还要求当前 ComfyUI 提供官方 `MiniMaxH3AddGuide`；该类采用延迟加载，旧版 ComfyUI 仍可使用其它任务模式。
 
 可选：`scenedetect`（智能分割）、`opencv-python-headless`（源视频解码）、`imageio-ffmpeg`（原声抽取）——见 `requirements.txt`。  
 Refine 的 `nvidia_rtx_vsr` 另需 NVIDIA GPU，可 `pip install nvidia-vfx --extra-index-url https://pypi.nvidia.com`（不是硬依赖）。
@@ -126,7 +129,7 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 
 | 用途 | 文件名 | 目录 |
 |------|--------|------|
-| UNET (t2v / i2v / fl2v) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
+| UNET (t2v / i2v / fl2v / addguide) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
 | UNET (r2v / v2v / rv2v) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
 | CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` |
 | Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
@@ -153,6 +156,13 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 3. 多组时打开「段间引导」并勾「引用上段」，空组会用上一段末尾 N 帧（上下文帧数，默认 22）引导衔接
 4. 在镜卡片或时间轴上调整时长；提示词写中间运动 / 镜头 / 过渡
 5. Queue 生成；多组可勾选「选择运行」只跑部分组
+
+### 定时引导帧 addguide 用法摘要
+
+1. 任务类型选 **「定时引导帧 (addguide)」**，或在 `mixed` 中把某段切为 `addguide`
+2. 首帧、尾帧可留空；点击「添加引导帧」创建至少一个中间 Guide 并选择单张图片
+3. 在组内 Timeline 拖动 marker，或在卡片用整数输入与 `−/+` 设置 0-based `Fxx`；时间按固定 24fps 派生
+4. 每段的全部 First / Guides / Last 会在一次采样中生效；AddGuide 不引用上一段，但其结果可引导后一普通段
 
 ### 参考主体 r2v 用法摘要
 

@@ -16,8 +16,9 @@ Repository: [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/Comf
 | Feature | Description |
 |---------|-------------|
 | **Multi-segment timeline** | Upload video in-node; split, equal-split, smart shot-split (PySceneDetect), append; selectable/deletable split points; visual timeline with thumbs |
-| **Task modes** | `t2v`, `i2v`, `fl2v` (first/last frame), `r2v` (reference material groups), `v2v` (video-to-video), `rv2v` (reference-guided source edit) |
+| **Task modes** | `t2v`, `i2v`, `fl2v`, `addguide` (timed image guides), `r2v`, `v2v`, `rv2v`, and `mixed` |
 | **First/last frame (fl2v)** | Dedicated shot groups: prompt-only (text-to-video), or start and/or end (official FL2VA allows end-only). With segment continuity + From prev, an empty shot pins the previous tail (N context frames) for motion/audio handoff; drag edges for duration; run-select per group |
+| **Timed guides (addguide)** | Each segment combines an optional first frame, 1..N timed image Guides, and an optional last frame in one H3 sampling. Its local timeline uses native H3 24fps time plus 0-based frame positions, with drag, one-frame adjustment, Mixed segment selection, and pack round-trip support |
 | **Reference groups (r2v)** | fl2v-style groups: top **Common params** share refs/audio and a common prompt (concatenated with each group prompt); each group may add images 1–9 / audios 1–3 / videos 1–3; prompt tags `<Picture N>` / `<Video K>` / `<Audio J>` (or `@` picker); timeline preview synced with card selection |
 | **Source-video edit (v2v / rv2v)** | Bernini-style source timeline; each segment bound as `<Video 1>`; `rv2v` adds optional refs (images 1–9, audios 1–3) |
 | **Run select** | Sample only checked segments/groups; unselected may use cache or source passthrough when exporting all |
@@ -38,7 +39,7 @@ Reference-audio slots can select an existing video or a local audio/video file. 
 **Outputs:** `images` → `audio` → `fps` → `frame_count` → `source_images` → `report` → `images_pre_refine`
 
 > CLIP Loader **type must be `minimax`** (Qwen3-VL).  
-> Use **fl2va** UNET for `t2v` / `i2v` / `fl2v`; **ref2va** for `r2v` / `v2v` / `rv2v`.
+> Use **fl2va** UNET for `t2v` / `i2v` / `fl2v` / `addguide`; **ref2va** for `r2v` / `v2v` / `rv2v`.
 
 `Export source to source_images` populates only the separate `source_images` output; it does not change `images`. Connect `source_images` to a preview or video compositor. Decode failures are reported explicitly and emit a neutral placeholder instead of generated frames.
 
@@ -54,6 +55,7 @@ Toolbar **Import pack / Export pack** writes `*.mmxpack.zip`. Paths are ASCII on
 | Video 1–3 | `Video1.mp4` |
 | Audio 1–3 | `Audio1.wav` |
 | start / end (fl2v) | `start.jpg` / `end.jpg` in that group folder |
+| start / guides / end (addguide) | `start.jpg` / `guide_001.png`… / `end.jpg` in that group folder |
 | Upload video (v2v source) | `source_video/` |
 
 ```
@@ -73,6 +75,7 @@ timeline.json
 ## Requirements
 
 **ComfyUI ≥ v0.30.0** with official MiniMax H3 nodes ([PR #15224](https://github.com/comfyanonymous/ComfyUI/pull/15224), [PR #15228](https://github.com/comfyanonymous/ComfyUI/pull/15228)).
+`addguide` additionally requires a current ComfyUI build that provides official `MiniMaxH3AddGuide`; the class is loaded lazily, so older builds can still use the other task modes.
 
 Optional: `scenedetect`, `opencv-python-headless`, `imageio-ffmpeg` — see `requirements.txt`.  
 Refine `nvidia_rtx_vsr` needs an NVIDIA GPU: `pip install nvidia-vfx --extra-index-url https://pypi.nvidia.com` (not a hard dependency).
@@ -127,7 +130,7 @@ This repo ships examples under `example_workflows/`:
 
 | Role | Filename | Directory |
 |------|----------|-----------|
-| UNET (t2v / i2v / fl2v) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
+| UNET (t2v / i2v / fl2v / addguide) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
 | UNET (r2v / v2v / rv2v) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
 | CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` |
 | Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
@@ -154,6 +157,13 @@ This repo ships examples under `example_workflows/`:
 3. With multiple groups, turn on **Segment continuity** and check **From prev** — an empty shot pins the previous tail (N context frames, default 22)
 4. Adjust duration on the shot card or timeline; write mid-shot motion / camera / transition in the prompt
 5. Queue; with multiple groups, use **Run select** to sample only some of them
+
+### Timed guides (addguide) — short guide
+
+1. Choose **Timed Image Guides (addguide)**, or switch one `mixed` segment to `addguide`
+2. First and Last are optional; click **Add guide** and choose one still image for at least one intermediate Guide
+3. Drag its local-timeline marker, or use the integer field and `−/+` buttons to set a 0-based `Fxx`; displayed time is always derived at 24fps
+4. All First / Guides / Last constraints for the segment apply to one sampling. AddGuide does not consume the previous segment, but its result may feed continuity for a following normal segment
 
 ### Reference groups (r2v) — short guide
 

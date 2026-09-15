@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 
 import torch
+import folder_paths
 
 from ..lib.image_prep import (
     assert_minimax_canvas,
@@ -14,16 +17,25 @@ from ..lib.image_prep import (
     resolve_output_dimensions,
 )
 from ..lib.task_prompts import resolve_task_key
+from ..lib.audio_io import probe_audio_duration
+from .timed_guides import (
+    SegmentTimedAudioGuide,
+    SegmentTimedGuide,
+    parse_timed_audio_guides,
+    parse_timed_guides,
+    validate_timed_audio_guides,
+    validate_timed_guides,
+)
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.gen")
 
-GEN_BLANK_KEYS = frozenset({"t2v", "r2v", "mixed"})
+GEN_BLANK_KEYS = frozenset({"t2v", "r2v", "addguide", "mixed"})
 GEN_IMAGE_KEYS = frozenset({"i2v"})
 FL2V_KEYS = frozenset({"fl2v"})
 GEN_TASK_KEYS = GEN_BLANK_KEYS | GEN_IMAGE_KEYS | FL2V_KEYS
-PROMPT_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v", "mixed"})
-VIDEO_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v", "mixed"})
-MIXED_SEGMENT_KEYS = frozenset({"t2v", "i2v", "fl2v", "r2v"})
+PROMPT_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v", "addguide", "mixed"})
+VIDEO_BATCH_KEYS = frozenset({"t2v", "i2v", "r2v", "fl2v", "addguide", "mixed"})
+MIXED_SEGMENT_KEYS = frozenset({"t2v", "i2v", "fl2v", "addguide", "r2v"})
 IMAGE_BATCH_KEYS = frozenset()
 
 MIN_GEN_FRAMES = 1
@@ -73,7 +85,7 @@ def gen_submode(timeline: dict, task_key: str) -> str:
 def _min_frames_for_task(task_key: str) -> int:
     if task_key in IMAGE_BATCH_KEYS or task_key in ("t2i", "i2i"):
         return MIN_GEN_FRAMES
-    if task_key in ("t2v", "i2v", "r2v", "mixed"):
+    if task_key in ("t2v", "i2v", "r2v", "addguide", "mixed"):
         return MIN_GEN_VIDEO_FRAMES
     return MIN_GEN_VIDEO_FRAMES
 
@@ -241,6 +253,79 @@ def _load_fl2v_segment_refs(
     if end_img is not None:
         refs.append(SegmentRef(index=1, tensor=end_img[:1].clone()))
     return refs
+
+
+def _timed_guide_identity(image_raw: dict) -> tuple[str, str]:
+    image_file = str(
+        image_raw.get("imageFile")
+        or image_raw.get("image_file")
+        or image_raw.get("fileName")
+        or ""
+    ).replace("\\", "/").strip()
+    if image_file:
+        path = os.path.join(
+            folder_paths.get_input_directory(), image_file.replace("/", os.sep)
+        )
+        try:
+            stat = os.stat(path)
+            mtime_ns = int(
+                getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+            )
+            return image_file, f"{image_file}:{int(stat.st_size)}:{mtime_ns}"
+        except OSError:
+            return image_file, f"{image_file}:missing"
+    inline = str(image_raw.get("imageB64") or "")
+    if inline:
+        digest = hashlib.sha256(inline.encode("utf-8", "replace")).hexdigest()
+        return "", f"inline:{digest}"
+    return "", "missing"
+
+
+def _load_timed_guides(seg_data: dict) -> list[SegmentTimedGuide]:
+    from .plan import load_reference_tensor
+
+    raw_guides = seg_data.get("timedGuides") or seg_data.get("timed_guides") or []
+    return parse_timed_guides(
+        raw_guides,
+        load_image=load_reference_tensor,
+        image_identity=_timed_guide_identity,
+    )
+
+
+def _timed_audio_source(audio_raw: dict) -> tuple[str, str, str, float]:
+    audio_file = str(
+        audio_raw.get("audioFile")
+        or audio_raw.get("audio_file")
+        or audio_raw.get("fileName")
+        or ""
+    ).replace("\\", "/").strip()
+    subfolder = str(audio_raw.get("subfolder") or "").replace("\\", "/").strip("/")
+    if subfolder and audio_file and not audio_file.startswith(subfolder + "/"):
+        audio_file = f"{subfolder}/{audio_file}"
+    if not audio_file:
+        return "", "", "missing", 0.0
+    audio_path = os.path.join(
+        folder_paths.get_input_directory(), audio_file.replace("/", os.sep)
+    )
+    try:
+        stat = os.stat(audio_path)
+        mtime_ns = int(
+            getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+        )
+        identity = f"{audio_file}:{int(stat.st_size)}:{mtime_ns}"
+        duration = probe_audio_duration(audio_path)
+        return audio_file, audio_path, identity, duration
+    except OSError:
+        return audio_file, audio_path, f"{audio_file}:missing", 0.0
+
+
+def _load_timed_audio_guides(seg_data: dict) -> list[SegmentTimedAudioGuide]:
+    raw_guides = (
+        seg_data.get("timedAudioGuides")
+        or seg_data.get("timed_audio_guides")
+        or []
+    )
+    return parse_timed_audio_guides(raw_guides, audio_source=_timed_audio_source)
 
 
 def _build_i2v_source_clip(
@@ -543,8 +628,9 @@ def build_gen_director_plan(
                 len(seg_refs),
             )
         seg_refs = segment_refs_for_context(seg_task_key, seg_refs)
-        if seg_task_key == "fl2v":
-            # segment_refs_for_context strips fl2v refs; rebuild start/end keyframes.
+        if seg_task_key in {"fl2v", "addguide"}:
+            # Both tasks use official ImageToVideo first/last keyframes. AddGuide
+            # then appends its intermediate anchors to the same conditioning.
             seg_refs = _load_fl2v_segment_refs(
                 seg_data if isinstance(seg_data, dict) else {},
                 width=out_w,
@@ -552,6 +638,36 @@ def build_gen_director_plan(
                 output_mode=out_mode,
                 ref_max_size=ref_max,
             )
+        timed_guides = []
+        timed_audio_guides = []
+        if seg_task_key == "addguide":
+            timed_guides = _load_timed_guides(
+                seg_data if isinstance(seg_data, dict) else {}
+            )
+            timed_audio_guides = _load_timed_audio_guides(
+                seg_data if isinstance(seg_data, dict) else {}
+            )
+            has_first = any(int(getattr(ref, "index", -1)) == 0 for ref in seg_refs)
+            has_last = any(int(getattr(ref, "index", -1)) == 1 for ref in seg_refs)
+            frame_count = max(1, int(end) - int(start))
+            if not timed_guides and not timed_audio_guides:
+                raise ValueError(
+                    f"AddGuide segment #{idx + 1} requires at least one Picture Guide or Audio Guide."
+                )
+            if timed_guides:
+                timed_guides = validate_timed_guides(
+                    timed_guides,
+                    frame_count=frame_count,
+                    first_present=has_first,
+                    last_present=has_last,
+                    segment_number=idx + 1,
+                )
+            if timed_audio_guides:
+                timed_audio_guides = validate_timed_audio_guides(
+                    timed_audio_guides,
+                    frame_count=frame_count,
+                    segment_number=idx + 1,
+                )
         seg_ref_audios = []
         seg_ref_videos = []
         if edit_mode == "global":
@@ -648,13 +764,19 @@ def build_gen_director_plan(
                 task_key=seg_task_key,
                 use_global=use_global,
                 refs=seg_refs,
+                timed_guides=timed_guides,
+                timed_audio_guides=timed_audio_guides,
                 ref_audios=seg_ref_audios,
                 ref_videos=seg_ref_videos,
                 negative_prompt=seg_negative,
                 source_clip=seg_source,
-                continuity_from_prev=resolve_segment_continuity_from_prev(
-                    seg_data if isinstance(seg_data, dict) else {},
-                    segment_index=idx,
+                # AddGuide is an independent sampling in P1. It may feed the
+                # following segment, but never consumes previous motion context.
+                continuity_from_prev=False if seg_task_key == "addguide" else (
+                    resolve_segment_continuity_from_prev(
+                        seg_data if isinstance(seg_data, dict) else {},
+                        segment_index=idx,
+                    )
                 ),
                 ref_image_size=resolve_ref_image_size(
                     seg_data if isinstance(seg_data, dict) else {},
@@ -686,6 +808,9 @@ def build_gen_director_plan(
     continuity_mode = resolve_continuity_mode(timeline)
     continuity_redraw = resolve_continuity_redraw(timeline)
     continuity_keep_tail = resolve_continuity_keep_tail(timeline)
+
+    if task_key == "addguide":
+        continuity_enabled, continuity_overlap = False, 0
 
     return DirectorPlan(
         frame_rate=fps,

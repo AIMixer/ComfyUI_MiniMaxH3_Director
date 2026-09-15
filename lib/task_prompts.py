@@ -39,6 +39,13 @@ TASK_PROMPT_SPECS: tuple[TaskPromptSpec, ...] = (
         "首帧+尾帧约束（可不传图=文生；ImageToVideo 可选 first/last）。",
     ),
     TaskPromptSpec(
+        "addguide",
+        "定时引导帧(AddGuide)",
+        "",
+        "一次采样中使用可选首帧、一个或多个定时图片 Guide、可选尾帧；"
+        "Guide 使用 H3 原生 24fps 的 0-based 帧位置。",
+    ),
+    TaskPromptSpec(
         "r2v",
         "参考主体生视频(Reference to Video)",
         "",
@@ -62,7 +69,8 @@ TASK_PROMPT_SPECS: tuple[TaskPromptSpec, ...] = (
         "mixed",
         "混合模式(Mixed Segments)",
         "",
-        "同一时间轴上每段自选 t2v / i2v / fl2v / r2v；采样按该段模式走官方 conditioning。"
+        "同一时间轴上每段自选 t2v / i2v / fl2v / addguide / r2v；"
+        "采样按该段模式走官方 conditioning。"
         "不接源视频（v2v/rv2v 请用独立任务）。",
     ),
 )
@@ -85,9 +93,9 @@ def task_type_combo_options() -> tuple[list[str], dict]:
     return options, {
         "default": task_type_option_label(default_spec),
         "tooltip": (
-            "MiniMax H3 支持 t2v / i2v / fl2v / r2v / v2v / rv2v / mixed。"
+            "MiniMax H3 支持 t2v / i2v / fl2v / addguide / r2v / v2v / rv2v / mixed。"
             "提示词直接送入 MiniMaxH3ImageToVideo 或 MiniMaxH3ReferenceToVideo（内部 tokenize）。"
-            "mixed 为每段自选 t2v/i2v/fl2v/r2v；r2v 用 <Picture 1>；"
+            "mixed 为每段自选 t2v/i2v/fl2v/addguide/r2v；r2v 用 <Picture 1>；"
             "v2v/rv2v 为源视频时间轴编辑（自动绑定 <Video 1>）；rv2v 另可挂参考图。"
         ),
     }

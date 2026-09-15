@@ -429,6 +429,12 @@ def _group_json(seg: dict) -> dict:
         "refVideos": seg.get("refVideos") or seg.get("ref_videos") or [],
         "continuityFromPrev": seg.get("continuityFromPrev", seg.get("continuity_from_prev")),
         "refImageSize": seg.get("refImageSize") or seg.get("ref_image_size"),
+        "timedGuides": copy.deepcopy(
+            seg.get("timedGuides") or seg.get("timed_guides") or []
+        ),
+        "timedAudioGuides": copy.deepcopy(
+            seg.get("timedAudioGuides") or seg.get("timed_audio_guides") or []
+        ),
     }
     if isinstance(seg.get("genImage"), dict):
         out["genImage"] = {
@@ -450,6 +456,64 @@ def _group_json(seg: dict) -> dict:
     return out
 
 
+def _rewrite_timed_guides(card: dict, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int]) -> None:
+    raw_guides = card.get("timedGuides") or card.get("timed_guides") or []
+    if not isinstance(raw_guides, list):
+        return
+    guides = sorted(
+        [guide for guide in raw_guides if isinstance(guide, dict)],
+        key=lambda guide: (
+            int(guide.get("frameIndex", guide.get("frame_index", 0)) or 0),
+            str(guide.get("id") or guide.get("guideId") or ""),
+        ),
+    )
+    for index, guide in enumerate(guides, 1):
+        image = guide.get("image") if isinstance(guide.get("image"), dict) else guide
+        _rewrite_image_ref(
+            image,
+            f"guide_{index:03d}",
+            folder,
+            staging,
+            missing,
+            dry_run,
+            sizes,
+        )
+    card["timedGuides"] = guides
+    card.pop("timed_guides", None)
+
+
+def _rewrite_timed_audio_guides(card: dict, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int]) -> None:
+    raw_guides = card.get("timedAudioGuides") or card.get("timed_audio_guides") or []
+    if not isinstance(raw_guides, list):
+        return
+    guides = sorted(
+        [guide for guide in raw_guides if isinstance(guide, dict)],
+        key=lambda guide: (
+            int(guide.get("frameIndex", guide.get("frame_index", 0)) or 0),
+            str(guide.get("id") or guide.get("guideId") or ""),
+        ),
+    )
+    for index, guide in enumerate(guides, 1):
+        audio = guide.get("audio") if isinstance(guide.get("audio"), dict) else guide
+        ext = _safe_ext(
+            Path(str(audio.get("audioFile") or audio.get("fileName") or "audio.wav")),
+            ".wav",
+        )
+        if ext not in AUDIO_EXTS:
+            ext = ".wav"
+        _rewrite_one(
+            audio,
+            AUDIO_KEYS,
+            f"{folder}/audio_guide_{index:03d}{ext}",
+            staging,
+            missing,
+            dry_run=dry_run,
+            sizes=sizes,
+        )
+    card["timedAudioGuides"] = guides
+    card.pop("timed_audio_guides", None)
+
+
 def _explode_card(card: dict, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int]) -> None:
     _rewrite_image_list(card.get("refs") or [], folder, staging, missing, dry_run, sizes)
     _rewrite_audio_list(card.get("refAudios") or card.get("ref_audios") or [], folder, staging, missing, dry_run, sizes)
@@ -464,6 +528,8 @@ def _explode_card(card: dict, folder: str, staging: Path, missing: list[str], dr
         card["imageFile"] = dummy.get("imageFile") or card.get("imageFile")
     _rewrite_image_ref(card.get("startImage"), "start", folder, staging, missing, dry_run, sizes)
     _rewrite_image_ref(card.get("endImage"), "end", folder, staging, missing, dry_run, sizes)
+    _rewrite_timed_guides(card, folder, staging, missing, dry_run, sizes)
+    _rewrite_timed_audio_guides(card, folder, staging, missing, dry_run, sizes)
 
 
 def _ascii_extra_name(src: Path, used: set[str]) -> str:
@@ -811,6 +877,12 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
             "imageFile": (gen or {}).get("imageFile") or raw.get("imageFile") or "",
             "startImage": start_img,
             "endImage": end_img,
+            "timedGuides": copy.deepcopy(
+                raw.get("timedGuides") or raw.get("timed_guides") or []
+            ),
+            "timedAudioGuides": copy.deepcopy(
+                raw.get("timedAudioGuides") or raw.get("timed_audio_guides") or []
+            ),
         }
         segments.append(seg)
         shots.append({

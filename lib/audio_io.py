@@ -23,6 +23,7 @@ so trim-leading does not become all silence.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import shutil
@@ -330,6 +331,52 @@ def load_reference_audio(
 ) -> dict[str, Any] | None:
     """Load a standalone audio file into ComfyUI AUDIO dict ``{waveform, sample_rate}``."""
     return _load_full_audio(path, cache=cache)
+
+
+def probe_audio_duration(path: str) -> float:
+    """Return decoded stream duration without materializing PCM when possible."""
+    probe = ffprobe_bin()
+    if probe and path and os.path.isfile(path):
+        try:
+            res = subprocess.run(
+                [
+                    probe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=duration:format=duration",
+                    "-of",
+                    "json",
+                    path,
+                ],
+                capture_output=True,
+                check=True,
+            )
+            payload = json.loads(res.stdout.decode(*_ENCODE_ARGS) or "{}")
+            streams = payload.get("streams") or []
+            candidates = [
+                streams[0].get("duration") if streams else None,
+                (payload.get("format") or {}).get("duration"),
+            ]
+            for value in candidates:
+                try:
+                    duration = float(value or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if duration > 0:
+                    return duration
+        except (subprocess.CalledProcessError, json.JSONDecodeError):
+            pass
+    audio = _load_full_audio(path)
+    if not audio:
+        return 0.0
+    wave = audio.get("waveform")
+    sample_rate = int(audio.get("sample_rate") or 0)
+    if not isinstance(wave, torch.Tensor) or sample_rate <= 0:
+        return 0.0
+    return float(wave.shape[-1]) / float(sample_rate)
 
 
 def _load_full_audio(
