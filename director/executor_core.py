@@ -89,6 +89,7 @@ from .segment_continuity import (
     match_export_opening_grade,
     resolve_prev_segment_output,
 )
+from .stream_merge import concat_continuous_chunks_to_disk, stream_merge_required
 from .vram_cleanup import cleanup_segment_vram
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.core")
@@ -1651,19 +1652,114 @@ def execute_director_plan_core(
             "and continuity pin (no full-timeline concat)."
         )
     else:
-        combined = concat_continuous_chunks(export_chunks, export_segments, plan)
         pre_source = export_pre_chunks if export_pre_chunks else segment_pre_refine
-        if not pre_source:
-            pre_source = list(segment_outputs)
         same_as_final = (
-            len(pre_source) == len(export_chunks)
-            and all(a is b for a, b in zip(pre_source, export_chunks))
+            not pre_source
+            or (
+                len(pre_source) == len(export_chunks)
+                and all(a is b for a, b in zip(pre_source, export_chunks))
+            )
         )
-        pre_combined = (
-            combined
-            if same_as_final
-            else concat_continuous_chunks(pre_source, export_segments, plan)
+
+        # 60 秒完整 float32 IMAGE 批次约占 17.5 GiB。
+        # 大时间轴改用临时 raw 文件，每段完成接缝写入后即可释放。
+        # 这样可避免再次分配完整时间轴；小时间轴仍走原有内存拼接路径。
+        first_shape = tuple(int(v) for v in export_chunks[0].shape[1:])
+        same_frame_shape = all(
+            tuple(int(v) for v in chunk.shape[1:]) == first_shape
+            for chunk in export_chunks
         )
+        use_stream_merge = (
+            len(export_chunks) > 1
+            and same_frame_shape
+            and stream_merge_required(export_frame_counts, first_shape)
+        )
+        poster = torch.full((1, 2, 2, 3), 0.5)
+
+        def _release_streamed_index(index: int, *, pre: bool) -> None:
+            if index < 0 or index >= len(export_segments):
+                return
+            seg = export_segments[index]
+            run_pos = progress_pos.get(seg.index)
+            if pre:
+                if index < len(export_pre_chunks):
+                    export_pre_chunks[index] = poster
+                if run_pos is not None and run_pos < len(segment_pre_refine):
+                    segment_pre_refine[run_pos] = poster
+                completed_pre_refine.pop(seg.index, None)
+            else:
+                if index < len(export_chunks):
+                    export_chunks[index] = poster
+                if run_pos is not None and run_pos < len(segment_outputs):
+                    segment_outputs[run_pos] = poster
+                completed_outputs.pop(seg.index, None)
+            gc.collect()
+
+        def _release_final(index: int) -> None:
+            _release_streamed_index(index, pre=False)
+
+        def _release_pre(index: int) -> None:
+            _release_streamed_index(index, pre=True)
+
+        def _release_shared(index: int) -> None:
+            _release_streamed_index(index, pre=False)
+            _release_streamed_index(index, pre=True)
+
+        # 帧导出完成后，这些工作集不再需要保留。
+        completed_refine_passes.clear()
+        completed_av_latents.clear()
+        completed_first_pass_av.clear()
+        shift_cache.clear()
+
+        if use_stream_merge:
+            total_bytes = sum(export_frame_counts) * first_shape[0] * first_shape[1] * first_shape[2] * 4
+            reports.append(
+                "Merge: disk-backed streaming enabled "
+                f"(~{total_bytes / (1024 ** 3):.2f} GiB timeline); "
+                "released each segment immediately after writing it."
+            )
+            combined = concat_continuous_chunks_to_disk(
+                export_chunks,
+                export_segments,
+                plan,
+                label="final",
+                node_id=node_id,
+                on_release=_release_shared if same_as_final else _release_final,
+            )
+            if same_as_final:
+                pre_combined = combined
+            else:
+                pre_counts = [int(chunk.shape[0]) for chunk in pre_source]
+                pre_shape = tuple(int(v) for v in pre_source[0].shape[1:])
+                pre_same_shape = all(
+                    tuple(int(v) for v in chunk.shape[1:]) == pre_shape
+                    for chunk in pre_source
+                )
+                if (
+                    len(pre_source) > 1
+                    and len(pre_source) == len(export_segments)
+                    and pre_same_shape
+                    and stream_merge_required(pre_counts, pre_shape)
+                ):
+                    pre_combined = concat_continuous_chunks_to_disk(
+                        pre_source,
+                        export_segments,
+                        plan,
+                        label="pre_refine",
+                        node_id=node_id,
+                        on_release=_release_pre,
+                    )
+                else:
+                    pre_combined = concat_continuous_chunks(
+                        pre_source, export_segments, plan
+                    )
+        else:
+            combined = concat_continuous_chunks(export_chunks, export_segments, plan)
+            pre_combined = (
+                combined
+                if same_as_final
+                else concat_continuous_chunks(pre_source, export_segments, plan)
+            )
     shift_cache.clear()
     if clear_vram_between_segments:
         cleanup_segment_vram(enabled=True, unload_models=False)
