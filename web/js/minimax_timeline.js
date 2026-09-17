@@ -123,6 +123,11 @@ import {
     toggleLocale,
 } from "./minimax_i18n.js";
 import { bindPackActions } from "./minimax_pack.js";
+import {
+    attachExternalGroupsWitness,
+    injectExternalGroupsWitness,
+    setExternalGroupSpecsProvider,
+} from "./minimax_external_witness.js";
 
 const RULER_H = 24;
 const SEG_LABEL_H = 20;
@@ -205,8 +210,8 @@ const CONTINUITY_FRAME_CHOICES = [5, 22, 39, 56];
 /** Official Motion Context baseline recommendation. */
 const DEFAULT_CONTINUITY_FRAMES = 22;
 const DEFAULT_CONTINUITY_MODE = "guide";
-const DEFAULT_CONTINUITY_REDRAW = 0.65;
-const MIN_CONTINUITY_REDRAW = 0.40;
+const DEFAULT_CONTINUITY_REDRAW = 0.10;
+const MIN_CONTINUITY_REDRAW = 0;
 const MAX_CONTINUITY_REDRAW = 0.95;
 
 function normalizeContinuityMode(raw) {
@@ -497,36 +502,46 @@ const HIDDEN_WIDGETS = [
     "timeline_data", "total_frames", "width", "height", "ref_max_size",
     "task_type", "global_prompt", "frame_rate", "cfg",
     "export_source_images",
+    "export_pre_face_refine",
     // seed stays visible under 采样设置 (with control_after_generate)
 ];
 
 const DIRECTOR_WIDGET_LABEL_KEYS = {
     seed: "widget.seed",
     clear_vram_between_segments: "widget.clearVram",
+    clear_vram_before_refine: "widget.clearVramBeforeRefine",
+    clear_vram_before_face_refine: "widget.clearVramBeforeFaceRefine",
     clear_ram_between_segments: "widget.clearRam",
     offload_segments_to_disk: "widget.offloadDisk",
     save_group_videos: "widget.saveGroupVideos",
     rerun_when_done: "widget.rerunWhenDone",
     rerun_after_seconds: "widget.rerunAfterSeconds",
     export_source_images: "widget.exportSourceImages",
+    export_pre_face_refine: "widget.exportPreFaceRefine",
     control_after_generate: "widget.controlAfterGenerate",
     "control after generate": "widget.controlAfterGenerate",
 };
 
 const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
+    clear_vram_before_refine: "widget.tooltip.clearVramBeforeRefine",
+    clear_vram_before_face_refine: "widget.tooltip.clearVramBeforeFaceRefine",
     clear_ram_between_segments: "widget.tooltip.clearRam",
     offload_segments_to_disk: "widget.tooltip.offloadDisk",
     save_group_videos: "widget.tooltip.saveGroupVideos",
     rerun_when_done: "widget.tooltip.rerunWhenDone",
     rerun_after_seconds: "widget.tooltip.rerunAfterSeconds",
     export_source_images: "widget.tooltip.exportSourceImages",
+    export_pre_face_refine: "widget.tooltip.exportPreFaceRefine",
 };
 
 const DIRECTOR_GROUP_LABEL_KEYS = {
     bd_grp_sample: "widget.grpSample",
     bd_grp_advanced: "widget.grpAdvanced",
     bd_grp_perf: "widget.grpPerf",
+    bd_grp_face_detect: "widget.grpFaceDetect",
+    bd_grp_face_sample: "widget.grpSample",
+    bd_grp_face_paste: "widget.grpFacePaste",
 };
 
 function widgetByName(node, name) {
@@ -1046,9 +1061,11 @@ const STYLES = `
 .bd-canvas.bd-grab{cursor:grab}
 .bd-canvas.bd-grabbing{cursor:grabbing}
 .bd-output{width:100%;box-sizing:border-box;display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 8px;background:#1e1e1e;border:1px solid #333;border-radius:6px}
-.bd-out-audio-wrap,.bd-out-source-wrap{display:inline-flex;align-items:center;gap:6px}
-.bd-out-source-wrap.hidden{display:none}
-.bd-output .bd-out-source-wrap label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+.bd-out-audio-wrap,.bd-out-source-wrap,.bd-out-preface-wrap{display:inline-flex;align-items:center;gap:6px}
+.bd-out-source-wrap.hidden,.bd-out-preface-wrap.hidden{display:none}
+.bd-output .bd-out-source-wrap label,.bd-output .bd-out-preface-wrap label{display:inline-flex;align-items:center;gap:4px;margin:0;cursor:pointer;line-height:1}
+.bd-output .bd-out-source-wrap input[type=checkbox],.bd-output .bd-out-preface-wrap input[type=checkbox]{margin:0;width:13px;height:13px;flex:0 0 auto;align-self:center;accent-color:#4fff8f}
+.bd-output .bd-out-source-wrap label span,.bd-output .bd-out-preface-wrap label span{line-height:1.2;display:inline-block}
 .bd-split{display:block;width:100%;box-sizing:border-box;min-width:0}
 .bd-r2v-common-hint{margin:0 0 8px;font-size:11px;line-height:1.4;color:#9ab;opacity:.95}
 .bd-panel.bd-r2v-common-panel{border:1px solid #3a4a5a;background:linear-gradient(180deg,#1a222c 0%,#151a20 100%)}
@@ -1128,7 +1145,7 @@ const STYLES = `
 .bd-seg-head{display:flex;align-items:center;justify-content:flex-start;gap:10px;flex-wrap:wrap;min-width:0}
 .bd-seg-head>b{flex-shrink:0;margin:0}
 .bd-seg-refsize{display:inline-flex;align-items:center;gap:6px;color:#c8c8c8;font-size:11px;white-space:nowrap;margin-left:auto;flex-shrink:0}
-.bd-seg-refsize select{max-width:88px}
+.bd-seg-refsize select{max-width:132px}
 .bd-seg-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
 .bd-seg-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
 .bd-seg-head .bd-meta,.bd-panel.bd-v2v-panel .bd-seg-head .bd-meta,.bd-panel.bd-rv2v-panel .bd-seg-head .bd-meta{color:#8a8a8a;font-size:11px;line-height:1.45;padding:0;min-width:0}
@@ -1651,6 +1668,8 @@ function moveDirectorDomWidgetToEnd(node) {
 const PERF_WIDGET_ORDER = [
     "bd_grp_perf",
     "clear_vram_between_segments",
+    "clear_vram_before_refine",
+    "clear_vram_before_face_refine",
     "clear_ram_between_segments",
     "offload_segments_to_disk",
     "save_group_videos",
@@ -1916,6 +1935,7 @@ function parseTimeline(raw, totalFrames, fps) {
             maxExportFrames: 0, exportMode: "all",
             audioMode: "generate",
             exportSourceImages: false,
+            exportPreFaceRefine: false,
             refImageSize: "match",
             continuityEnabled: false, continuityOverlapFrames: DEFAULT_CONTINUITY_FRAMES,
             continuityMode: DEFAULT_CONTINUITY_MODE,
@@ -1984,6 +2004,8 @@ function parseTimeline(raw, totalFrames, fps) {
             audioMode: normalizeAudioMode(data.output?.audioMode ?? data.output?.audio_mode),
             exportSourceImages: data.output?.exportSourceImages === true
                 || data.output?.export_source_images === true,
+            exportPreFaceRefine: data.output?.exportPreFaceRefine === true
+                || data.output?.export_pre_face_refine === true,
             refImageSize: normalizeRefImageSize(data.output?.refImageSize ?? data.output?.ref_image_size),
             continuityEnabled: data.output?.continuityEnabled ?? data.output?.continuity_enabled,
             continuityOverlapFrames: data.output?.continuityOverlapFrames ?? data.output?.continuity_overlap_frames,
@@ -2151,6 +2173,25 @@ class MiniMaxH3DirectorEditor {
         this.heightWidget = this.widget("height");
         this.refMaxWidget = this.widget("ref_max_size");
 
+        // Refresh the external-group witness while the prompt is built, so an
+        // upstream edit made after the last timeline write can never leave a
+        // stale witness in the submitted timeline_data.
+        if (this.timelineWidget && !this.timelineWidget._mmxWitnessSerialized) {
+            const widget = this.timelineWidget;
+            const previous = typeof widget.serializeValue === "function"
+                ? widget.serializeValue
+                : null;
+            widget._mmxWitnessSerialized = true;
+            widget.serializeValue = function (targetNode) {
+                const raw = previous
+                    ? previous.call(widget, targetNode)
+                    : widget.value;
+                return typeof raw === "string"
+                    ? injectExternalGroupsWitness(targetNode ?? node, raw)
+                    : raw;
+            };
+        }
+
         const initTotal = Math.max(0, parseInt(this.totalFramesWidget?.value || 124, 10));
         const initFps = coerceTimelineFps(this.frameRateWidget?.value || 24);
         this.timeline = parseTimeline(this.timelineWidget?.value, initTotal, initFps);
@@ -2261,6 +2302,7 @@ class MiniMaxH3DirectorEditor {
             s.nodeId ?? "",
             Number(s.durationSec) || 0,
             s.prompt || "",
+            s.refImageSize || "",
             s.firstImageFile || "",
             s.lastImageFile || "",
             (s.refImages || []).map((r) => `${r.index}:${r.imageFile || ""}`).join(","),
@@ -2398,7 +2440,9 @@ class MiniMaxH3DirectorEditor {
                     previewB64: matched?.previewB64 || "",
                     previewFrames: matched?.previewFrames || [],
                     previewFps: matched?.previewFps,
-                    refImageSize: matched?.refImageSize ?? matched?.ref_image_size,
+                    refImageSize: spec.refImageSize
+                        ? resolveSegmentRefImageSize({ refImageSize: spec.refImageSize })
+                        : resolveSegmentRefImageSize(matched, this.timeline?.output),
                     ...(matched?.runEnabled != null ? { runEnabled: matched.runEnabled } : {}),
                 });
             });
@@ -2756,7 +2800,13 @@ class MiniMaxH3DirectorEditor {
         if (this.isImageBatch?.()) flushBatchPromptInputs(this);
         if (this.isFl2vMode?.()) flushFl2vPromptDraft(this);
         this.syncFromWidgets();
-        this.timelineWidget.value = JSON.stringify(this.buildTimelinePayload());
+        // Graph-wired external groups are invisible to widget-only readers
+        // (cache-status panel / backend at execute time), so ship a witness of
+        // the group wiring inside timeline_data itself. See
+        // minimax_external_witness.js.
+        const payload = this.buildTimelinePayload();
+        attachExternalGroupsWitness(this.node, payload);
+        this.timelineWidget.value = JSON.stringify(payload);
         this.node.setDirtyCanvas(true, false);
     }
 
@@ -2914,6 +2964,12 @@ class MiniMaxH3DirectorEditor {
                     <span data-i18n="output.exportSourceImages">输出原片</span>
                 </label>
             </span>
+            <span class="bd-out-preface-wrap" data-r="out-preface-wrap" data-i18n-title="widget.tooltip.exportPreFaceRefine">
+                <label>
+                    <input type="checkbox" data-r="out-export-preface">
+                    <span data-i18n="output.exportPreFaceRefine">输出修脸前</span>
+                </label>
+            </span>
             <span class="bd-meta" data-r="out-preview">—</span>
             <span class="bd-meta hidden" data-r="out-hint"></span>
             <label data-i18n="output.exportMode.label" data-i18n-title="tooltip.exportMode">导出方式</label>
@@ -2942,7 +2998,7 @@ class MiniMaxH3DirectorEditor {
                     </select>
                     <span data-r="segment-continuity-redraw-wrap" hidden>
                         <span class="bd-meta" data-i18n="output.continuityRedraw">重绘幅度</span>
-                        <input type="number" class="bd-num" data-r="segment-continuity-redraw" min="0.40" max="0.95" step="0.05" value="0.65" style="width:56px" data-i18n-title="tooltip.continuityRedraw">
+                        <input type="number" class="bd-num" data-r="segment-continuity-redraw" min="0" max="0.95" step="0.05" value="0.10" style="width:56px" data-i18n-title="tooltip.continuityRedraw">
                     </span>
                 </span>
                 <label data-r="segment-continuity-keep-tail-wrap" hidden data-i18n-title="tooltip.continuityKeepTail">
@@ -3058,6 +3114,9 @@ class MiniMaxH3DirectorEditor {
                         <span data-i18n="output.refImageSize.label">参考图尺寸</span>
                         <select class="bd-select" data-r="seg-ref-image-size">
                             <option value="match" data-i18n="output.refImageSize.match">match</option>
+                            <option value="1024" data-i18n="output.refImageSize.1024">最长边 1024</option>
+                            <option value="1280" data-i18n="output.refImageSize.1280">最长边 1280</option>
+                            <option value="1536" data-i18n="output.refImageSize.1536">最长边 1536</option>
                             <option value="max" data-i18n="output.refImageSize.max">max</option>
                         </select>
                     </label>
@@ -3254,6 +3313,8 @@ class MiniMaxH3DirectorEditor {
         this.outAudioMode = this.root.querySelector('[data-r="out-audio-mode"]');
         this.exportSourceImagesWrap = this.root.querySelector('[data-r="out-source-wrap"]');
         this.exportSourceImagesCb = this.root.querySelector('[data-r="out-export-source"]');
+        this.exportPreFaceRefineWrap = this.root.querySelector('[data-r="out-preface-wrap"]');
+        this.exportPreFaceRefineCb = this.root.querySelector('[data-r="out-export-preface"]');
         this.outMaxFrames = this.root.querySelector('[data-r="out-max-frames"]');
         this.outExportMode = this.root.querySelector('[data-r="out-export-mode"]');
         this.segmentContinuityWrap = this.root.querySelector('[data-r="segment-continuity-wrap"]');
@@ -3541,6 +3602,15 @@ class MiniMaxH3DirectorEditor {
                 this.commit(true);
             };
         }
+        if (this.exportPreFaceRefineCb) {
+            this.exportPreFaceRefineCb.onchange = () => {
+                this.timeline.output = this.timeline.output || {};
+                this.timeline.output.exportPreFaceRefine = !!this.exportPreFaceRefineCb.checked;
+                const w = this.widget("export_pre_face_refine");
+                if (w) w.value = this.timeline.output.exportPreFaceRefine;
+                this.commit(true);
+            };
+        }
         if (this.segRefImageSize) {
             this.segRefImageSize.onchange = () => {
                 const seg = this.timeline.segments?.[this.selectedIndex];
@@ -3798,53 +3868,72 @@ class MiniMaxH3DirectorEditor {
         this._lastOutputWasBatchFixed = false;
         this._legacyFrames = [];
         this._clearPreviewVideos?.(true);
-        const taskType = widgets.task_type || widgets.taskType || data.global?.taskType || "";
-        if (this.taskTypeWidget && taskType) this.taskTypeWidget.value = taskType;
-        if (this.globalTask && taskType) this.globalTask.value = taskType;
-        for (const name of ["steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed"]) {
-            if (widgets[name] == null || widgets[name] === "") continue;
-            const w = this.widget(name);
-            if (w) w.value = widgets[name];
+        // Drop live card/token-editor drafts *before* parse/normalize/commit.
+        // Otherwise flushBatchPromptInputs writes the previous empty 提示词
+        // over the imported segment prompts (same ids on re-import).
+        this._suspendPromptFlush = true;
+        try {
+            if (this.batchList) {
+                teardownPromptImageMentions(this.batchList);
+                this.batchList.innerHTML = "";
+            }
+            const taskType = widgets.task_type || widgets.taskType || data.global?.taskType || "";
+            if (this.taskTypeWidget && taskType) this.taskTypeWidget.value = taskType;
+            if (this.globalTask && taskType) this.globalTask.value = taskType;
+            for (const name of ["steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed"]) {
+                if (widgets[name] == null || widgets[name] === "") continue;
+                const w = this.widget(name);
+                if (w) w.value = widgets[name];
+            }
+            const out = data.output && typeof data.output === "object" ? data.output : {};
+            if (this.widthWidget && out.width) this.widthWidget.value = out.width;
+            if (this.heightWidget && out.height) this.heightWidget.value = out.height;
+            if (this.frameRateWidget && (data.frameRate || out.frameRate)) {
+                this.frameRateWidget.value = data.frameRate || out.frameRate;
+            }
+            if (this.refMaxWidget && (data.refMaxSize || out.longEdge)) {
+                this.refMaxWidget.value = data.refMaxSize || out.longEdge;
+            }
+            if (this.timelineWidget) this.timelineWidget.value = JSON.stringify(data);
+            const initTotal = Math.max(0, parseInt(this.totalFramesWidget?.value || data.totalFrames || 124, 10));
+            const initFps = coerceTimelineFps(this.frameRateWidget?.value || data.frameRate || 24);
+            this.timeline = parseTimeline(this.timelineWidget?.value, initTotal, initFps);
+            const importedGlobalPrompt = this.timeline.global?.prompt ?? "";
+            if (this.globalPromptWidget) this.globalPromptWidget.value = importedGlobalPrompt;
+            if (this.globalPrompt) {
+                this.globalPrompt.value = importedGlobalPrompt;
+                this.globalPrompt.__bdTokenApi?.hydrateFromValue?.(importedGlobalPrompt);
+            }
+            this.syncFrameRateUI?.(this.timeline.frameRate);
+            this._directorMode = this.getDirectorMode();
+            this._taskKey = resolveTaskKey(this.taskTypeWidget?.value || taskType);
+            if (this._directorMode === "video") {
+                this.restoreVideoFromTimeline();
+            } else if (this._directorMode === "prompt_batch" || this._directorMode === "image_batch") {
+                ensureImageBatchTimeline(this);
+            } else if (this._directorMode === "fl2v") {
+                ensureFl2vTimeline(this);
+            } else {
+                this.ensureGenTimeline();
+            }
+            this.applyTaskLayout(this._directorMode);
+            this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value);
+            this.setEditMode(this.timeline.editMode || "global");
+            this.selectedIndex = 0;
+            this.updateSelectionUI();
+            if (this.globalPrompt) {
+                this.globalPrompt.value = this.timeline.global?.prompt || "";
+                this.globalPrompt.__bdTokenApi?.hydrateFromValue?.(this.globalPrompt.value);
+            }
+            this.commit(true, { syncTimeline: true });
+            snapshotDirectorSampleWidgets(this.node, { force: true, includeHidden: true });
+            this._externalGroupsSyncSig = null;
+            this.syncExternalGroupsTimeline?.();
+            this.scheduleSettleRender?.();
+            this.updateDomWidgetHeight?.();
+        } finally {
+            this._suspendPromptFlush = false;
         }
-        const out = data.output && typeof data.output === "object" ? data.output : {};
-        if (this.widthWidget && out.width) this.widthWidget.value = out.width;
-        if (this.heightWidget && out.height) this.heightWidget.value = out.height;
-        if (this.frameRateWidget && (data.frameRate || out.frameRate)) {
-            this.frameRateWidget.value = data.frameRate || out.frameRate;
-        }
-        if (this.refMaxWidget && (data.refMaxSize || out.longEdge)) {
-            this.refMaxWidget.value = data.refMaxSize || out.longEdge;
-        }
-        if (this.globalPromptWidget && data.global?.prompt != null) {
-            this.globalPromptWidget.value = data.global.prompt;
-        }
-        if (this.timelineWidget) this.timelineWidget.value = JSON.stringify(data);
-        const initTotal = Math.max(0, parseInt(this.totalFramesWidget?.value || data.totalFrames || 124, 10));
-        const initFps = coerceTimelineFps(this.frameRateWidget?.value || data.frameRate || 24);
-        this.timeline = parseTimeline(this.timelineWidget?.value, initTotal, initFps);
-        this.syncFrameRateUI?.(this.timeline.frameRate);
-        this._directorMode = this.getDirectorMode();
-        this._taskKey = resolveTaskKey(this.taskTypeWidget?.value || taskType);
-        if (this._directorMode === "video") {
-            this.restoreVideoFromTimeline();
-        } else if (this._directorMode === "prompt_batch" || this._directorMode === "image_batch") {
-            ensureImageBatchTimeline(this);
-        } else if (this._directorMode === "fl2v") {
-            ensureFl2vTimeline(this);
-        } else {
-            this.ensureGenTimeline();
-        }
-        this.applyTaskLayout(this._directorMode);
-        this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value);
-        this.setEditMode(this.timeline.editMode || "global");
-        this.selectedIndex = 0;
-        this.updateSelectionUI();
-        this.commit(true, { syncTimeline: true });
-        snapshotDirectorSampleWidgets(this.node, { force: true, includeHidden: true });
-        this._externalGroupsSyncSig = null;
-        this.syncExternalGroupsTimeline?.();
-        this.scheduleSettleRender?.();
-        this.updateDomWidgetHeight?.();
     }
 
     _videoIdentityFromParts(video, clips) {
@@ -6220,6 +6309,7 @@ class MiniMaxH3DirectorEditor {
         this.updateOutputModeUI();
         this.updateSegmentContinuityUI();
         this.syncExportSourceImagesUI();
+        this.syncExportPreFaceRefineUI();
         this.updateOutputPreview();
     }
 
@@ -6233,6 +6323,17 @@ class MiniMaxH3DirectorEditor {
         }
         const on = show && !!this.timeline.output.exportSourceImages;
         if (this.exportSourceImagesCb) this.exportSourceImagesCb.checked = on;
+        if (w) w.value = on;
+    }
+
+    syncExportPreFaceRefineUI() {
+        this.timeline.output = this.timeline.output || {};
+        const w = this.widget("export_pre_face_refine");
+        if (this.timeline.output.exportPreFaceRefine == null && w?.value) {
+            this.timeline.output.exportPreFaceRefine = true;
+        }
+        const on = !!this.timeline.output.exportPreFaceRefine;
+        if (this.exportPreFaceRefineCb) this.exportPreFaceRefineCb.checked = on;
         if (w) w.value = on;
     }
 
@@ -6326,6 +6427,12 @@ class MiniMaxH3DirectorEditor {
         if (!show) return;
         const seg = this.timeline.segments?.[this.selectedIndex ?? 0];
         const value = resolveSegmentRefImageSize(seg, this.timeline.output);
+        if (![...sel.options].some((o) => o.value === value)) {
+            const extra = document.createElement("option");
+            extra.value = value;
+            extra.textContent = value;
+            sel.appendChild(extra);
+        }
         sel.value = value;
         if (seg && seg.refImageSize !== value) seg.refImageSize = value;
         wrap.title = t("tooltip.refImageSize");
@@ -6705,6 +6812,13 @@ class MiniMaxH3DirectorEditor {
         if (exportSrcW) {
             exportSrcW.value = isVideoEditTaskKey(this.getTaskKey())
                 && !!this.timeline.output.exportSourceImages;
+        }
+        if (this.exportPreFaceRefineCb) {
+            this.timeline.output.exportPreFaceRefine = !!this.exportPreFaceRefineCb.checked;
+        }
+        const exportPreFaceW = this.widget("export_pre_face_refine");
+        if (exportPreFaceW) {
+            exportPreFaceW.value = !!this.timeline.output.exportPreFaceRefine;
         }
         // Sync from DOM when task+segments are eligible — do not rely on CSS
         // "hidden" class (can lag behind equal-split / task changes at queue time).
@@ -12351,6 +12465,53 @@ function patchUpstreamAudioWidgetSync(graph, node, inputName) {
     patchUpstreamWidgetSync(graph, node, inputName, ["audio", "audio_path", "video", "video_path", "file", "filename"]);
 }
 
+/** Widget names that carry a prompt string on upstream text nodes. */
+const PROMPT_SOURCE_WIDGETS = [
+    "prompt", "text", "value", "string", "text_str", "positive_prompt", "content",
+];
+
+/** First non-empty string widget on `node`, by the names above. */
+function readPromptWidgetValue(node) {
+    for (const name of PROMPT_SOURCE_WIDGETS) {
+        const value = nodeWidgetValue(node, name);
+        if (typeof value === "string" && value) return value;
+    }
+    return null;
+}
+
+/**
+ * Text the run will actually receive on this input: follow the link upstream and
+ * read the source node's own string widget, walking through STRING passthroughs
+ * (string concat / reroute-style helpers).
+ */
+function readLinkedPromptText(graph, node, inputName = "prompt", depth = 0) {
+    if (!graph || !node || depth > 8) return null;
+    const src = linkedSourceNode(graph, node, inputName);
+    if (!src) return null;
+    const direct = readPromptWidgetValue(src);
+    if (direct != null) return direct;
+    for (const inp of src.inputs || []) {
+        if (inp?.link == null || String(inp.type || "").toUpperCase() !== "STRING") continue;
+        const up = readLinkedPromptText(graph, src, inp.name, depth + 1);
+        if (up != null) return up;
+    }
+    return null;
+}
+
+/**
+ * Effective prompt of a group. When its `prompt` input is wired, the group's own
+ * widget is empty (the link owns the value) — reading only the widget made every
+ * prompt edit report「外接组其他参数」 instead of「外接组提示词」, and left the
+ * Director card showing an empty prompt.
+ */
+function resolveExternalGroupPrompt(graph, node) {
+    const own = String(nodeWidgetValue(node, "prompt") ?? "");
+    const inp = (node?.inputs || []).find((i) => i?.name === "prompt");
+    if (inp?.link == null) return own;
+    const linked = readLinkedPromptText(graph, node, "prompt");
+    return linked != null ? linked : own;
+}
+
 /** Collect Autogrow / legacy slots matching `(?:^|\.)prefix_(\\d+)$`. */
 function collectAutogrowSlotRefs(graph, node, prefix, resolvePath, toRef, patchSync) {
     const found = new Map();
@@ -12371,12 +12532,17 @@ function collectAutogrowSlotRefs(graph, node, prefix, resolvePath, toRef, patchS
 function readExternalGroupSpec(node, graph = null) {
     const g = graph || app.graph || app.canvas?.graph;
     const durRaw = Number(nodeWidgetValue(node, "duration_sec"));
-    const prompt = String(nodeWidgetValue(node, "prompt") ?? "");
+    const sizeRaw = nodeWidgetValue(node, "ref_image_size")
+        ?? nodeWidgetValue(node, "refImageSize");
+    const prompt = resolveExternalGroupPrompt(g, node);
     const cls = node?.comfyClass || node?.type || "";
     const firstImageFile = resolveLinkedImageFile(g, node, "first_frame");
     const lastImageFile = resolveLinkedImageFile(g, node, "last_frame");
     patchUpstreamImageWidgetSync(g, node, "first_frame");
     patchUpstreamImageWidgetSync(g, node, "last_frame");
+    // Editing the prompt on the upstream text node must refresh the Director card
+    // (and the cache verdict) just like editing the group's own widget does.
+    patchUpstreamWidgetSync(g, node, "prompt", PROMPT_SOURCE_WIDGETS);
 
     let refImages = [];
     let refVideos = [];
@@ -12419,6 +12585,9 @@ function readExternalGroupSpec(node, graph = null) {
     return {
         nodeId: node?.id ?? null,
         durationSec: Number.isFinite(durRaw) && durRaw > 0 ? durRaw : null,
+        refImageSize: sizeRaw != null && String(sizeRaw).trim() !== ""
+            ? normalizeRefImageSize(sizeRaw)
+            : "",
         prompt,
         firstImageFile,
         lastImageFile,
@@ -12466,22 +12635,47 @@ function passthroughUpstreamLinkId(node) {
     return linked.length ? linked[0].link : null;
 }
 
-function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs") {
+/**
+ * A leaf group packer: one node = one group = one segment. Any node emitting
+ * MMX_DIR_GROUP counts, so a third-party packer gets its real duration/prompt
+ * instead of falling back to a placeholder.
+ */
+function isExternalGroupLeafNode(node) {
+    if (!node) return false;
+    const cls = String(node.comfyClass || node.type || "");
+    if (EXTERNAL_GROUP_NODE_TYPES.has(cls)) return true;
+    return (node.outputs || []).some((o) => String(o?.type || "") === "MMX_DIR_GROUP");
+}
+
+/** A fan-in: takes group slots and re-emits a group list (ours or third-party). */
+function isExternalCombineNode(node) {
+    if (!node) return false;
+    const cls = String(node.comfyClass || node.type || "");
+    if (cls === EXTERNAL_COMBINE_NODE_TYPE) return true;
+    const takesGroups = (node.inputs || []).some(
+        (i) => String(i?.type || "") === "MMX_DIR_GROUP" || combineGroupSlotIndex(i?.name) != null,
+    );
+    const emitsGroup = (node.outputs || []).some(
+        (o) => String(o?.type || "") === "MMX_DIR_GROUP",
+    );
+    return takesGroups && emitsGroup;
+}
+
+function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs", slotLabel = "") {
     if (linkId == null || depth > 16) return [];
     const rec = graphLinkRecord(graph, linkId);
     if (!rec) return [];
     const node = graph.getNodeById?.(rec.originId);
     if (!node) return [];
-    const cls = node.comfyClass || node.type || "";
 
     // Walk through Reroute / rgthree Reroute / other virtual passthroughs.
     if (isExternalGroupPassthroughNode(node)) {
         const upstream = passthroughUpstreamLinkId(node);
         if (upstream == null) return [];
-        return expandExternalGroupLink(graph, upstream, depth + 1, mode);
+        return expandExternalGroupLink(graph, upstream, depth + 1, mode, slotLabel);
     }
 
-    if (cls === EXTERNAL_COMBINE_NODE_TYPE) {
+    if (isExternalCombineNode(node)) {
         const out = [];
         const slots = (node.inputs || [])
             .filter(isCombineGroupSlot)
@@ -12493,12 +12687,19 @@ function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs") {
             });
         for (const input of slots) {
             if (input.link == null) continue;
-            out.push(...expandExternalGroupLink(graph, input.link, depth + 1, mode));
+            const label = slotLabel || String(input.name || "");
+            out.push(...expandExternalGroupLink(graph, input.link, depth + 1, mode, label));
         }
         return out;
     }
-    if (EXTERNAL_GROUP_NODE_TYPES.has(cls)) {
-        return mode === "nodes" ? [node] : [readExternalGroupSpec(node, graph)];
+    if (isExternalGroupLeafNode(node)) {
+        if (mode === "nodes") return [node];
+        const spec = readExternalGroupSpec(node, graph);
+        // Kept off the UI fields above: the witness and the panel need the node
+        // itself to digest that group's own subtree.
+        spec.slot = slotLabel || "";
+        spec.groupNode = node;
+        return [spec];
     }
     // Unknown upstream packer — still reserve one slot for run-select/timeline.
     if (mode === "nodes") return [null];
@@ -12510,6 +12711,8 @@ function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs") {
         lastImageFile: null,
         refImages: [],
         refVideos: [],
+        slot: slotLabel || "",
+        groupNode: null,
         refAudios: [],
     }];
 }
@@ -12542,11 +12745,53 @@ function collectExternalGroupNodes(editor) {
     return nodes.length ? nodes : null;
 }
 
+/** First connected group port on a Director node, or null. */
+function firstConnectedGroupPort(node) {
+    for (const name of ["i2v_groups", "r2v_groups"]) {
+        const inp = (node?.inputs || []).find((i) => String(i?.name) === name);
+        if (inp && inp.link != null) return name;
+    }
+    return null;
+}
+
+/**
+ * Ordered leaf groups of a Director node — the same order the backend runs
+ * (Combine slots sorted by index, reroutes transparent). The first-pass cache
+ * witness borrows this so panel and run always agree on segment count and
+ * per-segment duration.
+ */
+function collectExternalGroupChain(node) {
+    const port = firstConnectedGroupPort(node);
+    if (!port) return null;
+    const graph = app.graph ?? app.canvas?.graph;
+    const inp = (node?.inputs || []).find((i) => String(i?.name) === port);
+    if (!graph || inp?.link == null) return null;
+    const specs = expandExternalGroupLink(graph, inp.link, 0, "specs");
+    if (!specs.length) return null;
+    return specs.map((spec, index) => ({
+        slot: spec.slot || `group_${index}`,
+        node: spec.groupNode || null,
+        nodeLabel: spec.groupNode
+            ? `${spec.groupNode.id}:${spec.groupNode.comfyClass || spec.groupNode.type || ""}`
+            : "",
+        durationSec: spec.durationSec,
+        prompt: spec.prompt,
+    }));
+}
+
+// The cache-status witness needs exactly this chain: one record per group, in
+// run order, with each group's own duration and resolved prompt.
+setExternalGroupSpecsProvider(collectExternalGroupChain);
+
 function notifyDirectorsSyncExternalGroups() {
     const graph = app.graph ?? app.canvas?.graph;
     for (const node of graph?._nodes ?? graph?.nodes ?? []) {
         if (!isMiniMaxH3DirectorNode(node)) continue;
         node._minimaxEditor?.syncExternalGroupsTimeline?.();
+        // The Refine card keeps its own verdict (匹配 / 不匹配); writing the
+        // timeline widget does not fire Director.onWidgetChanged, so ask it to
+        // re-check now that the card has been rebuilt from the edited group.
+        node._mmxRefreshFirstPassCache?.(250);
     }
 }
 
@@ -12735,12 +12980,34 @@ app.registerExtension({
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         const cls = nodeType?.comfyClass || nodeData?.name || "";
-        if (EXTERNAL_GROUP_NODE_TYPES.has(cls) || cls === EXTERNAL_COMBINE_NODE_TYPE) {
+        // Any node that can emit a Director group list (our packers, the Combine,
+        // and third-party packers declaring the same socket type).
+        const emitsGroups = Array.isArray(nodeData?.output)
+            && nodeData.output.some((type) => String(type || "").split(",").includes("MMX_DIR_GROUP"));
+        if (EXTERNAL_GROUP_NODE_TYPES.has(cls) || cls === EXTERNAL_COMBINE_NODE_TYPE || emitsGroups) {
             const onConnectionsChange = nodeType.prototype.onConnectionsChange;
             nodeType.prototype.onConnectionsChange = function (...args) {
                 const out = onConnectionsChange?.apply(this, args);
                 // Combine/Group wiring changes do not fire Director.onConnectionsChange.
                 queueMicrotask(() => notifyDirectorsSyncExternalGroups());
+                return out;
+            };
+            const onWidgetChanged = nodeType.prototype.onWidgetChanged;
+            nodeType.prototype.onWidgetChanged = function (name, value, oldValue, widget) {
+                const out = onWidgetChanged?.apply(this, arguments);
+                // Widget values are committed through the value store, which calls
+                // node.onWidgetChanged(name, value, oldValue, widget) for every
+                // widget type — including V3/comfy_api ones, where widget.callback
+                // is not reliably the function the store invokes. Deferred so the
+                // new value is already readable when the card re-reads the group.
+                // `_mmxSkipExternalSync` marks a Director→Group write-through: that
+                // path already synced, so echoing it back would be a wasted round.
+                if (name === "duration_sec" || name === "prompt"
+                    || name === "ref_image_size" || name === "refImageSize") {
+                    if (!widget?._mmxSkipExternalSync) {
+                        queueMicrotask(() => notifyDirectorsSyncExternalGroups());
+                    }
+                }
                 return out;
             };
             const onCreated = nodeType.prototype.onNodeCreated;
@@ -12749,7 +13016,8 @@ app.registerExtension({
                 // Keep Director timeline in sync when duration/prompt widgets change.
                 queueMicrotask(() => {
                     for (const w of this.widgets || []) {
-                        if (w?.name !== "duration_sec" && w?.name !== "prompt") continue;
+                        if (w?.name !== "duration_sec" && w?.name !== "prompt"
+                            && w?.name !== "ref_image_size" && w?.name !== "refImageSize") continue;
                         if (w._mmxExternalSyncPatched) continue;
                         w._mmxExternalSyncPatched = true;
                         const prev = w.callback;

@@ -88,6 +88,28 @@ def director_perf_inputs() -> dict:
                 "tooltip": "段间清理显存：每段结束后卸载模型并清空 CUDA 缓存。",
             },
         ),
+        "clear_vram_before_refine": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "二采前清理显存：一采结束后、放大或二采开始前卸载模型并清空 CUDA 缓存。"
+                    "默认关。24GB 或一采/二采不同 UNET 时勾上，可降低二采峰值，"
+                    "但每段会多一次加载。"
+                ),
+            },
+        ),
+        "clear_vram_before_face_refine": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "脸修前清理显存：成片解码后、FaceRefine 开始前卸载模型并清空 CUDA 缓存。"
+                    "默认关。未接 FaceRefine 时无效。24GB 或解码后立刻 OOM 时勾上，"
+                    "但每段会多一次加载。"
+                ),
+            },
+        ),
         "export_source_images": (
             "BOOLEAN",
             {
@@ -96,6 +118,17 @@ def director_perf_inputs() -> dict:
                     "将时间轴原片解码到独立的 source_images 输出口；"
                     "需将 source_images 另接预览/合成节点才能查看，不会改变主 images。"
                     "默认关以节省内存。"
+                ),
+            },
+        ),
+        "export_pre_face_refine": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "将修脸前的视频输出到 images_pre_face_refine，方便和 images 对比。"
+                    "分段导出时同时写入 seg_XXXX_facepre.mp4。"
+                    "默认关：该口阻断、下游不执行，也不占成片内存。未接 FaceRefine 时无效。"
                 ),
             },
         ),
@@ -218,6 +251,7 @@ def prepare_director_plan(
     i2v_groups=None,
     r2v_groups=None,
     refine=None,
+    face_refine=None,
 ):
     from ..director.external_groups import (
         build_plan_from_external_groups,
@@ -260,6 +294,7 @@ def prepare_director_plan(
             ref_max_size=ref_max_size,
         )
         plan = _attach_refine(plan, refine)
+        plan = _attach_face_refine(plan, face_refine)
         log.info(
             "MiniMax H3 Director: external %s groups × %d (task=%s) | %s",
             family,
@@ -286,6 +321,7 @@ def prepare_director_plan(
         ref_max_size=ref_max_size,
     )
     plan = _attach_refine(plan, refine)
+    plan = _attach_face_refine(plan, face_refine)
     log.info(plan_summary(plan).replace("\n", " | "))
     return plan
 
@@ -298,6 +334,13 @@ def _attach_refine(plan, refine):
         base_width=int(getattr(plan, "width", 0) or 0),
         base_height=int(getattr(plan, "height", 0) or 0),
     )
+    return plan
+
+
+def _attach_face_refine(plan, face_refine):
+    from ..director.face_refine.pack import normalize_face_refine_pack
+
+    plan.face_refine = normalize_face_refine_pack(face_refine)
     return plan
 
 
@@ -408,6 +451,9 @@ def finalize_director_outputs(
     segment_frame_counts: list[int] | None = None,
     pre_refine_combined=None,
     pre_refine_segments: list | None = None,
+    pre_face_combined=None,
+    pre_face_segments: list | None = None,
+    export_pre_face_refine: bool = False,
     block_final_images: bool = False,
 ):
     is_batch = is_prompt_batch_timeline(plan.raw, plan.global_task_key)
@@ -480,6 +526,43 @@ def finalize_director_outputs(
             pre_refine_out = images_out
             report = report + f"\n\nimages_pre_refine: fallback to images ({exc})."
 
+    from ..director.face_refine.pack import face_refine_enabled
+
+    emit_pre_face = (
+        face_refine_enabled(plan)
+        and not block_final_images
+        and export_pre_face_refine
+        and (pre_face_combined is not None or pre_face_segments)
+    )
+    if emit_pre_face:
+        pre_face_segs = pre_face_segments if pre_face_segments else segment_outputs
+        pre_face_comb = pre_face_combined if pre_face_combined is not None else combined
+        share_face = pre_face_comb is combined and (
+            pre_face_segs is segment_outputs
+            or (
+                len(pre_face_segs) == len(segment_outputs)
+                and all(a is b for a, b in zip(pre_face_segs, segment_outputs))
+            )
+        )
+        if share_face:
+            pre_face_out = images_out
+        else:
+            try:
+                pre_face_out, _ = _layout_image_batches(
+                    plan,
+                    pre_face_comb,
+                    pre_face_segs,
+                    export_segments=export_segments,
+                    is_batch=is_batch,
+                    video_batch=video_batch,
+                )
+            except Exception as exc:
+                log.warning("images_pre_face_refine layout failed: %s", exc)
+                pre_face_out = images_out
+                report = report + f"\n\nimages_pre_face_refine: fallback to images ({exc})."
+    else:
+        pre_face_out = None
+
     pre_counts = segment_frame_counts
     if export_segments:
         released_slots = sorted(
@@ -493,6 +576,10 @@ def finalize_director_outputs(
             pre_refine_out = [
                 pre_refine_out[i] for i in keep if i < len(pre_refine_out)
             ] or pre_refine_out[-1:]
+            if pre_face_out is not None:
+                pre_face_out = [
+                    pre_face_out[i] for i in keep if i < len(pre_face_out)
+                ] or pre_face_out[-1:]
             if segment_audios:
                 segment_audios = [segment_audios[i] for i in keep if i < len(segment_audios)]
             if segment_frame_counts:
@@ -555,6 +642,31 @@ def finalize_director_outputs(
     source_images_out = _ensure_nonempty_image_batches(source_images_out, label="source_images")
     pre_refine_out = _ensure_nonempty_image_batches(pre_refine_out, label="images_pre_refine")
 
+    if pre_face_out is None:
+        # Off / unwired / first-pass hold: block the socket so Preview/Save
+        # do not run on a grey still, and RAM is not kept for a dummy clip.
+        pre_face_out = ExecutionBlocker(None)
+        if face_refine_enabled(plan) and block_final_images:
+            report = report + (
+                "\n\nimages_pre_face_refine: blocked "
+                "（本轮仅确认一采，脸部精修会在二采完成后执行）。"
+            )
+        elif face_refine_enabled(plan) and not export_pre_face_refine:
+            report = report + (
+                "\n\nimages_pre_face_refine: blocked "
+                "（未勾选「输出修脸前」，该口无画面、下游不执行）。"
+            )
+        else:
+            report = report + (
+                "\n\nimages_pre_face_refine: blocked (FaceRefine node not connected)."
+            )
+    else:
+        pre_face_out = _ensure_nonempty_image_batches(pre_face_out, label="images_pre_face_refine")
+        report = report + (
+            "\n\nimages_pre_face_refine: video immediately before face stitch "
+            "(对比口；images 为修脸后)。"
+        )
+
     refine_pack = getattr(plan, "refine", None)
     if isinstance(refine_pack, dict) and refine_pack.get("enabled"):
         report = report + (
@@ -575,4 +687,4 @@ def finalize_director_outputs(
             "请从 images_pre_refine 查看或保存一采；再次 Queue 完成二采后 images 才会输出。"
         )
         images_out = ExecutionBlocker(None)
-    return images_out, audio_out, fps_out, frame_count, source_images_out, report, pre_refine_out
+    return images_out, audio_out, fps_out, frame_count, source_images_out, report, pre_refine_out, pre_face_out

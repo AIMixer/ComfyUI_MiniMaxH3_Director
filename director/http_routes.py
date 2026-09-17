@@ -530,6 +530,7 @@ async def minimax_first_pass_cache_status(request):
     if isinstance(timeline_data, dict):
         timeline_data = json.dumps(timeline_data, ensure_ascii=False)
     try:
+        from .external_groups import external_witness_from_timeline_data
         from .plan import build_director_plan
         from .segment_cache import inspect_first_pass_cache
 
@@ -551,7 +552,14 @@ async def minimax_first_pass_cache_status(request):
         plan.sample_sigmas_linked = bool(body.get("sigmas_linked"))
         plan.sample_shift_video = float(body.get("shift_video") or 12.0)
         plan.sample_shift_audio = float(body.get("shift_audio") or 3.0)
-        return web.json_response(inspect_first_pass_cache(node_id, plan))
+        # Graph-wired i2v_groups / r2v_groups never reach this route as values,
+        # so the panel ships a witness of that wiring inside timeline_data.
+        witness = external_witness_from_timeline_data(timeline_data)
+        if witness:
+            plan.external_groups_witness = witness
+        return web.json_response(
+            inspect_first_pass_cache(node_id, plan, external_groups=witness)
+        )
     except Exception as exc:
         log.warning("MiniMax H3 Director first-pass cache inspection failed: %s", exc)
         return web.json_response(

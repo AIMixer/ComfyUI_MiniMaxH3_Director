@@ -4,9 +4,10 @@ Best-effort: encode failures must never abort generation. Each run uses a
 timestamp folder: ``output/minimax_seg_export/<YYYYMMDD_HHMMSS>/``.
 
 Files:
-  ``seg_XXXX.mp4`` — final clip (last refine pass / no Refine)
+  ``seg_XXXX.mp4`` — final clip (last refine pass / no Refine; FaceRefine stitch if wired)
   ``seg_XXXX_pre.mp4`` — first pass (一采), only when Refine ran
   ``seg_XXXX_pN.mp4`` — refine pass N (分段导出且次数>1)
+  ``seg_XXXX_facepre.mp4`` — before FaceRefine stitch, only when「输出修脸前」is on
 """
 
 from __future__ import annotations
@@ -72,12 +73,23 @@ def segment_mp4_path(run_dir: Path, seg: SegmentPlan, *, suffix: str = "") -> Pa
 
 def mp4_export_kind(path: str | None) -> str:
     name = Path(str(path or "")).name
+    if name.endswith("_facepre.mp4"):
+        return "修脸前 mp4"
     if name.endswith("_pre.mp4"):
         return "一采 mp4"
     m = re.search(r"_p(\d+)\.mp4$", name)
     if m:
         return f"第{m.group(1)}轮精修 mp4"
     return "mp4"
+
+
+def _suffix_log_label(suffix: str) -> str:
+    tag = str(suffix or "")
+    if tag == "pre":
+        return "first-pass "
+    if tag == "facepre":
+        return "pre-face "
+    return ""
 
 
 def _pre_frames_distinct(pre_frames, frames) -> bool:
@@ -102,6 +114,7 @@ def maybe_export_segment_mp4(
     """Write one segment mp4 into ``run_dir``. Never raises.
 
     ``suffix="pre"`` writes the first-pass clip (``seg_XXXX_pre.mp4``).
+    ``suffix="facepre"`` writes the clip before FaceRefine stitch.
     ``suffix="p2"`` writes refine pass 2 (``seg_XXXX_p2.mp4``).
 
     Returns the absolute path string on success, otherwise None.
@@ -134,7 +147,7 @@ def maybe_export_segment_mp4(
         log.info(
             "MiniMax H3 Director segment #%d %smp4 saved: %s",
             int(seg.index) + 1,
-            "first-pass " if suffix == "pre" else "",
+            _suffix_log_label(suffix),
             path,
         )
         return str(path)
@@ -142,7 +155,7 @@ def maybe_export_segment_mp4(
         log.warning(
             "Segment #%d %smp4 export failed (generation continues): %s",
             int(seg.index) + 1,
-            "first-pass " if suffix == "pre" else "",
+            _suffix_log_label(suffix),
             exc,
         )
         return None
@@ -156,8 +169,9 @@ def maybe_export_segment_mp4s(
     audio_dict: dict[str, Any] | None = None,
     *,
     pre_frames: torch.Tensor | None = None,
+    pre_face_frames: torch.Tensor | None = None,
 ) -> list[str]:
-    """Write final clip, plus first-pass when Refine produced a distinct tensor."""
+    """Write final clip, plus first-pass / pre-face when those tensors differ."""
     paths: list[str] = []
     final_path = maybe_export_segment_mp4(
         run_dir, plan, seg, frames, audio_dict,
@@ -170,6 +184,12 @@ def maybe_export_segment_mp4s(
         )
         if pre_path:
             paths.append(pre_path)
+    if _pre_frames_distinct(pre_face_frames, frames):
+        face_path = maybe_export_segment_mp4(
+            run_dir, plan, seg, pre_face_frames, audio_dict, suffix="facepre",
+        )
+        if face_path:
+            paths.append(face_path)
     return paths
 
 

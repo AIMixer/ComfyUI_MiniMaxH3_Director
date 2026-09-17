@@ -30,14 +30,14 @@ from .h3_motion_context import (
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.h3_latent_continue")
 
-CONTINUE_PIPELINE_ID = "minimax_h3_latent_continue_v3"
+CONTINUE_PIPELINE_ID = "minimax_h3_latent_continue_v4"
 PREFIX_STEPS_KEY = "_director_continue_prefix_steps"
 CONTINUE_SEAM_KEY = "_director_continue_seam_min"
 SEAM_TAPER_TOKENS = 4
-# H3 pins mask=0 rows at VISUAL_COND_TIMESTEP (official Guide). Sampler also
-# copies latent_image 100% where mask=0. Continue must stay above that floor.
-SEAM_MIN_MASK = 0.65
-SEAM_FLOOR_MIN = 0.40
+# 0 = hard-copy the seam tokens (sampler keeps latent_image). H3 also treats
+# mask=0 as VISUAL_COND_TIMESTEP; that is what「重绘幅度 0」asks for.
+SEAM_MIN_MASK = 0.10
+SEAM_FLOOR_MIN = 0.0
 SEAM_FLOOR_MAX = 0.95
 AUDIO_SOFT_RELEASE_TICKS = 8
 _WRAPPER_KEY = "director_h3_continue_prefix_remask"
@@ -59,7 +59,7 @@ def prefix_token_weights(
     taper_steps: int = SEAM_TAPER_TOKENS,
     seam_min: float | None = None,
 ) -> tuple[float, ...]:
-    """1.0 on the disposable head, taper toward seam_min — never 0."""
+    """1.0 on the disposable head, taper toward seam_min (0 = hard-lock seam)."""
     n = int(prefix_steps)
     if n < 1:
         return ()
@@ -392,11 +392,13 @@ class _PrefixRemask:
         current = float(torch.as_tensor(sigma).detach().float().reshape(-1)[0])
         schedule = self.sigmas or _schedule_values((extra_options or {}).get("sigmas", ()))
         ratio = _next_sigma_ratio(current, schedule)
-        # Head stays fully open. Seam follows sigma but never drops to cond-pin.
+        # Head stays fully open. Seam follows sigma, floored at the user seam.
         live = []
         for base in prefix_token_weights(self.prefix_steps, seam_min=self.seam_min):
             if base >= 0.999:
                 live.append(1.0)
+            elif self.seam_min <= 0.0:
+                live.append(max(0.0, float(base) * max(float(ratio), 0.0)))
             else:
                 live.append(max(self.seam_min, float(base) * max(float(ratio), 0.5)))
         return torch.tensor(live, dtype=torch.float32)
@@ -494,7 +496,40 @@ def install_continue_prefix_remask(model, latent: dict, sigmas) -> Any:
                 )
         except Exception as exc:
             log.debug("Director continue: APPLY_MODEL wrapper skipped (%s).", exc)
+        try:
+            setattr(patched, "_director_continue_remask", state)
+        except Exception:
+            pass
         return patched
     except Exception as exc:
         log.warning("Director continue: prefix remask not installed (%s); static mask only.", exc)
         return model
+
+
+def uninstall_continue_prefix_remask(model) -> None:
+    """Drop per-sample remask hooks so the clone can be collected after sampling."""
+    if model is None:
+        return
+    state = getattr(model, "_director_continue_remask", None)
+    if state is not None:
+        try:
+            state.current_video_mask = None
+        except Exception:
+            pass
+        try:
+            delattr(model, "_director_continue_remask")
+        except Exception:
+            pass
+    try:
+        options = getattr(model, "model_options", None)
+        if isinstance(options, dict):
+            options.pop("denoise_mask_function", None)
+    except Exception:
+        pass
+    try:
+        from comfy.patcher_extension import WrappersMP
+
+        if callable(getattr(model, "remove_wrappers_with_key", None)):
+            model.remove_wrappers_with_key(WrappersMP.APPLY_MODEL, _WRAPPER_KEY)
+    except Exception:
+        pass

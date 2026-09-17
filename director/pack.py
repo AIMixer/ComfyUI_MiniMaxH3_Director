@@ -843,7 +843,7 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
             "continuityEnabled": False,
             "continuityOverlapFrames": 22,
             "continuityMode": "guide",
-            "continuityRedraw": 0.65,
+            "continuityRedraw": 0.10,
         },
         "segments": segments or [{
             "id": "g0",
@@ -960,6 +960,45 @@ def _collect_missing_media(obj: Any, dest: Path, rel_prefix: str, missing: list[
             _collect_missing_media(val, dest, rel_prefix, missing)
 
 
+def _fill_empty_prompts_from_pack_files(timeline: dict, extracted: Path) -> None:
+    """timeline.json wins, but empty prompts fall back to group/shared JSON."""
+    shared_path = extracted / "shared_params" / "shared_params.json"
+    if shared_path.is_file():
+        shared = _read_json(shared_path)
+        if isinstance(shared, dict):
+            global_block = timeline.get("global")
+            if not isinstance(global_block, dict):
+                global_block = {}
+                timeline["global"] = global_block
+            if not str(global_block.get("prompt") or "").strip() and shared.get("prompt"):
+                global_block["prompt"] = shared.get("prompt") or ""
+    groups_root = extracted / "asset_groups"
+    if not groups_root.is_dir():
+        return
+    group_dirs = sorted(
+        [p for p in groups_root.iterdir() if p.is_dir()],
+        key=lambda p: p.name,
+    )
+    segs = timeline.get("segments") if isinstance(timeline.get("segments"), list) else []
+    shots = timeline.get("shots") if isinstance(timeline.get("shots"), list) else []
+    for i, gdir in enumerate(group_dirs):
+        gj = gdir / "group.json"
+        raw = _read_json(gj) if gj.is_file() else {}
+        if not isinstance(raw, dict):
+            continue
+        prompt = raw.get("prompt") or ""
+        neg = raw.get("negativePrompt") or ""
+        if not prompt and not neg:
+            continue
+        for bucket in (segs, shots):
+            if i >= len(bucket) or not isinstance(bucket[i], dict):
+                continue
+            if prompt and not str(bucket[i].get("prompt") or "").strip():
+                bucket[i]["prompt"] = prompt
+            if neg and not str(bucket[i].get("negativePrompt") or "").strip():
+                bucket[i]["negativePrompt"] = neg
+
+
 def import_extracted_pack(extracted: Path) -> dict[str, Any]:
     pack_path = extracted / "pack.json"
     pack_meta: dict[str, Any] = {}
@@ -981,6 +1020,7 @@ def import_extracted_pack(extracted: Path) -> dict[str, Any]:
             raise ValueError("timeline.json is invalid.")
     else:
         timeline = _assemble_timeline(extracted, pack_meta)
+    _fill_empty_prompts_from_pack_files(timeline, extracted)
 
     pack_id = uuid.uuid4().hex[:12]
     rel_prefix = f"minimax_director_packs/{pack_id}"

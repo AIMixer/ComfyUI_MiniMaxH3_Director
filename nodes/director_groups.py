@@ -8,11 +8,25 @@ from ..director.external_groups import (
     pack_r2v_group,
 )
 from ..director.fl2v_timeline import DEFAULT_FL2V_DURATION_SEC
+from ..director.plan import REF_IMAGE_SIZE_CHOICES
 from ..lib.ref_audios import MAX_REFERENCE_AUDIOS
 from ..lib.ref_images import MAX_REFERENCE_IMAGES
 from ..lib.ref_videos import MAX_REFERENCE_VIDEOS
 
 _CATEGORY = "MiniMaxH3/Director Groups"
+_REF_IMAGE_SIZE_TOOLTIP = (
+    "Per-group ref sizing (Director reads this). "
+    "match: downscale to the generation pixel area. "
+    "1024/1280/1536: cap the long edge, then official max. "
+    "max: official 2048 short-edge. Default match; smaller is faster."
+)
+
+
+def _ref_image_size_combo() -> tuple:
+    return (
+        list(REF_IMAGE_SIZE_CHOICES),
+        {"default": "match", "tooltip": _REF_IMAGE_SIZE_TOOLTIP},
+    )
 
 
 def _i2v_inputs() -> dict:
@@ -75,6 +89,7 @@ def _pack_r2v_kwargs(
     *,
     prompt="",
     duration_sec=DEFAULT_FL2V_DURATION_SEC,
+    ref_image_size="match",
     ref_images=None,
     ref_videos=None,
     ref_video_audios=None,
@@ -105,6 +120,7 @@ def _pack_r2v_kwargs(
     return pack_r2v_group(
         prompt=prompt,
         duration_sec=duration_sec,
+        ref_image_size=ref_image_size,
         ref_images=images,
         ref_videos=videos,
         ref_video_audios=v_audios,
@@ -218,6 +234,13 @@ if comfy_io is not None:
                         step=0.1,
                         tooltip="Clip duration in seconds (snapped to MiniMax 17k+5 frames @ fps).",
                     ),
+                    comfy_io.Combo.Input(
+                        "ref_image_size",
+                        options=list(REF_IMAGE_SIZE_CHOICES),
+                        display_name="参考图尺寸",
+                        default="match",
+                        tooltip=_REF_IMAGE_SIZE_TOOLTIP,
+                    ),
                     comfy_io.Autogrow.Input(
                         "ref_images",
                         optional=True,
@@ -285,6 +308,7 @@ if comfy_io is not None:
             cls,
             prompt="",
             duration_sec=DEFAULT_FL2V_DURATION_SEC,
+            ref_image_size="match",
             ref_images=None,
             ref_videos=None,
             ref_video_audios=None,
@@ -293,6 +317,7 @@ if comfy_io is not None:
             group = _pack_r2v_kwargs(
                 prompt=prompt,
                 duration_sec=duration_sec,
+                ref_image_size=ref_image_size,
                 ref_images=ref_images,
                 ref_videos=ref_videos,
                 ref_video_audios=ref_video_audios,
@@ -388,6 +413,7 @@ else:
                             "step": 0.1,
                         },
                     ),
+                    "ref_image_size": _ref_image_size_combo(),
                 },
                 "optional": opts,
             }
@@ -400,8 +426,13 @@ else:
             "Pack one MiniMax H3 Reference to Video group for Director.r2v_groups."
         )
 
-        def pack(self, prompt="", duration_sec=DEFAULT_FL2V_DURATION_SEC, **kwargs):
-            return (_pack_r2v_kwargs(prompt=prompt, duration_sec=duration_sec, **kwargs),)
+        def pack(self, prompt="", duration_sec=DEFAULT_FL2V_DURATION_SEC, ref_image_size="match", **kwargs):
+            return (_pack_r2v_kwargs(
+                prompt=prompt,
+                duration_sec=duration_sec,
+                ref_image_size=ref_image_size,
+                **kwargs,
+            ),)
 
     class MiniMaxH3DirectorGroupsCombine:
         """Fan-in groups (static slots when Autogrow API is unavailable)."""
