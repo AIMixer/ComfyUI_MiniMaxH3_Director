@@ -29,3 +29,6 @@ Thumbs.db
 # Local seam / debug probe dumps (do not publish)
 _seam_probe/
 _seam_probe_*/
+
+# Registry CLI leftover zip
+node.zip

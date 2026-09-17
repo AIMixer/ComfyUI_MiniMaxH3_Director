@@ -18,12 +18,65 @@ import torch
 
 import folder_paths
 
+from .h3_latent_continue import CONTINUE_PIPELINE_ID, clamp_seam_min_mask
 from .h3_motion_context import CONTINUITY_PIPELINE_ID, trim_context_prefix, trim_export_tail
 from .plan import DirectorPlan, SegmentPlan, resolve_ref_image_size
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.cache")
 
 SOURCE_VIDEO_FP_KEY = "source_video"
+
+# External-group (graph-wired i2v_groups / r2v_groups) identity. Stamped by
+# build_plan_from_external_groups from the frontend wiring witness's per-group
+# record — one group = one segment = one cache slot.
+#
+# Only the segment's **own** record is stored, never the whole chain: a segment is
+# reused on its own identity, so editing group_1 leaves group_0's cache alone.
+# The chain itself lives in ``timeline_data`` (status request and execute both
+# receive it) and is never persisted.
+EXTERNAL_SEGMENT_FP_KEY = "external_group"
+
+# Fingerprint keys that come out of the executed group payloads (prompts,
+# durations, reference counts/slots, per-row continuity). The cache-status panel
+# cannot rebuild them for graph-wired groups, so in external-group mode it
+# compares only the remaining keys plus the wiring witness.
+GROUP_DERIVED_FP_KEYS = frozenset(
+    {
+        "index",
+        "start",
+        "end",
+        "prompt",
+        "negative",
+        "task_key",
+        "refs",
+        "ref_audios",
+        "ref_videos",
+        "ref_video",
+        "ref_video_start",
+        "continuity_from_prev",
+        "ref_image_size",
+        SOURCE_VIDEO_FP_KEY,
+    }
+)
+
+
+def has_external_marker(stored: Any) -> bool:
+    """Whether this cache was written from a graph-wired external-group plan."""
+    if not isinstance(stored, dict):
+        return False
+    return EXTERNAL_SEGMENT_FP_KEY in stored
+
+
+def _plan_uses_external_groups(plan: DirectorPlan | None) -> bool:
+    if plan is None:
+        return False
+    if isinstance(getattr(plan, "external_groups_witness", None), dict):
+        return True
+    raw = getattr(plan, "raw", None)
+    if not isinstance(raw, dict):
+        return False
+    ext = raw.get("externalGroups")
+    return isinstance(ext, dict) and bool(ext.get("active"))
 
 
 def source_video_identity(plan: DirectorPlan) -> list[str]:
@@ -89,6 +142,27 @@ def _cache_root(node_id: str) -> Path | None:
         return None
 
 
+def _ref_audio_file_stamp(audio: Any, fallback_index: int) -> str:
+    """Fingerprint fragment for one reference audio.
+
+    Keying on the uploaded filename alone misses the case where the user keeps
+    the same slot/filename but replaces the audio content. Stamp the source
+    file's mtime+size so a content swap invalidates the first-pass cache.
+    """
+    index = getattr(audio, "index", fallback_index)
+    name = getattr(audio, "audio_file", "") or ""
+    path = getattr(audio, "audio_path", "") or ""
+    stamp = ""
+    if path:
+        try:
+            st = os.stat(path)
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+            stamp = f"{mtime_ns}:{int(st.st_size)}"
+        except OSError:
+            stamp = ""
+    return f"aud{index}:{name}:{stamp}"
+
+
 def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
     """Identity that affects first-pass sampling (no Refine settings)."""
     ref_files = sorted(
@@ -96,7 +170,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         for ref in seg.refs
     )
     ref_audio_files = sorted(
-        f"aud{getattr(a, 'index', i)}:{(getattr(a, 'audio_file', '') or '')}"
+        _ref_audio_file_stamp(a, i)
         for i, a in enumerate(getattr(seg, "ref_audios", None) or [])
     )
     ref_video_files = sorted(
@@ -108,7 +182,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         or seg.reference_video_meta.get("fileName")
         or ""
     ).strip()
-    return {
+    payload = {
         "index": seg.index,
         "start": seg.start_frame,
         "end": seg.end_frame,
@@ -130,8 +204,40 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         "continuity": plan.continuity_enabled,
         "continuity_overlap": plan.continuity_overlap_frames if plan.continuity_enabled else 0,
         "continuity_from_prev": bool(getattr(seg, "continuity_from_prev", True)),
-        "continuity_pipeline": CONTINUITY_PIPELINE_ID,
+        "continuity_mode": (
+            str(getattr(plan, "continuity_mode", "guide") or "guide")
+            if plan.continuity_enabled
+            else "off"
+        ),
+        "continuity_redraw": (
+            round(clamp_seam_min_mask(getattr(plan, "continuity_redraw", 0.10)), 2)
+            if plan.continuity_enabled
+            and str(getattr(plan, "continuity_mode", "guide") or "guide") == "continue"
+            else 0
+        ),
+        "continuity_pipeline": (
+            CONTINUE_PIPELINE_ID
+            if plan.continuity_enabled
+            and str(getattr(plan, "continuity_mode", "guide") or "guide") == "continue"
+            else CONTINUITY_PIPELINE_ID
+        ),
     }
+    if plan.continuity_enabled and bool(getattr(plan, "continuity_keep_tail", True)):
+        payload["continuity_keep_tail"] = True
+    witness = getattr(plan, "external_groups_witness", None)
+    if isinstance(witness, dict):
+        # This segment's own group only. The whole chain is deliberately *not*
+        # folded in: a segment is reused on its own identity, so editing one
+        # group must not invalidate the others (it would also make the panel
+        # report every segment as mismatched).
+        groups = witness.get("groups")
+        index = int(getattr(seg, "index", 0) or 0)
+        if isinstance(groups, list) and 0 <= index < len(groups):
+            record = groups[index]
+            if isinstance(record, dict):
+                payload[EXTERNAL_SEGMENT_FP_KEY] = record
+    return payload
+
 
 
 def first_pass_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
@@ -165,6 +271,9 @@ def segment_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str,
     from .refine_pack import refine_fingerprint
 
     fp.update(refine_fingerprint(plan))
+    from .face_refine.pack import face_refine_fingerprint
+
+    fp.update(face_refine_fingerprint(plan))
     return fp
 
 
@@ -380,6 +489,42 @@ def _av_latent_to_cpu(av_latent: dict) -> dict:
         else:
             out[key] = value
     return out
+
+
+def load_first_pass_av_latent(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+    *,
+    allow_stale: bool = False,
+) -> dict | None:
+    """Load ``.pre.av.pt`` for continuity pin. Source-video mismatch still rejects."""
+    if not node_id:
+        return None
+    root = _cache_root(node_id)
+    if root is None:
+        return None
+    idx = seg.index
+    meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+    latent_path = root / f"seg_{idx:04d}.pre.av.pt"
+    if not latent_path.is_file():
+        return None
+    try:
+        if meta_path.is_file():
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = first_pass_cache_fingerprint(seg, plan)
+            if stored != expected:
+                if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
+                    return None
+                if not allow_stale:
+                    return None
+        payload = torch.load(latent_path, map_location="cpu", weights_only=False)
+        if not isinstance(payload, dict) or "samples" not in payload:
+            return None
+        return payload
+    except Exception as exc:
+        log.debug("Segment %d first-pass AV latent skipped: %s", idx + 1, exc)
+        return None
 
 
 def load_segment_av_latent(
@@ -699,12 +844,19 @@ def load_first_pass_cache(
     try:
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
         expected = first_pass_cache_fingerprint(seg, plan)
-        if not isinstance(stored, dict) or stored != expected:
+        missing_external = (
+            isinstance(stored, dict)
+            and _plan_uses_external_groups(plan)
+            and not has_external_marker(stored)
+        )
+        if not isinstance(stored, dict) or stored != expected or missing_external:
             if isinstance(stored, dict) and _reject_source_stale(
                 stored, expected, seg_index=idx, quiet=True,
             ):
                 return None
             diff = _fingerprint_diff_keys(stored, expected) if isinstance(stored, dict) else ["<invalid-meta>"]
+            if missing_external and "<unverified-external>" not in diff:
+                diff = ["<unverified-external>", *diff]
             log.info(
                 "Segment %d first-pass cache miss (diff=%s); will sample first pass.",
                 idx + 1,
@@ -794,16 +946,396 @@ def first_pass_cache_disk_signature(node_id: str | None) -> str:
     return "|".join(parts)
 
 
+def _comparable_first_pass_fingerprint(plan: DirectorPlan) -> dict[str, Any]:
+    """First-pass keys that do not depend on the executed group payloads.
+
+    Built from the real fingerprint function so the panel compares exactly what
+    the run writes; group-derived keys are dropped because the panel only has
+    widget values (see ``GROUP_DERIVED_FP_KEYS``).
+    """
+    probe = SegmentPlan(
+        index=0,
+        start_frame=0,
+        end_frame=0,
+        prompt="",
+        task_type="",
+        task_key="",
+        use_global=False,
+    )
+    try:
+        fp = first_pass_cache_fingerprint(probe, plan)
+    except Exception:
+        return {}
+    return {key: value for key, value in fp.items() if key not in GROUP_DERIVED_FP_KEYS}
+
+
+_PRE_META_NAME_RE = re.compile(r"^seg_(\d+)\.pre\.meta\.json$")
+_FINAL_FRAMES_NAME_RE = re.compile(r"^seg_\d+\.pt$")
+
+# Buckets of a group record's digest. Only used to *name* the change: the
+# per-group record is compared as a whole (that is what makes one group's edit
+# invalidate that group's segment alone), and these labels say which part of it
+# moved. ``timeline`` is skipped because timeline-level knobs are plan-wide and
+# are compared through the fingerprint itself.
+_WITNESS_FACET_DIFF_KEYS = {
+    "wiring": "external_wiring",
+    "prompt": "external_prompt",
+    "length": "external_length",
+    "media": "external_media",
+    "other": "external_other",
+    "timeline": "external_timeline",
+}
+
+
+def _external_witness_fps(witness: Any, plan: DirectorPlan) -> float:
+    """Frame rate the run uses: the timeline's, then the Director widget."""
+    if not isinstance(witness, dict):
+        witness = {}
+    try:
+        fps = float(witness.get("fps"))
+    except (TypeError, ValueError):
+        fps = 0.0
+    if not fps or fps <= 0:
+        try:
+            fps = float(getattr(plan, "frame_rate", 0) or 0)
+        except (TypeError, ValueError):
+            fps = 0.0
+    return max(1.0, fps or 24.0)
+
+
+def _external_group_seconds(duration_sec: Any) -> float:
+    """Effective clip duration: the group's own value, else the packer default."""
+    from .fl2v_timeline import DEFAULT_FL2V_DURATION_SEC
+
+    try:
+        seconds = float(duration_sec)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    return seconds if seconds else float(DEFAULT_FL2V_DURATION_SEC)
+
+
+def _external_group_frames(duration_sec: Any, fps: float) -> int:
+    """Frame count of one group — the maths ``build_plan_from_external_groups``
+    applies to that group's ``duration_sec`` when it turns groups into segments."""
+    from .fl2v_timeline import MIN_FL2V_FRAMES, _duration_to_minimax_frames
+    from .frame_align import minimax_align_frame_count
+
+    return int(
+        minimax_align_frame_count(
+            max(
+                MIN_FL2V_FRAMES,
+                _duration_to_minimax_frames(_external_group_seconds(duration_sec), fps),
+            )
+        )
+    )
+
+
+def _external_group_timings(groups: list[Any], fps: float) -> list[dict[str, Any]]:
+    """Per-group `{duration, frames, start, end}` in run order (cumulative)."""
+    timings: list[dict[str, Any]] = []
+    cursor = 0
+    for record in groups:
+        raw_duration = record.get("dur") if isinstance(record, dict) else None
+        duration = _external_group_seconds(raw_duration)
+        frames = _external_group_frames(raw_duration, fps)
+        start, end = cursor, cursor + frames
+        cursor = end
+        timings.append(
+            {
+                "duration": round(duration, 3),
+                "frames": frames,
+                "start": start,
+                "end": end,
+            }
+        )
+    return timings
+
+
+def _external_selected_indices(
+    witness: dict[str, Any],
+    count: int,
+) -> frozenset[int] | None:
+    """「选择运行」selection out of the witness, using the run's own parser."""
+    sel = witness.get("sel")
+    if not isinstance(sel, dict) or not sel.get("on"):
+        return None
+    idx = sel.get("idx")
+    if not isinstance(idx, list) or not idx or count <= 0:
+        return None
+    from .plan import _parse_run_selection
+
+    try:
+        return _parse_run_selection({"runSelectEnabled": True, "runSelection": idx}, count)
+    except Exception:
+        return None
+
+
+def _external_segment_diff(stored_record: Any, expected_record: Any) -> list[str]:
+    """Name what changed inside **this** segment's own group record.
+
+    The record itself is the identity (the run compares it as a whole), so the
+    caller already knows it differs; this only turns that into a label. The
+    explicit fields come first — the prompt digest and the duration — because they
+    are what users actually edit; the facet digests then say whether it was
+    reference media, wiring or something else. Anything that differs only in a
+    part with no bucket (the node was swapped for another with the same widgets)
+    reports the generic wiring key instead of guessing.
+    """
+    if not isinstance(stored_record, dict) or not isinstance(expected_record, dict):
+        return []
+    keys: list[str] = []
+    if stored_record.get("prompt") != expected_record.get("prompt"):
+        keys.append("external_prompt")
+    if stored_record.get("dur") != expected_record.get("dur"):
+        keys.append("external_length")
+    stored_facets = stored_record.get("facets")
+    expected_facets = expected_record.get("facets")
+    # Execute fallback records have no graph facets. Comparing them to the
+    # panel's full witness would report every segment as「外接组接线」forever.
+    if isinstance(stored_facets, dict) and stored_facets and isinstance(expected_facets, dict):
+        for facet, diff_key in _WITNESS_FACET_DIFF_KEYS.items():
+            if facet == "timeline" or diff_key in keys:
+                continue
+            if stored_facets.get(facet) != expected_facets.get(facet):
+                keys.append(diff_key)
+    stored_sub = stored_record.get("sub")
+    if stored_sub and stored_sub != expected_record.get("sub") and "external_wiring" not in keys:
+        if "external_media" not in keys and "external_other" not in keys:
+            keys.append("external_wiring")
+    return keys
+
+
+def _count_final_segment_files(root: Path) -> int:
+    """Number of ``seg_XXXX.pt`` (final render) files; never raises."""
+    if not root.is_dir():
+        return 0
+    try:
+        return sum(
+            1
+            for path in root.glob("seg_*.pt")
+            if _FINAL_FRAMES_NAME_RE.match(path.name)
+        )
+    except OSError:
+        return 0
+
+
+def _inspect_external_group_cache(
+    node_id: str | None,
+    plan: DirectorPlan,
+    witness: dict[str, Any],
+) -> dict[str, Any]:
+    """Cache status for graph-wired external groups.
+
+    ``i2v_groups`` / ``r2v_groups`` arrive as tensors at execute time, so the
+    panel cannot rebuild the executed segments from widget values. Per segment it
+    therefore compares the plan-level sampling knobs it *can* see, that segment's
+    own group record and its frame range — the same set the run uses, which keeps
+    one group's edit from reporting every other group as changed.
+
+    One group = one segment = one cache slot, so the segments are enumerated from
+    the witness's group list — the same order the run uses — rather than from the
+    UI timeline, whose cards external groups override.
+    """
+    result: dict[str, Any] = {
+        "exists": False,
+        "matches": False,
+        "current_seed": int(getattr(plan, "sample_seed", 0) or 0),
+        "cached_seeds": [],
+        "segment_total": 0,
+        "cached_count": 0,
+        "matched_count": 0,
+        "selected_total": 0,
+        "selected_cached": 0,
+        "selected_matched": 0,
+        "final_cached_count": 0,
+        "diff_keys": [],
+        "segments": [],
+        "mode": "external_groups",
+        "external": dict(witness),
+        "unverified_count": 0,
+    }
+    if not node_id:
+        return result
+
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    result["final_cached_count"] = _count_final_segment_files(root)
+
+    # Plan-level knobs only. The group-derived keys cannot be rebuilt without the
+    # executed payloads, and this segment's own record is compared below as a
+    # whole — that is the per-group identity.
+    expected_knobs = {
+        key: value
+        for key, value in _comparable_first_pass_fingerprint(plan).items()
+        if key != EXTERNAL_SEGMENT_FP_KEY
+    }
+    raw_groups = witness.get("groups")
+    groups = [g for g in raw_groups if isinstance(g, dict)] if isinstance(raw_groups, list) else []
+    timings = _external_group_timings(groups, _external_witness_fps(witness, plan))
+    local_slots = not timings
+    if timings:
+        result["segment_total"] = len(timings)
+        selected = _external_selected_indices(witness, len(timings))
+        indices = list(range(len(timings)))
+    else:
+        # Caches written by an older frontend carry no group list: fall back to
+        # whatever is on disk (the segment count is then unknown).
+        selected = None
+        try:
+            indices = sorted(
+                int(match.group(1))
+                for path in root.glob("seg_*.pre.meta.json")
+                if (match := _PRE_META_NAME_RE.match(path.name))
+            )
+        except OSError:
+            return result
+        result["segment_total"] = len(indices)
+
+    rows: list[dict[str, Any]] = []
+    cached_seeds: set[int] = set()
+    all_diffs: set[str] = set()
+    unverified = 0
+
+    for idx in indices:
+        timing = timings[idx] if idx < len(timings) else {}
+        record = groups[idx] if idx < len(groups) else None
+        meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+        latent_path = root / f"seg_{idx:04d}.pre.av.pt"
+        meta_exists = meta_path.is_file()
+        cache_exists = meta_exists and latent_path.is_file()
+        stored: Any = None
+        read_error = ""
+        if meta_exists:
+            try:
+                stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                read_error = str(exc)
+
+        cached_seed = stored.get("seed") if isinstance(stored, dict) else None
+        try:
+            if cached_seed is not None:
+                cached_seed = int(cached_seed)
+                cached_seeds.add(cached_seed)
+        except (TypeError, ValueError):
+            cached_seed = None
+
+        diff: list[str] = []
+        matches = False
+        stored_record = (
+            stored.get(EXTERNAL_SEGMENT_FP_KEY) if isinstance(stored, dict) else None
+        )
+        if meta_exists and not isinstance(stored, dict):
+            diff = ["<invalid-meta>"]
+            status = "mismatch"
+        elif not isinstance(stored, dict):
+            status = "missing"
+        elif not isinstance(stored_record, dict):
+            # Written before per-group records existed (older revision, or queued
+            # straight through the API): the group's own identity cannot be
+            # checked, and the run re-samples this segment once.
+            status = "unverified"
+            unverified += 1
+            diff = ["<unverified-external>"]
+        else:
+            diff = [
+                key for key, value in expected_knobs.items() if stored.get(key) != value
+            ]
+            # This segment's own group is the only per-group input to reuse.
+            # A peer group's edit is deliberately invisible here — that is what
+            # keeps one group's cache independent of the others.
+            if isinstance(record, dict) and stored_record != record:
+                diff.extend(_external_segment_diff(stored_record, record))
+            expected_end = timing.get("end")
+            stored_end = stored.get("end")
+            if expected_end is not None and stored_end is not None:
+                try:
+                    if int(stored_end) != int(expected_end):
+                        # This segment's own duration is unchanged but its frame
+                        # range moved: an earlier group got longer/shorter. Segments
+                        # are laid out back to back and each one is conditioned on
+                        # the previous clip's tail, so the range has to shift and
+                        # the segment must be re-sampled — but it is NOT this
+                        # group's duration that changed, so it gets its own label
+                        # instead of blaming「外接组时长」on an untouched group.
+                        own_dur_moved = (
+                            isinstance(stored_record, dict)
+                            and isinstance(record, dict)
+                            and stored_record.get("dur") != record.get("dur")
+                        )
+                        key = "external_length" if own_dur_moved else "external_shift"
+                        if key not in diff:
+                            diff.insert(0, key)
+                except (TypeError, ValueError):
+                    pass
+            matches = bool(cache_exists and not diff)
+            status = "valid" if matches else ("missing" if not cache_exists else "mismatch")
+
+        all_diffs.update(diff)
+        rows.append(
+            {
+                "segment": idx + 1,
+                "index": idx,
+                "slot": str(record.get("slot") or "") if isinstance(record, dict) else "",
+                "node": str(record.get("node") or "") if isinstance(record, dict) else "",
+                "duration": timing.get("duration"),
+                "frames": timing.get("frames"),
+                "start": timing.get("start"),
+                "end": timing.get("end"),
+                "stored_end": stored.get("end") if isinstance(stored, dict) else None,
+                "exists": cache_exists,
+                "matches": matches,
+                "status": status,
+                "selected": selected is None or idx in selected,
+                "cached_seed": cached_seed,
+                "diff_keys": diff,
+                "error": read_error,
+            }
+        )
+
+    cached_count = sum(1 for row in rows if row["exists"])
+    matched_count = sum(1 for row in rows if row["matches"])
+    selected_rows = [row for row in rows if row["selected"]]
+    diff_keys = sorted(all_diffs)
+    result.update(
+        {
+            "exists": cached_count > 0,
+            "matches": bool(rows) and matched_count == len(rows),
+            "cached_seeds": sorted(cached_seeds),
+            "cached_count": cached_count,
+            "matched_count": matched_count,
+            "selected_total": len(selected_rows),
+            "selected_cached": sum(1 for row in selected_rows if row["exists"]),
+            "selected_matched": sum(1 for row in selected_rows if row["matches"]),
+            "diff_keys": diff_keys,
+            "segments": rows,
+            "unverified_count": unverified,
+        }
+    )
+    # Only the group list knows the true segment count; the disk scan does not.
+    if local_slots:
+        result["count_source"] = "cache_files"
+    return result
+
+
 def inspect_first_pass_cache(
     node_id: str | None,
     plan: DirectorPlan,
+    *,
+    external_groups: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Inspect first-pass cache files without loading their tensor payloads.
 
     Always walks the whole timeline so「选择运行」unselected slots stay visible.
     ``final_cached_count`` is file presence only (``seg_XXXX.pt``), not a
     fingerprint match — Refine knobs are not on this status request.
+
+    ``external_groups``: wiring witness of graph-wired ``i2v_groups`` /
+    ``r2v_groups``. When present the group-derived keys cannot be rebuilt from
+    widget values, so per segment only the plan-level knobs, that segment's own
+    group record and its frame range are compared.
     """
+    if external_groups:
+        return _inspect_external_group_cache(node_id, plan, external_groups)
+
     current_seed = int(getattr(plan, "sample_seed", 0) or 0)
     result: dict[str, Any] = {
         "exists": False,
@@ -819,6 +1351,8 @@ def inspect_first_pass_cache(
         "final_cached_count": 0,
         "diff_keys": [],
         "segments": [],
+        "mode": "timeline",
+        "stale_external_count": 0,
     }
     if not node_id:
         return result
@@ -833,6 +1367,7 @@ def inspect_first_pass_cache(
     all_diffs: set[str] = set()
     rows: list[dict[str, Any]] = []
     final_cached = 0
+    stale_external = 0
     for seg in all_segments:
         is_selected = selected_set is None or int(seg.index) in selected_set
         idx = int(seg.index)
@@ -857,12 +1392,24 @@ def inspect_first_pass_cache(
         if getattr(plan, "sample_sigmas_linked", False) and isinstance(stored, dict):
             stored_cmp = {k: v for k, v in stored.items() if k != "sigmas"}
             expected_cmp = {k: v for k, v in expected.items() if k != "sigmas"}
-        matches = bool(cache_exists and isinstance(stored, dict) and stored_cmp == expected_cmp)
-        diff = (
-            _fingerprint_diff_keys(stored_cmp, expected_cmp)
-            if isinstance(stored, dict)
-            else (["<invalid-meta>"] if meta_exists else ["<missing-cache>"])
+        matches = bool(
+            cache_exists
+            and isinstance(stored, dict)
+            and stored_cmp == expected_cmp
         )
+        # A row stamped with an external-group witness was written by a group
+        # run, while this request has no group input at all (link removed, or a
+        # queued/API submit). Such a row can never be reused, and the UI-card
+        # diffs below would be noise — the group prompt / duration / reference
+        # media never lived on the card. Report the wiring change only.
+        stale_external_row = has_external_marker(stored)
+        if stale_external_row:
+            diff = ["external_groups_off"]
+            stale_external += 1
+        elif isinstance(stored, dict):
+            diff = _fingerprint_diff_keys(stored_cmp, expected_cmp)
+        else:
+            diff = ["<invalid-meta>"] if meta_exists else ["<missing-cache>"]
         if not cache_exists:
             status = "missing"
         elif matches:
@@ -908,6 +1455,7 @@ def inspect_first_pass_cache(
             "final_cached_count": final_cached,
             "diff_keys": sorted(all_diffs),
             "segments": rows,
+            "stale_external_count": stale_external,
         }
     )
     return result

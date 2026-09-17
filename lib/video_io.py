@@ -283,8 +283,14 @@ def load_video_resampled(
     storage_width: int | None = None,
     storage_height: int | None = None,
     long_edge: int = 848,
+    hold_past_eof: bool = True,
 ) -> torch.Tensor:
-    """Decode selected resampled frame indices from a video file."""
+    """Decode selected resampled frame indices from a video file.
+
+    ``hold_past_eof``: timeline source clips keep segment length by repeating
+    the last readable frame. Reference videos should pass False — MiniMax
+    accepts a shorter ref and will snap it to the 17n+5 grid.
+    """
     if not frame_indices:
         raise ValueError("No frames requested from video.")
 
@@ -311,16 +317,55 @@ def load_video_resampled(
     unique = sorted({int(i) for i in frame_indices})
     decoded: dict[int, np.ndarray] = {}
     fallback: np.ndarray | None = None
+    eof_warned = False
+    native_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
     for src_idx in unique:
         t_sec = max(0.0, src_idx / float(frame_rate or 24.0))
         native_frame = int(round(t_sec * native_fps))
+        if native_count > 0:
+            native_frame = min(native_frame, native_count - 1)
+        # Past the last decoded frame: timeline clips hold; refs stop (no fake tail).
+        if fallback is not None and native_count > 0 and int(round(t_sec * native_fps)) >= native_count:
+            if not hold_past_eof:
+                break
+            decoded[src_idx] = fallback
+            if not eof_warned:
+                log.warning(
+                    "Video ended at native frame %d (t=%.3fs); holding last frame "
+                    "for the rest of %s",
+                    native_count,
+                    (native_count - 1) / native_fps if native_fps else t_sec,
+                    path,
+                )
+                eof_warned = True
+            continue
         cap.set(cv2.CAP_PROP_POS_FRAMES, native_frame)
         ok, bgr = cap.read()
         if not ok or bgr is None:
-            log.warning("Failed to read frame %d (t=%.3fs) from %s", native_frame, t_sec, path)
             if fallback is not None:
+                if not hold_past_eof:
+                    log.info(
+                        "Stopped reading %s at native frame %d (t=%.3fs); "
+                        "keeping %d real frame(s), not padding to EOF.",
+                        path,
+                        native_frame,
+                        t_sec,
+                        len(decoded),
+                    )
+                    break
                 decoded[src_idx] = fallback
+                if not eof_warned:
+                    log.warning(
+                        "Failed to read frame %d (t=%.3fs) from %s; "
+                        "holding the last decoded frame for the rest of this clip.",
+                        native_frame,
+                        t_sec,
+                        path,
+                    )
+                    eof_warned = True
+            else:
+                log.warning("Failed to read frame %d (t=%.3fs) from %s", native_frame, t_sec, path)
             continue
 
         if rotate_90_cw:
@@ -335,6 +380,12 @@ def load_video_resampled(
 
     if not decoded:
         raise ValueError(f"No frames decoded from video: {path}")
+
+    if not hold_past_eof:
+        rows = [decoded[int(idx)] for idx in frame_indices if int(idx) in decoded]
+        if not rows:
+            raise ValueError(f"No frames decoded from video: {path}")
+        return torch.from_numpy(np.stack(rows, axis=0))
 
     rows = []
     last = next(iter(decoded.values()))
@@ -602,8 +653,10 @@ def load_reference_video_clip(
     *,
     start_frame: int = 0,
 ) -> torch.Tensor | None:
-    """Load an ads2v reference video clip, resampled to ``num_frames`` at timeline FPS.
+    """Load a MiniMax r2v reference video.
 
+    Requests up to ``num_frames`` at timeline FPS, but does **not** pad past EOF.
+    Official ReferenceToVideo accepts a shorter clip (2–15s) and snaps to 17n+5.
     ``start_frame`` is the logical timeline offset (0 = from beginning). Used when
     global *continuous reference* is enabled so segment N uses ref frame N onward.
     """
@@ -621,15 +674,46 @@ def load_reference_video_clip(
     )
     count = max(1, int(num_frames))
     offset = max(0, int(start_frame))
-    frame_indices = list(range(offset, offset + count))
-    return load_video_resampled(
+    try:
+        meta = probe_video_file(path)
+        duration = float(meta.get("duration") or 0.0)
+        native_fps = float(meta.get("native_fps") or frame_rate or 24.0)
+        native_count = int(meta.get("frame_count") or 0)
+        if duration <= 0 and native_count > 0 and native_fps > 0:
+            duration = native_count / native_fps
+        if duration > 0:
+            last_idx = max(0, int(duration * float(frame_rate or 24.0) + 1e-6) - 1)
+            if last_idx < offset:
+                log.warning(
+                    "Reference video %s is shorter than start_frame=%d; using the last readable frames.",
+                    path,
+                    offset,
+                )
+                offset = last_idx
+            count = min(count, last_idx - offset + 1)
+    except Exception as exc:
+        log.debug("Reference video probe failed for %s: %s", path, exc)
+    frame_indices = list(range(offset, offset + max(1, count)))
+    tensor = load_video_resampled(
         path,
         frame_rate,
         frame_indices,
         storage_width=ref_block.get("storageWidth"),
         storage_height=ref_block.get("storageHeight"),
         long_edge=long_edge,
+        hold_past_eof=False,
     )
+    got = int(tensor.shape[0]) if tensor is not None else 0
+    wanted = max(1, int(num_frames))
+    if got > 0 and got < wanted:
+        log.info(
+            "Reference video %s: %d frame(s) at %.2ffps (not padded to segment %d).",
+            path,
+            got,
+            float(frame_rate or 24.0),
+            wanted,
+        )
+    return tensor
 
 
 def load_timeline_segment(timeline: dict, start: int, end: int) -> torch.Tensor:

@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -73,11 +74,62 @@ MIN_CONTINUITY_OVERLAP = 5
 MAX_CONTINUITY_OVERLAP = 56
 REF_IMAGE_SIZE_MATCH = "match"
 REF_IMAGE_SIZE_MAX = "max"
+REF_IMAGE_LONG_PRESETS = (1024, 1280, 1536)
+REF_IMAGE_SIZE_CHOICES = (
+    REF_IMAGE_SIZE_MATCH,
+    *(str(px) for px in REF_IMAGE_LONG_PRESETS),
+    REF_IMAGE_SIZE_MAX,
+)
 
 
 def normalize_ref_image_size(value) -> str:
-    raw = str(value or "").strip().lower()
-    return REF_IMAGE_SIZE_MAX if raw == REF_IMAGE_SIZE_MAX else REF_IMAGE_SIZE_MATCH
+    """``match`` | ``1024`` | ``1280`` | ``1536`` | ``max``."""
+    raw = str(value or "").strip().lower().replace("long", "").replace("_", "").replace(":", "")
+    raw = raw.replace("edge", "").replace("px", "").strip()
+    if raw == REF_IMAGE_SIZE_MAX:
+        return REF_IMAGE_SIZE_MAX
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return REF_IMAGE_SIZE_MATCH
+    if n in REF_IMAGE_LONG_PRESETS:
+        return str(n)
+    return REF_IMAGE_SIZE_MATCH
+
+
+def official_ref_image_size(value) -> str:
+    """Value passed to MiniMaxH3ReferenceToVideo (only match | max)."""
+    return (
+        REF_IMAGE_SIZE_MATCH
+        if normalize_ref_image_size(value) == REF_IMAGE_SIZE_MATCH
+        else REF_IMAGE_SIZE_MAX
+    )
+
+
+def ref_image_long_preset_px(value) -> int | None:
+    """Director long-edge cap, or None for match / official max."""
+    mode = normalize_ref_image_size(value)
+    if mode in {str(px) for px in REF_IMAGE_LONG_PRESETS}:
+        return int(mode)
+    return None
+
+
+def _migrate_ref_image_size(raw, extra=None) -> str:
+    mode = normalize_ref_image_size(raw)
+    src = extra if isinstance(extra, dict) else {}
+    if mode != REF_IMAGE_SIZE_MAX:
+        return mode
+    edge = str(src.get("refImageLimitEdge") or src.get("ref_image_limit_edge") or "").lower()
+    px_raw = src.get("refImageLimitPx")
+    if px_raw is None:
+        px_raw = src.get("ref_image_limit_px")
+    try:
+        px = int(px_raw)
+    except (TypeError, ValueError):
+        return mode
+    if edge in {"long", "longest", "long_edge", "longedge"} and px in REF_IMAGE_LONG_PRESETS:
+        return str(px)
+    return mode
 
 
 def _timeline_dict(plan_or_timeline) -> dict:
@@ -94,21 +146,27 @@ def _legacy_output_ref_image_size(timeline: dict | None) -> str | None:
         raw = out.get("ref_image_size")
     if raw is None or str(raw).strip() == "":
         return None
-    return normalize_ref_image_size(raw)
+    return _migrate_ref_image_size(raw, out)
 
 
 def resolve_ref_image_size(seg_or_data=None, plan_or_timeline=None) -> str:
-    """Per-segment MiniMax ``ref_image_size``; legacy ``output.refImageSize`` as fallback."""
+    """Per-segment mode; legacy ``output.refImageSize`` as fallback."""
     raw = None
+    extra = None
     if isinstance(seg_or_data, dict):
+        extra = seg_or_data
         if "refImageSize" in seg_or_data or "ref_image_size" in seg_or_data:
             raw = seg_or_data.get("refImageSize")
             if raw is None:
                 raw = seg_or_data.get("ref_image_size")
     elif seg_or_data is not None:
         raw = getattr(seg_or_data, "ref_image_size", None)
+        extra = {
+            "refImageLimitEdge": getattr(seg_or_data, "ref_image_limit_edge", None),
+            "refImageLimitPx": getattr(seg_or_data, "ref_image_limit_px", None),
+        }
     if raw is not None and str(raw).strip() != "":
-        return normalize_ref_image_size(raw)
+        return _migrate_ref_image_size(raw, extra)
     legacy = _legacy_output_ref_image_size(_timeline_dict(plan_or_timeline))
     return legacy if legacy is not None else REF_IMAGE_SIZE_MATCH
 
@@ -127,7 +185,7 @@ class SegmentRefAudio:
     index: int
     audio: dict | None = None  # ComfyUI AUDIO; lazy for uploaded files
     audio_file: str = ""
-    audio_path: str = ""  # absolute input path; runtime-only, not a cache identity
+    audio_path: str = ""  # absolute input path; used at runtime and in cache fingerprint
 
 
 @dataclass
@@ -185,7 +243,7 @@ class SegmentPlan:
     ui_index: int | None = None
     # Per-segment「引用上段」; master「段间引导」must also be on. Default True.
     continuity_from_prev: bool = True
-    # Official MiniMaxH3ReferenceToVideo combo: match | max. Per r2v/rv2v group.
+    # match | 1024 | 1280 | 1536 | max. Official node only sees match | max.
     ref_image_size: str = "match"
 
     @property
@@ -222,10 +280,17 @@ class DirectorPlan:
     run_indices: frozenset[int] | None = None  # None = run all segments
     continuity_enabled: bool = False
     continuity_overlap_frames: int = 0
+    # "guide" (motion-context keyframes) | "continue" (引导+重绘 / latent remask).
+    continuity_mode: str = "guide"
+    continuity_redraw: float = 0.10
+    # Keep sample-trim remainder (~12f) instead of cropping back to UI length.
+    continuity_keep_tail: bool = True
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
-    # Full source-video PCM reused only during this Director execution.
+    # Full source-video PCM, reused only during this one Director execution and
+    # freed when the run ends (replaces the old never-cleared process cache).
     audio_decode_cache: dict = field(default_factory=dict, repr=False)
     refine: dict | None = None
+    face_refine: dict | None = None
     # Sampling knobs stamped at execute time (first-pass cache fingerprint).
     sample_seed: int = 0
     sample_cfg: float = 1.0
@@ -236,6 +301,13 @@ class DirectorPlan:
     sample_sigmas_linked: bool = False
     sample_shift_video: float = 12.0
     sample_shift_audio: float = 3.0
+    # Frontend witness of the graph-wired external groups (i2v_groups /
+    # r2v_groups). Those inputs arrive as tensors at execute time, so the
+    # cache-status panel cannot rebuild the segments from widget values; it
+    # compares this witness instead. See director/external_groups.py.
+    external_groups_witness: dict | None = None
+    # Set during execute when export_mode=segments (minimax_seg_export folder).
+    segment_mp4_run_dir: str | None = None
 
     @property
     def segment_count(self) -> int:
@@ -343,7 +415,7 @@ def _load_refs(ref_list: list[dict]) -> list[SegmentRef]:
 
 
 def _reference_audio_file(item: dict) -> tuple[str, str]:
-    """Return (timeline-relative identity, absolute input path)."""
+    """Return (timeline identity rel, absolute input path) for a refAudios entry."""
     rel = str(
         item.get("audioFile")
         or item.get("audio_file")
@@ -354,9 +426,10 @@ def _reference_audio_file(item: dict) -> tuple[str, str]:
     if not rel:
         return "", ""
     sub = str(item.get("subfolder") or "").replace("\\", "/").strip().strip("/")
-    if sub and not rel.startswith(sub + "/"):
-        rel = f"{sub}/{rel}"
-    file_path = os.path.join(folder_paths.get_input_directory(), rel.replace("/", os.sep))
+    located = rel
+    if sub and not located.startswith(sub + "/"):
+        located = f"{sub}/{located}"
+    file_path = os.path.join(folder_paths.get_input_directory(), located.replace("/", os.sep))
     return rel, file_path
 
 
@@ -375,7 +448,12 @@ def load_reference_audio_item(item: dict) -> dict | None:
 
 
 def _load_ref_audios(audio_list: list[dict]) -> list[SegmentRefAudio]:
-    """Build lazy file-backed reference slots without decoding PCM up front."""
+    """Build lazy file-backed reference slots without decoding PCM up front.
+
+    Missing files are skipped (no empty slot). Decode happens on first use;
+    failed decodes are dropped from the prompt tags at execute time so
+    ``<Audio N>`` always matches a populated ``ref_audio_N``.
+    """
     out: list[SegmentRefAudio] = []
     for item in audio_list or []:
         if not isinstance(item, dict):
@@ -437,6 +515,47 @@ def ref_audios_to_dict(
         if isinstance(audio, dict) and audio.get("waveform") is not None:
             items.append((item.index, audio))
     return ref_audios_dict(items)
+
+
+def usable_ref_audio_indices(
+    audios: list[SegmentRefAudio] | None,
+    *,
+    cache: dict | None = None,
+) -> list[int]:
+    """Decode file-backed slots and return indices that actually have PCM."""
+    out: list[int] = []
+    for item in audios or []:
+        if item is None:
+            continue
+        idx = int(getattr(item, "index", 0))
+        audio = ensure_ref_audio_pcm(item, cache=cache)
+        if isinstance(audio, dict) and audio.get("waveform") is not None:
+            out.append(idx)
+            continue
+        log.warning(
+            "Reference audio slot %s dropped (decode failed or empty); "
+            "<Audio %s> will not be sent to the model.",
+            idx + 1,
+            idx + 1,
+        )
+    return out
+
+
+_AUDIO_PROMPT_TAG_RE = re.compile(r"<\s*Audio\s+(\d+)\s*>", re.IGNORECASE)
+
+
+def drop_unusable_audio_prompt_tags(prompt: str, keep_indices: list[int] | set[int]) -> str:
+    """Remove ``<Audio N>`` tags whose slot did not decode, to avoid silent timbre shift."""
+    keep = {int(i) for i in keep_indices}
+
+    def _keep_or_drop(match: re.Match[str]) -> str:
+        slot = int(match.group(1)) - 1
+        return match.group(0) if slot in keep else ""
+
+    text = _AUDIO_PROMPT_TAG_RE.sub(_keep_or_drop, prompt or "")
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return text.strip()
 
 
 def _ref_video_entry_has_file(item: dict | None) -> bool:
@@ -808,6 +927,9 @@ def build_director_plan(
         )
 
     from .segment_continuity import (
+        resolve_continuity_keep_tail,
+        resolve_continuity_mode,
+        resolve_continuity_redraw,
         resolve_continuity_settings,
         resolve_segment_continuity_from_prev,
     )
@@ -815,15 +937,16 @@ def build_director_plan(
     continuity_enabled, continuity_overlap = resolve_continuity_settings(
         timeline, segment_count=len(segments)
     )
+    continuity_mode = resolve_continuity_mode(timeline)
+    continuity_redraw = resolve_continuity_redraw(timeline)
+    continuity_keep_tail = resolve_continuity_keep_tail(timeline)
     for seg, (_start, _end, seg_data) in zip(segments, segment_ranges):
         seg.continuity_from_prev = resolve_segment_continuity_from_prev(
             seg_data if isinstance(seg_data, dict) else {},
             segment_index=seg.index,
         )
-        seg.ref_image_size = resolve_ref_image_size(
-            seg_data if isinstance(seg_data, dict) else {},
-            load_timeline,
-        )
+        data = seg_data if isinstance(seg_data, dict) else {}
+        seg.ref_image_size = resolve_ref_image_size(data, load_timeline)
 
     return DirectorPlan(
         frame_rate=float(timeline.get("frameRate") or frame_rate or 24),
@@ -848,6 +971,9 @@ def build_director_plan(
         run_indices=_parse_run_selection(timeline, len(segments)),
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        continuity_mode=continuity_mode,
+        continuity_redraw=continuity_redraw,
+        continuity_keep_tail=continuity_keep_tail,
         global_ref_audios=global_ref_audios,
     )
 
@@ -960,6 +1086,14 @@ def plan_summary(plan: DirectorPlan) -> str:
             refine_line = None
         if refine_line:
             lines.append(refine_line)
+        try:
+            from .face_refine.pack import face_refine_report_line
+
+            face_line = face_refine_report_line(plan)
+        except Exception:
+            face_line = None
+        if face_line:
+            lines.append(face_line)
         if plan.continuity_enabled:
             pinned = [
                 seg.index + 1
@@ -971,8 +1105,10 @@ def plan_summary(plan: DirectorPlan) -> str:
                 for seg in plan.segments
                 if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
             ]
+            keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
             lines.append(
-                f"Segment continuity: ON (motion context {plan.continuity_overlap_frames}f)"
+                f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "
+                f"motion context {plan.continuity_overlap_frames}f{keep_note})"
             )
             if pinned:
                 lines.append("  Pin from prev: #" + ", #".join(str(i) for i in pinned))
@@ -1023,8 +1159,10 @@ def plan_summary(plan: DirectorPlan) -> str:
             for seg in plan.segments
             if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
         ]
+        keep_note = ", keep full" if getattr(plan, "continuity_keep_tail", True) else ""
         lines.append(
-            f"Segment continuity: ON (motion context {plan.continuity_overlap_frames}f "
+            f"Segment continuity: ON ({getattr(plan, 'continuity_mode', 'guide')} "
+            f"motion context {plan.continuity_overlap_frames}f{keep_note} "
             "→ pin previous tail + trim prefix; t2v/i2v/fl2v/r2v/v2v/rv2v)"
         )
         if pinned:
@@ -1055,6 +1193,14 @@ def plan_summary(plan: DirectorPlan) -> str:
         refine_line = None
     if refine_line:
         lines.append(refine_line)
+    try:
+        from .face_refine.pack import face_refine_report_line
+
+        face_line = face_refine_report_line(plan)
+    except Exception:
+        face_line = None
+    if face_line:
+        lines.append(face_line)
     if plan.run_indices is not None:
         selected = sorted(plan.run_indices)
         skipped = [i + 1 for i in range(plan.segment_count) if i not in plan.run_indices]

@@ -1,0 +1,37 @@
+name: Publish to Comfy registry
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "pyproject.toml"
+
+jobs:
+  publish-node:
+    name: Publish Custom Node to registry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check registry token
+        id: token
+        env:
+          TOKEN: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "REGISTRY_ACCESS_TOKEN is not set. Skip publish."
+            echo "Add it under Settings → Secrets and variables → Actions."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out code
+        if: steps.token.outputs.present == 'true'
+        uses: actions/checkout@v7
+      - name: Publish Custom Node
+        if: steps.token.outputs.present == 'true'
+        uses: Comfy-Org/publish-node-action@main
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+          skip_checkout: true
