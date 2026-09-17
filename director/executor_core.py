@@ -16,6 +16,7 @@ from .core_sampling import ShiftedModelCache, sample_single_stage
 from .refine_pack import (
     confirm_first_pass_enabled,
     first_pass_sigmas_override,
+    refine_model_for,
     refine_needs_canvas,
     refine_passes_for,
     refine_will_sample,
@@ -89,7 +90,7 @@ from .segment_continuity import (
     match_export_opening_grade,
     resolve_prev_segment_output,
 )
-from .vram_cleanup import cleanup_segment_vram
+from .vram_cleanup import cleanup_segment_vram, phase_keep_pool
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.core")
 
@@ -395,6 +396,7 @@ def execute_director_plan_core(
     shift_video: float = 12.0,
     shift_audio: float = 3.0,
     clear_vram_between_segments: bool = True,
+    precise_segment_memory: bool = True,
 ) -> tuple[
     torch.Tensor,
     list[torch.Tensor],
@@ -406,6 +408,21 @@ def execute_director_plan_core(
     bool,
 ]:
     """Process every segment with MiniMax H3 conditioning + single-stage sampling."""
+    # 角色 → 模型对象。角色名就是本函数的入参名，所以谁是谁是**确定的**，
+    # 不需要猜类型、也不需要看模型大小 —— 这是后面按阶段调度的基础。
+    _model_pool = {
+        "model": model,
+        "vae": vae,
+        "audio_vae": audio_vae,
+        "clip": clip,
+    }
+    _refine_pack = getattr(plan, "refine", None) or {}
+    _refine_model = refine_model_for(_refine_pack, None)
+    if _refine_model is not None:
+        _model_pool["refine_model"] = _refine_model
+    _upscale_model = _refine_pack.get("upscale_model")
+    if _upscale_model is not None:
+        _model_pool["upscale_model"] = _upscale_model
     plan.sample_seed = int(seed)
     plan.sample_cfg = float(cfg)
     plan.sample_steps = int(steps)
@@ -1052,7 +1069,17 @@ def execute_director_plan_core(
 
         # Single / last segment: skip — official H3 also keeps models loaded.
         if clear_vram_between_segments and seg_total > 1:
-            cleanup_segment_vram(enabled=True, unload_models=True)
+            # 上下文编码用完了：按下个阶段（采样）的需要重新收缩一次。
+            #
+            # 编码器和生成模型通常都很大，内存未必装得下它们同时在场；
+            # 而 VAE 在"编码参考图"和"最终解码"两边都要用、体积又小得多，
+            # 属于留着比卸了划算的那一类。具体留谁由 PHASE_MODEL_ROLES 决定。
+            cleanup_segment_vram(
+                enabled=True,
+                unload_models=True,
+                keep=phase_keep_pool("sample", _model_pool) if precise_segment_memory else (),
+                pool=_model_pool,
+            )
 
         def _report_sample_phase(phase: str, value: float) -> None:
             report_director_progress(
@@ -1455,7 +1482,16 @@ def execute_director_plan_core(
                     )
         if seg.index in run_indices:
             if clear_vram_between_segments and segment_outputs:
-                cleanup_segment_vram(enabled=True)
+                # 段首：上一段的生成模型往往还占着内存，而本段的上下文编码
+                # 要把编码器装进来。两者都大，超出内存时必有一方被换进页面文件，
+                # 下次还得从硬盘读回来。所以先按下个阶段的需要收缩一次。
+                cleanup_segment_vram(
+                    enabled=True,
+                    keep=phase_keep_pool("context_encode", _model_pool)
+                    if precise_segment_memory
+                    else (),
+                    pool=_model_pool,
+                )
             try:
                 chunk, audio_dict, pre_chunk = _run_one_segment(
                     seg, progress_index=progress_pos[seg.index]

@@ -402,6 +402,7 @@ const ZH = {
 
     "widget.seed": "种子",
     "widget.clearVram": "段间清理显存",
+    "widget.preciseSegMem": "精确段间调度",
     "widget.exportSourceImages": "输出原片到 source_images",
     "widget.grpSample": "采样设置",
     "toolbar.batchDetailSolo": "单显模式",
@@ -423,6 +424,7 @@ const ZH = {
     "widget.grpPerf": "性能",
     "widget.controlAfterGenerate": "生成前后定制",
     "widget.tooltip.clearVram": "段间清理显存：每段结束后卸载模型并清空 CUDA 缓存。",
+    "widget.tooltip.preciseSegMem": "精确段间调度（只在「段间清理显存」开启时生效）\n按当前阶段只保留该阶段用得上的模型，其余卸掉：\n\u3000编码阶段 → 文本编码器 + 两个 VAE\n\u3000采样阶段 → 生成模型（含二采/放大网）+ 视频 VAE\n\u3000解码阶段 → 视频 VAE + 音频 VAE\n角色由节点输入直接确定，不猜类型也不看大小；\n若全部模型加起来本来就装得下内存，则一个都不卸（省掉白读盘）。\n关掉则退回旧行为：每段把所有模型一起卸掉。",
     "widget.tooltip.exportSourceImages": "将时间轴原片输出到独立的 source_images 口；需另接预览/合成节点，不会改变主 images。默认关以节省内存。",
     "widget.tooltip.sigmas": "可选。一采噪声表，接 BasicScheduler 或 ManualSigmas。接线后覆盖步数和调度器（采样器下拉仍有效）。BasicScheduler 请接 SigmaShift 之后的同一套 H3 MODEL。",
     "common.upload": "选择/上传",
@@ -865,6 +867,7 @@ const EN = {
 
     "widget.seed": "Seed",
     "widget.clearVram": "Clear VRAM between segments",
+    "widget.preciseSegMem": "Precise segment staging",
     "widget.exportSourceImages": "Export source to source_images",
     "widget.grpSample": "Sampling settings",
     "toolbar.batchDetailSolo": "Solo mode",
@@ -886,6 +889,7 @@ const EN = {
     "widget.grpPerf": "Performance",
     "widget.controlAfterGenerate": "Control after generate",
     "widget.tooltip.clearVram": "Clear VRAM between segments: unload models and empty CUDA cache after each segment.",
+    "widget.tooltip.preciseSegMem": "Precise segment staging (only applies while Clear VRAM between segments is ON).\nKeeps only the models the current phase actually uses:\n  encode -> text encoder + both VAEs\n  sample -> diffusion model (incl. refine / upscale nets) + video VAE\n  decode -> video VAE + audio VAE\nRoles come straight from the node inputs: no type guessing, no size heuristics.\nIf every model fits in RAM anyway, nothing is unloaded at all.\nOff falls back to the old behavior, which unloads every model each segment.",
     "widget.tooltip.exportSourceImages": "Decode the timeline source to the separate source_images output. Connect that output to a preview/compositor; it does not change images. Off by default to save memory.",
     "widget.tooltip.sigmas": "Optional first-pass noise schedule (BasicScheduler or ManualSigmas). When wired, overrides Steps and Scheduler (the sampler dropdown still applies). Wire BasicScheduler after SigmaShift on the same H3 MODEL.",
     "common.upload": "Choose/Upload",
