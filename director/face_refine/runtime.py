@@ -91,6 +91,7 @@ def apply_segment_face_refine(
     if audio_vae is None:
         raise ValueError("FaceRefine 需要 audio_vae（与导演台 r2v 相同）。")
 
+    # The caller clears staged H3/refine models before this fresh conditioning pass.
     positive, _negative, latent, cond_hint = run_minimax_conditioning(
         clip=clip,
         vae=vae,

@@ -353,3 +353,7 @@ class MiniMaxH3Director:
             for item in getattr(plan, "global_ref_audios", None) or []:
                 if getattr(item, "audio_path", ""):
                     item.audio = None
+            from ..director.vram_cleanup import cleanup_segment_vram, release_director_plan_memory
+
+            release_director_plan_memory(plan)
+            cleanup_segment_vram(enabled=True, unload_models=True)

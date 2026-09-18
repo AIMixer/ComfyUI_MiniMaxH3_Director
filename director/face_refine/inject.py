@@ -8,8 +8,45 @@ from __future__ import annotations
 import logging
 
 import torch
+import comfy.model_management
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.face_refine")
+
+
+def _encode_h3_video_chunked(images: torch.Tensor, vae) -> torch.Tensor:
+    first_stage = vae.first_stage_model
+    pixels = vae.vae_encode_crop_pixels(images[..., :3]).movedim(-1, 1)
+    if pixels.ndim < 5:
+        pixels = pixels.movedim(1, 0).unsqueeze(0)
+    clip_length = int(first_stage.clip_length)
+    output_device = vae.output_device
+    output_dtype = vae.vae_output_dtype()
+    mean = first_stage.latents_mean.view(1, -1, 1, 1, 1)
+    std = first_stage.latents_std.view(1, -1, 1, 1, 1)
+    memory_used = vae.memory_used_encode(
+        (1, 3, clip_length, int(pixels.shape[-2]), int(pixels.shape[-1])),
+        vae.vae_dtype,
+    )
+    comfy.model_management.load_models_gpu([vae.patcher], memory_required=memory_used)
+    parts = []
+    with comfy.model_management.cuda_device_context(vae.device):
+        for start in range(0, int(pixels.shape[2]), clip_length):
+            clip = pixels[:, :, start : start + clip_length]
+            if int(clip.shape[2]) < clip_length:
+                pad = clip[:, :, -1:].repeat(1, 1, clip_length - int(clip.shape[2]), 1, 1)
+                clip = torch.cat([clip, pad], dim=2)
+                del pad
+            clip = vae.process_input(clip).to(vae.vae_dtype)
+            moments = first_stage._adaptive_encode(first_stage._normalize_pixels(clip.to(vae.device)))
+            encoded = torch.chunk(moments.float(), 2, dim=1)[0]
+            encoded = (encoded - mean.to(encoded)) / std.to(encoded)
+            parts.append(encoded.to(output_device, dtype=output_dtype))
+            del clip, moments, encoded
+    del pixels
+    encoded = torch.cat(parts, dim=2)
+    if int(first_stage.token_drop) > 0:
+        encoded = encoded[:, :, :-int(first_stage.token_drop)]
+    return encoded
 
 
 def inject_video_latent(av_latent: dict, images: torch.Tensor, vae) -> dict:
@@ -27,7 +64,12 @@ def inject_video_latent(av_latent: dict, images: torch.Tensor, vae) -> dict:
         )
     members = list(samples.unbind())
     video_tmpl = members[0]
-    encoded = vae.encode(images[..., :3])
+    first_stage = getattr(vae, "first_stage_model", None)
+    encoded = (
+        _encode_h3_video_chunked(images, vae)
+        if first_stage is not None and hasattr(first_stage, "encode_temporal")
+        else vae.encode(images[..., :3])
+    )
     if encoded.ndim == 4:
         encoded = encoded.unsqueeze(0).movedim(1, 2)
     tgt_t, tgt_h, tgt_w = video_tmpl.shape[-3], video_tmpl.shape[-2], video_tmpl.shape[-1]
