@@ -193,6 +193,33 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 4. 导演台 `task_type` 与口一致（t2v/i2v/fl2v ↔ `i2v_groups`；r2v ↔ `r2v_groups`）；**不要两口同时连接**
 5. 连接后执行以图中接线为准（外部优先）；UI 卡片变淡，仍可用「选择运行」按组序勾选
 
+### 语义桥（Semantic Bridge）用法摘要
+
+导演台自带 T8 语义桥接入：在官方 cond 编码完成、采样开始之前，对正向条件注入动作 / 语义表示（非 LoRA，作用于原生 5120 维编码）。与既有「提示词增强」（文本层）互为补充——语义桥在编码层生效。
+
+**前置条件**
+
+1. 安装 T8 minimax-h3-audio 包（提供桥的运行实现；导演台 import 复用，不拷贝代码，T8 包更新后能力自然流入）。
+2. 下载桥模型放入 `models/semantic_bridge`，保留 `t8_compat` 子目录结构：
+   - `t8_compat/BUNNY_H3_ActionLogic_Bridge_V1_T8_Compat.safetensors` —— BUNNY 动作逻辑版（枪战 / 动作类推荐）
+   - `t8_compat/MiniMaxH3_SemanticBridge_v1_T8_Compat.safetensors` —— 通用语义版
+   - 下载地址：<https://huggingface.co/t8star/Semantic-Bridge-Comfy>
+
+**用法**
+
+导演台「高级采样」区新增两个参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `semantic_bridge` | 选择桥模型；`off` = 关闭（默认，行为与旧版完全一致） |
+| `semantic_bridge_alpha` | 桥强度，官方默认 `0.10`；`0` = 关闭 |
+
+**行为说明**
+
+- 每段采样前应用一次（仅正向条件；负向不处理）。
+- 未安装 T8 包或桥模型时**安静跳过**，原因写入运行报告——不影响原有出图。
+- 运行报告会显示「语义桥已应用（模型，alpha，耗时）」或跳过原因。
+
 ## 配套生态 · [Comfyit 搅拌站](https://comfyit.cn/)
 
 [Comfyit](https://comfyit.cn/) 提供环境、模型、工作流与教程配套：

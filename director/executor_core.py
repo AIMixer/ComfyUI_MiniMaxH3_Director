@@ -12,6 +12,10 @@ import torch
 from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge, limit_ref_image_dict
 from ..lib.task_modes import SUPPORTED_TASK_KEYS
 from ..nodes.conditioning import run_minimax_conditioning
+from .semantic_bridge_t8 import (
+    apply_semantic_bridge,
+    bridge_active as semantic_bridge_active,
+)
 from .core_sampling import ShiftedModelCache, sample_single_stage
 from .selflift.pack import (
     selflift_enabled,
@@ -419,6 +423,8 @@ def execute_director_plan_core(
     clear_vram_before_refine: bool = False,
     clear_vram_before_face_refine: bool = False,
     export_pre_face_refine: bool = False,
+    semantic_bridge: str = "off",
+    semantic_bridge_alpha: float = 0.10,
 ) -> tuple[
     torch.Tensor,
     list[torch.Tensor],
@@ -1166,6 +1172,26 @@ def execute_director_plan_core(
                 )
             except Exception as exc:
                 log.debug("Live TAE preview skipped: %s", exc)
+
+        # T8 语义桥（可选）：cond 编码完成后、采样开始前，每段应用一次（positive のみ）。
+        if semantic_bridge_active(semantic_bridge, semantic_bridge_alpha):
+            _t_bridge = time.perf_counter()
+            positive, _bridge_report = apply_semantic_bridge(
+                positive,
+                model_name=semantic_bridge,
+                alpha=float(semantic_bridge_alpha),
+            )
+            _bridge_s = time.perf_counter() - _t_bridge
+            if _bridge_report.get("applied"):
+                reports.append(
+                    f"Segment {ui_idx + 1}/{timeline_seg_total}: 语义桥已应用 "
+                    f"（{semantic_bridge}，alpha={float(semantic_bridge_alpha):.2f}，{_bridge_s:.2f}s）"
+                )
+            else:
+                reports.append(
+                    f"Segment {ui_idx + 1}/{timeline_seg_total}: 语义桥跳过 "
+                    f"（{_bridge_report.get('error', 'disabled')}）"
+                )
 
         t_sample = time.perf_counter()
         if skip_first_sample:

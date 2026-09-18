@@ -5,6 +5,7 @@ from __future__ import annotations
 import comfy.samplers
 
 from ..director.executor_core import execute_director_plan_core
+from ..director.semantic_bridge_t8 import OFF as SEMANTIC_BRIDGE_OFF, bridge_model_options
 from .director_common import (
     finalize_director_outputs,
     prepare_director_plan,
@@ -167,6 +168,24 @@ class MiniMaxH3Director:
                     "FLOAT",
                     {"default": 3.0, "min": 0.01, "max": 100.0, "step": 0.01, "tooltip": "MiniMaxH3SigmaShift shift_audio."},
                 ),
+                "semantic_bridge": (
+                    [SEMANTIC_BRIDGE_OFF] + bridge_model_options(),
+                    {
+                        "tooltip": (
+                            "T8 语义桥（Semantic Bridge）：cond 编码后、采样前注入动作/语义表示。"
+                            "需要 T8 minimax-h3-audio 包与 models/semantic_bridge 下的桥模型"
+                            "（下载 https://huggingface.co/t8star/Semantic-Bridge-Comfy ，保留 t8_compat 子目录）。"
+                            "'off' = 关闭（默认）。桥未安装时安静跳过并在报告注明。"
+                        ),
+                    },
+                ),
+                "semantic_bridge_alpha": (
+                    "FLOAT",
+                    {
+                        "default": 0.10, "min": 0.0, "max": 1.0, "step": 0.01,
+                        "tooltip": "语义桥强度（官方默认 0.10）。0 = 关闭。",
+                    },
+                ),
                 **director_perf_inputs(),
                 "sigmas": (
                     "SIGMAS",
@@ -285,6 +304,8 @@ class MiniMaxH3Director:
         clear_vram_before_face_refine=False,
         export_source_images=False,
         export_pre_face_refine=False,
+        semantic_bridge=SEMANTIC_BRIDGE_OFF,
+        semantic_bridge_alpha=0.10,
         **kwargs,
     ):
         del kwargs
@@ -327,6 +348,8 @@ class MiniMaxH3Director:
                     clear_vram_before_refine=clear_vram_before_refine,
                     clear_vram_before_face_refine=clear_vram_before_face_refine,
                     export_pre_face_refine=export_pre_face_refine,
+                    semantic_bridge=semantic_bridge,
+                    semantic_bridge_alpha=semantic_bridge_alpha,
                 )
             )
 
