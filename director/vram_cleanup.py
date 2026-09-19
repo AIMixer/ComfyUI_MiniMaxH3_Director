@@ -238,6 +238,37 @@ def cleanup_segment_vram(
             mm.cleanup_models()
         _evict_dead_loaded_models()
         gc.collect()
+
+        # 对齐 ComfyUI 的「每节点收尾」。
+        #
+        # `execution.py` 的 per-node finally 里一共做四件事：
+        #     analyze()                      （仅 console 日志级别为 DEBUG 时）
+        #     cleanup_prefetch_queues()      ← 这里补的就是它
+        #     reset_cast_buffers()
+        #     vbars_reset_watermark_limits()
+        # 后两件本模块已通过 _release_aimdo_vram() 做过，**第一件从来没做过**。
+        #
+        # 为什么漏掉它是要害：预取队列（comfy/model_prefetch.py）持有模块引用与
+        # fault 出来的 `_v_block` 地址范围，而这些页在 `vbar_fault()` 末尾会被
+        # `rp->pin_count++` 钉住；只要 pin 还在，C 层
+        # `mod1(mv, page, do_free=true, do_unpin=false)` 就放不掉页。
+        # 于是下一次 `vbar_free_memory()` 只能把该 VBAR 的 `watermark` 一路降下去、
+        # 页却一个不还 —— 一旦 `watermark` 触到 `watermark_limit`（通常已被
+        # `vbars_reset_watermark_limits()` 置 0），`vbar_free_memory()` 就会永久
+        # 返回 0，而 `vbar_fault()` 也会因 `page_end > watermark` 直接判 OOM，
+        # 使该模型的每一层都退回 host→device 拷贝。
+        #
+        # 而本节点是「一次节点执行内循环所有分段」，官方的收尾整条片子只跑一次，
+        # 所以段 1 采样撑起来的预取状态没人清，段 2 起就再也拿不到显存窗口
+        # （实测：段 1 上下文编码 38s，段 2 恶化到 151s → 196s → 卡死）。
+        #
+        # 官方是在每个节点之后**无条件**调用它的，所以放在段边界调用是安全的。
+        try:
+            import comfy.model_prefetch
+            comfy.model_prefetch.cleanup_prefetch_queues()
+        except Exception as exc:
+            log.debug("cleanup_prefetch_queues skipped: %s", exc)
+
         mm.soft_empty_cache()
     except Exception as exc:
         log.warning("Segment VRAM cleanup failed: %s", exc)
