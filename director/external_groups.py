@@ -11,7 +11,13 @@ from typing import Any
 
 import torch
 
-from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge, resolve_output_dimensions
+from ..lib.image_prep import (
+    assert_minimax_canvas,
+    fit_canvas,
+    fit_video_long_edge,
+    keep_aspect_output,
+    resolve_output_dimensions,
+)
 from ..lib.ref_audios import MAX_REFERENCE_AUDIOS
 from ..lib.ref_images import MAX_REFERENCE_IMAGES
 from ..lib.ref_videos import MAX_REFERENCE_VIDEOS
@@ -26,6 +32,7 @@ from .fl2v_timeline import (
     reinforce_fl2v_prompt,
 )
 from .frame_align import minimax_align_frame_count
+from .segment_loras import normalize_lora_rows
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.external_groups")
 
@@ -466,6 +473,11 @@ def _resolve_dims(timeline: dict, width: int, height: int, ref_max_size: int, sa
         out_mode = "long_edge"
     src_w = int(sample_img.shape[2]) if sample_img is not None else int(width or 864)
     src_h = int(sample_img.shape[1]) if sample_img is not None else int(height or 480)
+    keep_dims = keep_aspect_output(output_block, src_w, src_h) if sample_img is not None else None
+    if keep_dims:
+        out_w, out_h = keep_dims
+        assert_minimax_canvas(out_w, out_h)
+        return out_w, out_h, max(out_w, out_h), "fixed", _resolve_export_mode(output_block)
     out_w, out_h, ref_max, out_mode = resolve_output_dimensions(
         src_w,
         src_h,
@@ -825,6 +837,13 @@ def build_plan_from_external_groups(
                     ref_image_size=_resolve_group_ref_image_size(g, row, timeline),
                 )
             )
+
+    # One packer node -> one segment, so all_indexed lines up.
+    for _sp, (_si, _g) in zip(segments, all_indexed):
+        _row = timeline_row_for_index(timeline, int(_si)) or {}
+        _sp.loras = normalize_lora_rows(
+            _row.get("loras") or (_g or {}).get("loras")
+        )
 
     if not segments:
         raise ValueError("External groups produced no runnable segments.")
