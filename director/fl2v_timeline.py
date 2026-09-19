@@ -18,7 +18,14 @@ from typing import Any
 
 import torch
 
-from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge, resolve_output_dimensions
+from ..lib.image_prep import (
+    assert_minimax_canvas,
+    fit_canvas,
+    fit_video_long_edge,
+    is_keep_aspect,
+    keep_aspect_output,
+    resolve_output_dimensions,
+)
 from ..lib.task_prompts import resolve_task_key, task_type_option_label, TASK_PROMPT_BY_KEY
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.fl2v")
@@ -597,19 +604,34 @@ def build_fl2v_director_plan(
     dim_src = dim_shot.get("start") or dim_shot.get("end") or dim_shot
     src_w = int(dim_src.get("width") or dim_shot.get("width") or 0)
     src_h = int(dim_src.get("height") or dim_shot.get("height") or 0)
-    out_w, out_h, ref_max, out_mode = resolve_output_dimensions(
-        src_w or int(width or 832),
-        src_h or int(height or 480),
-        mode=out_mode,
-        long_edge=int(
-            output_block.get("longEdge")
-            or output_block.get("long_edge")
-            or ref_max_size
-            or 848
-        ),
-        fixed_width=int(output_block.get("width") or timeline.get("width") or width),
-        fixed_height=int(output_block.get("height") or timeline.get("height") or height),
-    )
+    keep_dims = None
+    if is_keep_aspect(output_block):
+        kw, kh = src_w, src_h
+        first = dim_shot.get("start") or dim_shot.get("end")
+        if not (kw > 0 and kh > 0) and isinstance(first, dict):
+            try:
+                img = _load_image_ref(first)
+                kh, kw = int(img.shape[-3]), int(img.shape[-2])
+            except Exception as exc:
+                log.warning("Keep aspect ratio: could not read the first frame (%s)", exc)
+        keep_dims = keep_aspect_output(output_block, kw, kh)
+    if keep_dims:
+        out_w, out_h = keep_dims
+        ref_max, out_mode = max(out_w, out_h), "fixed"
+    else:
+        out_w, out_h, ref_max, out_mode = resolve_output_dimensions(
+            src_w or int(width or 832),
+            src_h or int(height or 480),
+            mode=out_mode,
+            long_edge=int(
+                output_block.get("longEdge")
+                or output_block.get("long_edge")
+                or ref_max_size
+                or 848
+            ),
+            fixed_width=int(output_block.get("width") or timeline.get("width") or width),
+            fixed_height=int(output_block.get("height") or timeline.get("height") or height),
+        )
     assert_minimax_canvas(out_w, out_h)
 
     export_mode = _resolve_export_mode(output_block)
