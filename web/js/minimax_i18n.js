@@ -49,7 +49,7 @@ const ZH = {
     "tooltip.fl2vShotDuration": "本镜时长（秒）",
     "tooltip.fl2vTotalDuration": "总时长 = 各组时长之和（只读）",
     "tooltip.fl2vTotalInput": "总时长 = 各组之和，请在镜卡片或时间轴上改各镜时长",
-    "tooltip.aspectRatio": "宽高比（同官方 ResolutionSelector）；选「自定义」可直接设宽高",
+    "tooltip.aspectRatio": "宽高比（同官方 ResolutionSelector）；选「跟随图片」按第一张图片的比例；选「自定义」可直接设宽高",
     "tooltip.megapixels": "百万像素 · 同 ResolutionSelector.megapixels；1.0 MP ≈ 1024×1024",
     "tooltip.longEdge": "缩放上限（可填 848 等任意值）；实际宽高再对齐到 32",
     "tooltip.customWH": "自定义宽高（对齐到 32 的倍数）",
@@ -117,6 +117,8 @@ const ZH = {
     "output.preview.scaleKeepAspect": " · 等比缩放",
     "output.preview.fixedCrop": " · 固定画布（可能裁剪）",
     "output.preview.mp": "→ {w}×{h} · {ar} · {mp}MP{suffix}",
+    "output.preview.keep": "→ {w}×{h} · 跟随图片 {sw}×{sh} · {mp}MP",
+    "output.preview.keepNoPicture": "→ 跟随第一张图片 · {mp}MP（无图时沿用当前宽高）",
 
     "panel.globalPromptAndRefs": "全局提示词 & 参考图 (图片1–9)",
     "panel.globalPromptAndRefsMedia": "全局提示词 & 参考素材 (图片 / 音频)",
@@ -387,6 +389,7 @@ const ZH = {
     "aspect.16_9": "16:9 (宽屏)",
     "aspect.21_9": "21:9 (超宽)",
     "aspect.custom": "自定义",
+    "aspect.keep": "跟随图片（保持比例）",
 
     "slot.picture": "图片{n}",
     "slot.audio": "音频{n}",
@@ -528,7 +531,7 @@ const EN = {
     "tooltip.fl2vShotDuration": "This shot duration (seconds)",
     "tooltip.fl2vTotalDuration": "Total duration = sum of shot durations (read-only)",
     "tooltip.fl2vTotalInput": "Total = sum of shots; edit per-shot duration on cards or timeline",
-    "tooltip.aspectRatio": "Aspect ratio (same as official ResolutionSelector); choose Custom for W×H",
+    "tooltip.aspectRatio": "Aspect ratio (same as official ResolutionSelector); Keep aspect ratio follows the first picture; Custom for W×H",
     "tooltip.megapixels": "Megapixels · same as ResolutionSelector; 1.0 MP ≈ 1024×1024",
     "tooltip.longEdge": "Scale cap (e.g. 848); final W/H snapped to 32",
     "tooltip.customWH": "Custom W×H (snapped to multiples of 32)",
@@ -596,6 +599,8 @@ const EN = {
     "output.preview.scaleKeepAspect": " · keep aspect",
     "output.preview.fixedCrop": " · fixed canvas (may crop)",
     "output.preview.mp": "→ {w}×{h} · {ar} · {mp}MP{suffix}",
+    "output.preview.keep": "→ {w}×{h} · follows the picture {sw}×{sh} · {mp}MP",
+    "output.preview.keepNoPicture": "→ follows the first picture · {mp}MP (no picture: current width × height)",
 
     "panel.globalPromptAndRefs": "Global prompt & refs (Picture 1–9)",
     "panel.globalPromptAndRefsMedia": "Global prompt & assets (images / audio)",
@@ -866,6 +871,7 @@ const EN = {
     "aspect.16_9": "16:9 (Widescreen)",
     "aspect.21_9": "21:9 (Ultrawide)",
     "aspect.custom": "Custom",
+    "aspect.keep": "Keep aspect ratio (follow picture)",
 
     "slot.picture": "Picture {n}",
     "slot.audio": "Audio {n}",
@@ -973,6 +979,7 @@ export const ASPECT_I18N_KEYS = {
     "16:9 (宽屏)": "aspect.16_9",
     "21:9 (超宽)": "aspect.21_9",
     "自定义": "aspect.custom",
+    "跟随图片": "aspect.keep",
 };
 
 let _locale = null;
