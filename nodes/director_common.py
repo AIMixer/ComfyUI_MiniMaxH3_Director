@@ -17,6 +17,7 @@ from ..director.audio_export import (
 from ..director.frame_align import pad_or_trim_frames
 from ..director.gen_timeline import is_prompt_batch_timeline, is_video_batch_task_key
 from ..director.plan import build_director_plan, count_all_timeline_segments, count_timeline_segments, plan_summary
+from ..director.segment_mp4_export import released_output_slots
 from ..director.progress import report_director_planning
 from ..lib.image_prep import fit_canvas, fit_video_long_edge
 from ..lib.video_io import load_timeline_segment
@@ -87,6 +88,28 @@ def director_perf_inputs() -> dict:
                 "tooltip": "段间清理显存：每段结束后卸载模型并清空 CUDA 缓存。",
             },
         ),
+        "clear_vram_before_refine": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "二采前清理显存：一采结束后、放大或二采开始前卸载模型并清空 CUDA 缓存。"
+                    "默认关。24GB 或一采/二采不同 UNET 时勾上，可降低二采峰值，"
+                    "但每段会多一次加载。"
+                ),
+            },
+        ),
+        "clear_vram_before_face_refine": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "脸修前清理显存：成片解码后、FaceRefine 开始前卸载模型并清空 CUDA 缓存。"
+                    "默认关。未接 FaceRefine 时无效。24GB 或解码后立刻 OOM 时勾上，"
+                    "但每段会多一次加载。"
+                ),
+            },
+        ),
         "export_source_images": (
             "BOOLEAN",
             {
@@ -95,6 +118,17 @@ def director_perf_inputs() -> dict:
                     "将时间轴原片解码到独立的 source_images 输出口；"
                     "需将 source_images 另接预览/合成节点才能查看，不会改变主 images。"
                     "默认关以节省内存。"
+                ),
+            },
+        ),
+        "export_pre_face_refine": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "将修脸前的视频输出到 images_pre_face_refine，方便和 images 对比。"
+                    "分段导出时同时写入 seg_XXXX_facepre.mp4。"
+                    "默认关：该口阻断、下游不执行，也不占成片内存。未接 FaceRefine 时无效。"
                 ),
             },
         ),
@@ -169,7 +203,10 @@ def prepare_director_plan(
     unique_id: str | None,
     i2v_groups=None,
     r2v_groups=None,
+    selflift=None,
+    semantic_bridge=None,
     refine=None,
+    face_refine=None,
 ):
     from ..director.external_groups import (
         build_plan_from_external_groups,
@@ -211,7 +248,10 @@ def prepare_director_plan(
             height=height,
             ref_max_size=ref_max_size,
         )
+        plan = _attach_selflift(plan, selflift)
+        plan = _attach_semantic_bridge(plan, semantic_bridge)
         plan = _attach_refine(plan, refine)
+        plan = _attach_face_refine(plan, face_refine)
         log.info(
             "MiniMax H3 Director: external %s groups × %d (task=%s) | %s",
             family,
@@ -237,8 +277,25 @@ def prepare_director_plan(
         height=height,
         ref_max_size=ref_max_size,
     )
+    plan = _attach_selflift(plan, selflift)
+    plan = _attach_semantic_bridge(plan, semantic_bridge)
     plan = _attach_refine(plan, refine)
+    plan = _attach_face_refine(plan, face_refine)
     log.info(plan_summary(plan).replace("\n", " | "))
+    return plan
+
+
+def _attach_selflift(plan, selflift):
+    from ..director.selflift.pack import normalize_selflift_pack
+
+    plan.selflift = normalize_selflift_pack(selflift)
+    return plan
+
+
+def _attach_semantic_bridge(plan, semantic_bridge):
+    from ..director.semantic_bridge import normalize_semantic_bridge_pack
+
+    plan.semantic_bridge = normalize_semantic_bridge_pack(semantic_bridge)
     return plan
 
 
@@ -253,6 +310,13 @@ def _attach_refine(plan, refine):
     return plan
 
 
+def _attach_face_refine(plan, face_refine):
+    from ..director.face_refine.pack import normalize_face_refine_pack
+
+    plan.face_refine = normalize_face_refine_pack(face_refine)
+    return plan
+
+
 def _fit_source_clip_to_plan(plan, raw_clip: torch.Tensor) -> torch.Tensor:
     if plan.output_mode == "fixed":
         return fit_canvas(raw_clip, plan.width, plan.height)
@@ -264,6 +328,7 @@ def build_source_images_output(
     images_out: list[torch.Tensor],
     *,
     split_outputs: bool,
+    keep_indices: list[int] | None = None,
 ) -> list[torch.Tensor]:
     if split_outputs:
         chunks: list[torch.Tensor] = []
@@ -276,6 +341,10 @@ def build_source_images_output(
                 for i in sorted(run_idx)
                 if 0 <= i < len(plan.segments)
             ]
+        if keep_indices is not None:
+            # Released slots were filtered out of images_out; drop the same
+            # positions from segs or the zip below pairs the wrong segments.
+            segs = [segs[i] for i in keep_indices if 0 <= i < len(segs)]
         for seg, generated in zip(segs, images_out):
             target_len = int(generated.shape[0])
             raw = load_timeline_segment(plan.raw, seg.start_frame, seg.end_frame)
@@ -302,6 +371,18 @@ def _empty_source_images_for(images_out: list[torch.Tensor]) -> list[torch.Tenso
     return placeholders
 
 
+def _pad_even_hw_image(img: torch.Tensor) -> torch.Tensor:
+    """yuv420p (CreateVideo → SaveVideo) needs even H/W; 1x1 is unplayable on Windows."""
+    n, h, w, c = (int(img.shape[0]), int(img.shape[1]), int(img.shape[2]), int(img.shape[3]))
+    eh = max(2, h + (h % 2))
+    ew = max(2, w + (w % 2))
+    if eh == h and ew == w:
+        return img
+    out = img.new_zeros((n, eh, ew, c))
+    out[:, :h, :w].copy_(img)
+    return out
+
+
 def _ensure_nonempty_image_batches(images_out: list[torch.Tensor], *, label: str) -> list[torch.Tensor]:
     fixed: list[torch.Tensor] = []
     for i, img in enumerate(images_out):
@@ -310,9 +391,8 @@ def _ensure_nonempty_image_batches(images_out: list[torch.Tensor], *, label: str
         if int(img.shape[0]) <= 0:
             h, w, c = int(img.shape[1]), int(img.shape[2]), int(img.shape[3])
             log.warning("Director %s[%d] has 0 frames; emitting 1-frame placeholder.", label, i)
-            fixed.append(torch.full((1, max(1, h), max(1, w), max(1, c)), 0.5))
-        else:
-            fixed.append(img)
+            img = torch.full((1, max(2, h), max(2, w), max(1, c)), 0.5)
+        fixed.append(_pad_even_hw_image(img))
     return fixed
 
 
@@ -337,7 +417,12 @@ def _layout_image_batches(
         images_out = segment_outputs
         frame_count = sum(int(s.shape[0]) for s in segment_outputs)
         return images_out, frame_count
-    combined = _images_to_float32(pad_or_trim_frames(combined, plan.total_frames).cpu())
+    # 「保完整」segments are longer than the UI total; cropping here would
+    # cut the kept remainder and desync concatenated audio.
+    if getattr(plan, "continuity_enabled", False) and getattr(plan, "continuity_keep_tail", True):
+        combined = _images_to_float32(combined.cpu())
+    else:
+        combined = _images_to_float32(pad_or_trim_frames(combined, plan.total_frames).cpu())
     return [combined], int(combined.shape[0])
 
 
@@ -352,6 +437,9 @@ def finalize_director_outputs(
     segment_frame_counts: list[int] | None = None,
     pre_refine_combined=None,
     pre_refine_segments: list | None = None,
+    pre_face_combined=None,
+    pre_face_segments: list | None = None,
+    export_pre_face_refine: bool = False,
     block_final_images: bool = False,
 ):
     is_batch = is_prompt_batch_timeline(plan.raw, plan.global_task_key)
@@ -369,14 +457,27 @@ def finalize_director_outputs(
     )
     if segment_frame_counts:
         frame_count = int(sum(int(n) for n in segment_frame_counts))
+    released_slots: list[int] = []
     if export_segments and len(segment_outputs) > 1:
-        report = (
-            report
-            + f"\n\nExport mode: segments — {len(segment_outputs)} clip(s) on images output "
-            "(per-segment IMAGE batches keep their full frames so VHS_VideoCombine "
-            "downstream encodes full-length clips; full mp4s are also in "
-            "output/minimax_seg_export/)."
-        )
+        released_slots = released_output_slots(segment_outputs, segment_frame_counts)
+        mp4_dir = getattr(plan, "segment_mp4_run_dir", None)
+        if released_slots:
+            where = f" Full clips stay in {mp4_dir}." if mp4_dir else ""
+            report = (
+                report
+                + f"\n\nExport mode: segments — {len(segment_outputs)} clip(s); "
+                f"{len(released_slots)} released clip(s) omitted from images "
+                "so CreateVideo → SaveVideo do not write stills."
+                + where
+            )
+        else:
+            report = (
+                report
+                + f"\n\nExport mode: segments — {len(segment_outputs)} clip(s) on images output "
+                "(per-segment IMAGE batches keep their full frames so VHS_VideoCombine "
+                "downstream encodes full-length clips; full mp4s are also in "
+                "output/minimax_seg_export/)."
+            )
     if plan.run_indices is not None and split_layout:
         report = (
             report
@@ -414,13 +515,83 @@ def finalize_director_outputs(
             pre_refine_out = images_out
             report = report + f"\n\nimages_pre_refine: fallback to images ({exc})."
 
+    from ..director.face_refine.pack import face_refine_enabled
+
+    emit_pre_face = (
+        face_refine_enabled(plan)
+        and not block_final_images
+        and export_pre_face_refine
+        and (pre_face_combined is not None or pre_face_segments)
+    )
+    if emit_pre_face:
+        pre_face_segs = pre_face_segments if pre_face_segments else segment_outputs
+        pre_face_comb = pre_face_combined if pre_face_combined is not None else combined
+        share_face = pre_face_comb is combined and (
+            pre_face_segs is segment_outputs
+            or (
+                len(pre_face_segs) == len(segment_outputs)
+                and all(a is b for a, b in zip(pre_face_segs, segment_outputs))
+            )
+        )
+        if share_face:
+            pre_face_out = images_out
+        else:
+            try:
+                pre_face_out, _ = _layout_image_batches(
+                    plan,
+                    pre_face_comb,
+                    pre_face_segs,
+                    export_segments=export_segments,
+                    is_batch=is_batch,
+                    video_batch=video_batch,
+                )
+            except Exception as exc:
+                log.warning("images_pre_face_refine layout failed: %s", exc)
+                pre_face_out = images_out
+                report = report + f"\n\nimages_pre_face_refine: fallback to images ({exc})."
+    else:
+        pre_face_out = None
+
+    pre_counts = segment_frame_counts
+    if export_segments:
+        released_slots = sorted(
+            set(released_slots)
+            | set(released_output_slots(pre_refine_out, pre_counts))
+        )
+    source_keep_indices: list[int] | None = None
+    if released_slots:
+        keep = [i for i in range(len(images_out)) if i not in set(released_slots)]
+        if keep:
+            source_keep_indices = keep
+            images_out = [images_out[i] for i in keep]
+            pre_refine_out = [
+                pre_refine_out[i] for i in keep if i < len(pre_refine_out)
+            ] or pre_refine_out[-1:]
+            if pre_face_out is not None:
+                pre_face_out = [
+                    pre_face_out[i] for i in keep if i < len(pre_face_out)
+                ] or pre_face_out[-1:]
+            if segment_audios:
+                segment_audios = [segment_audios[i] for i in keep if i < len(segment_audios)]
+            if segment_frame_counts:
+                segment_frame_counts = [
+                    segment_frame_counts[i] for i in keep if i < len(segment_frame_counts)
+                ]
+            # Released clips are gone from images_out — the INT frame count and
+            # the audio length must not keep counting them.
+            if split_layout:
+                if segment_frame_counts:
+                    frame_count = int(sum(int(n) for n in segment_frame_counts))
+                else:
+                    frame_count = int(sum(int(s.shape[0]) for s in images_out))
+
     split_for_audio = split_layout
     audio_frame_end = frame_count if not split_for_audio else None
     audio_mode = resolve_audio_mode(plan)
     use_generated = audio_mode == AUDIO_MODE_GENERATE
     # Prefer caller-provided export lengths (post continuity trim); else match IMAGE batches.
     if segment_frame_counts is None and segment_audios and split_for_audio:
-        segment_frame_counts = [int(s.shape[0]) for s in segment_outputs]
+        segment_frame_counts = [int(s.shape[0]) for s in images_out]
     audio_out, source_fallback = build_director_audio_outputs(
         plan,
         images_out,
@@ -447,6 +618,7 @@ def finalize_director_outputs(
                 plan,
                 images_out,
                 split_outputs=split_source_outputs,
+                keep_indices=source_keep_indices,
             )
             source_frames = sum(int(batch.shape[0]) for batch in source_images_out)
             report = report + (
@@ -469,6 +641,31 @@ def finalize_director_outputs(
     source_images_out = _ensure_nonempty_image_batches(source_images_out, label="source_images")
     pre_refine_out = _ensure_nonempty_image_batches(pre_refine_out, label="images_pre_refine")
 
+    if pre_face_out is None:
+        # Off / unwired / first-pass hold: block the socket so Preview/Save
+        # do not run on a grey still, and RAM is not kept for a dummy clip.
+        pre_face_out = ExecutionBlocker(None)
+        if face_refine_enabled(plan) and block_final_images:
+            report = report + (
+                "\n\nimages_pre_face_refine: blocked "
+                "（本轮仅确认一采，脸部精修会在二采完成后执行）。"
+            )
+        elif face_refine_enabled(plan) and not export_pre_face_refine:
+            report = report + (
+                "\n\nimages_pre_face_refine: blocked "
+                "（未勾选「输出修脸前」，该口无画面、下游不执行）。"
+            )
+        else:
+            report = report + (
+                "\n\nimages_pre_face_refine: blocked (FaceRefine node not connected)."
+            )
+    else:
+        pre_face_out = _ensure_nonempty_image_batches(pre_face_out, label="images_pre_face_refine")
+        report = report + (
+            "\n\nimages_pre_face_refine: video immediately before face stitch "
+            "(对比口；images 为修脸后)。"
+        )
+
     refine_pack = getattr(plan, "refine", None)
     if isinstance(refine_pack, dict) and refine_pack.get("enabled"):
         report = report + (
@@ -489,4 +686,4 @@ def finalize_director_outputs(
             "请从 images_pre_refine 查看或保存一采；再次 Queue 完成二采后 images 才会输出。"
         )
         images_out = ExecutionBlocker(None)
-    return images_out, audio_out, fps_out, frame_count, source_images_out, report, pre_refine_out
+    return images_out, audio_out, fps_out, frame_count, source_images_out, report, pre_refine_out, pre_face_out

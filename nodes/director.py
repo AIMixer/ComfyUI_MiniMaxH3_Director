@@ -90,6 +90,30 @@ class MiniMaxH3Director:
                         ),
                     },
                 ),
+                "semantic_bridge": (
+                    "MMX_DIR_SEMANTIC_BRIDGE",
+                    {
+                        "tooltip": (
+                            "Optional Semantic Bridge node (above SelfLift). When connected, "
+                            "official cond tokens are rewritten with the student MLP "
+                            "(RMS-norm → residual mix). Unconnected = identical. "
+                            "Distilled on FL2VA; r2v / v2v / rv2v is forced-compat — use with care."
+                        ),
+                    },
+                ),
+                "selflift": (
+                    "MMX_DIR_SELFLIFT",
+                    {
+                        "tooltip": (
+                            "Optional SelfLift node (above Refine). When connected, first-pass "
+                            "is low-res prefix + 3D lift + high-res tail on this Director canvas. "
+                            "Unconnected = current single-stage sample. "
+                            "Refine may still upscale afterward (e.g. 1.0MP first pass → 2.0MP). "
+                            "Timeline continuity keeps native low-res carry + high-res pin. "
+                            "Euler only."
+                        ),
+                    },
+                ),
                 "refine": (
                     "MMX_DIR_REFINE",
                     {
@@ -100,6 +124,19 @@ class MiniMaxH3Director:
                             "unwired uses this Director model. "
                             "images is the refined result; images_pre_refine is the first pass. "
                             "Unconnected = single-pass (current behavior)."
+                        ),
+                    },
+                ),
+                "face_refine": (
+                    "MMX_DIR_FACE_REFINE",
+                    {
+                        "tooltip": (
+                            "Optional FaceRefine node. When connected, Director tracks the face "
+                            "on the final decoded frames (after Refine if that is also wired), "
+                            "re-samples the crop, and pastes the face back. "
+                            "images is after stitch; images_pre_face_refine is before stitch "
+                            "when「输出修脸前」is on (otherwise that output is blocked). "
+                            "Unconnected = no face pass (that output stays blocked)."
                         ),
                     },
                 ),
@@ -174,6 +211,24 @@ class MiniMaxH3Director:
             got_sigmas = input_types.get("sigmas")
             if got_sigmas is not None and got_sigmas != "SIGMAS":
                 return f"sigmas: expected SIGMAS, linked node returns {got_sigmas}."
+            got_bridge = input_types.get("semantic_bridge")
+            if got_bridge is not None and got_bridge != "MMX_DIR_SEMANTIC_BRIDGE":
+                return (
+                    "semantic_bridge: expected MiniMax H3 Director Semantic Bridge "
+                    f"(MMX_DIR_SEMANTIC_BRIDGE), linked node returns {got_bridge}."
+                )
+            got_selflift = input_types.get("selflift")
+            if got_selflift is not None and got_selflift != "MMX_DIR_SELFLIFT":
+                return (
+                    "selflift: expected MiniMax H3 Director SelfLift "
+                    f"(MMX_DIR_SELFLIFT), linked node returns {got_selflift}."
+                )
+            got_face = input_types.get("face_refine")
+            if got_face is not None and got_face != "MMX_DIR_FACE_REFINE":
+                return (
+                    "face_refine: expected MiniMax H3 Director FaceRefine "
+                    f"(MMX_DIR_FACE_REFINE), linked node returns {got_face}."
+                )
         return True
 
     @classmethod
@@ -186,9 +241,18 @@ class MiniMaxH3Director:
 
         return first_pass_cache_disk_signature(unique_id)
 
-    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "INT", "IMAGE", "STRING", "IMAGE")
-    RETURN_NAMES = ("images", "audio", "fps", "frame_count", "source_images", "report", "images_pre_refine")
-    OUTPUT_IS_LIST = (True, True, False, False, True, False, True)
+    RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "INT", "IMAGE", "STRING", "IMAGE", "IMAGE")
+    RETURN_NAMES = (
+        "images",
+        "audio",
+        "fps",
+        "frame_count",
+        "source_images",
+        "report",
+        "images_pre_refine",
+        "images_pre_face_refine",
+    )
+    OUTPUT_IS_LIST = (True, True, False, False, True, False, True, True)
     FUNCTION = "execute"
     CATEGORY = _CATEGORY
     DESCRIPTION = (
@@ -196,8 +260,14 @@ class MiniMaxH3Director:
         "single-stage KSampler + MiniMaxH3SigmaShift, LTXVSeparateAVLatent decode. "
         "Supports t2v / i2v / fl2v / r2v / v2v / rv2v. "
         "Optional i2v_groups / r2v_groups accept multi-group packs from Director Group nodes "
-        "(external priority over UI cards). Optional refine accepts MiniMax H3 Director Refine "
-        "(second sample / upscale). images_pre_refine is the first-pass video before refine. "
+        "(external priority over UI cards). Optional semantic_bridge accepts "
+        "MiniMax H3 Director Semantic Bridge (cond-token student; Ref2VA forced-compat). "
+        "Optional selflift accepts MiniMax H3 Director SelfLift "
+        "(progressive first-pass on this canvas). Optional refine accepts MiniMax H3 Director Refine "
+        "(second sample / upscale). Optional face_refine accepts MiniMax H3 Director FaceRefine "
+        "(crop / re-sample / stitch). images_pre_refine is the first-pass video before refine. "
+        "images_pre_face_refine is the video before face stitch "
+        "(blocked unless FaceRefine is connected and「输出修脸前」is on). "
         "Defaults: 0.4MP 16:9 (864×480), 5s / 124 frames @ 24 fps."
     )
 
@@ -218,7 +288,10 @@ class MiniMaxH3Director:
         unique_id=None,
         i2v_groups=None,
         r2v_groups=None,
+        semantic_bridge=None,
+        selflift=None,
         refine=None,
+        face_refine=None,
         sigmas=None,
         steps=25,
         sampler="res_multistep",
@@ -228,7 +301,10 @@ class MiniMaxH3Director:
         shift_video=12.0,
         shift_audio=3.0,
         clear_vram_between_segments=True,
+        clear_vram_before_refine=False,
+        clear_vram_before_face_refine=False,
         export_source_images=False,
+        export_pre_face_refine=False,
         **kwargs,
     ):
         del kwargs
@@ -245,11 +321,14 @@ class MiniMaxH3Director:
             unique_id=unique_id,
             i2v_groups=i2v_groups,
             r2v_groups=r2v_groups,
+            semantic_bridge=semantic_bridge,
+            selflift=selflift,
             refine=refine,
+            face_refine=face_refine,
         )
 
         try:
-            combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, held_for_confirmation = (
+            combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, held_for_confirmation, pre_face_combined, pre_face_segments = (
                 execute_director_plan_core(
                     plan,
                     node_id=unique_id,
@@ -266,6 +345,9 @@ class MiniMaxH3Director:
                     shift_video=shift_video,
                     shift_audio=shift_audio,
                     clear_vram_between_segments=clear_vram_between_segments,
+                    clear_vram_before_refine=clear_vram_before_refine,
+                    clear_vram_before_face_refine=clear_vram_before_face_refine,
+                    export_pre_face_refine=export_pre_face_refine,
                 )
             )
 
@@ -279,6 +361,9 @@ class MiniMaxH3Director:
                 segment_frame_counts=export_frame_counts,
                 pre_refine_combined=pre_combined,
                 pre_refine_segments=pre_segments,
+                pre_face_combined=pre_face_combined,
+                pre_face_segments=pre_face_segments,
+                export_pre_face_refine=export_pre_face_refine,
                 block_final_images=held_for_confirmation,
             )
         finally:

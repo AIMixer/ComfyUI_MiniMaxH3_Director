@@ -141,6 +141,7 @@ def report_director_segment_preview(
     live: bool = False,
     step: int | None = None,
     total_steps: int | None = None,
+    mime: str | None = None,
 ) -> None:
     if not node_id or not image_b64:
         return
@@ -152,8 +153,12 @@ def report_director_segment_preview(
         "height": height,
         "live": bool(live),
     }
+    if mime:
+        payload["mime"] = str(mime)
     if frames:
         payload["frames"] = frames
+        payload["fps"] = fps
+    elif fps and mime in ("image/webp", "video/mp4"):
         payload["fps"] = fps
     if step is not None:
         payload["step"] = int(step)

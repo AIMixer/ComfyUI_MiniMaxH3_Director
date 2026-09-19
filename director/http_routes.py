@@ -530,6 +530,7 @@ async def minimax_first_pass_cache_status(request):
     if isinstance(timeline_data, dict):
         timeline_data = json.dumps(timeline_data, ensure_ascii=False)
     try:
+        from .external_groups import external_witness_from_timeline_data
         from .plan import build_director_plan
         from .segment_cache import inspect_first_pass_cache
 
@@ -551,15 +552,31 @@ async def minimax_first_pass_cache_status(request):
         plan.sample_sigmas_linked = bool(body.get("sigmas_linked"))
         plan.sample_shift_video = float(body.get("shift_video") or 12.0)
         plan.sample_shift_audio = float(body.get("shift_audio") or 3.0)
-        return web.json_response(inspect_first_pass_cache(node_id, plan))
+        from .selflift.pack import normalize_selflift_pack
+        from .semantic_bridge import normalize_semantic_bridge_pack
+        from .refine_pack import normalize_refine_pack
+
+        plan.selflift = normalize_selflift_pack(body.get("selflift"))
+        plan.semantic_bridge = normalize_semantic_bridge_pack(body.get("semantic_bridge"))
+        plan.refine = normalize_refine_pack(
+            body.get("refine"),
+            base_width=int(getattr(plan, "width", 0) or 0),
+            base_height=int(getattr(plan, "height", 0) or 0),
+        )
+        # Graph-wired i2v_groups / r2v_groups never reach this route as values,
+        # so the panel ships a witness of that wiring inside timeline_data.
+        witness = external_witness_from_timeline_data(timeline_data)
+        if witness:
+            plan.external_groups_witness = witness
+        return web.json_response(
+            inspect_first_pass_cache(node_id, plan, external_groups=witness)
+        )
     except Exception as exc:
         log.warning("MiniMax H3 Director first-pass cache inspection failed: %s", exc)
         return web.json_response(
             {"exists": False, "matches": False, "error": str(exc)},
             status=400,
         )
-
-
 async def minimax_segment_cache_detail(request):
     """Per-segment cache inventory for one Director node (cache manager view)."""
     try:

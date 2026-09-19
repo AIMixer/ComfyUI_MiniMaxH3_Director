@@ -36,6 +36,203 @@ MMX_DIR_GROUPS = MMX_DIR_GROUP
 I2V_FAMILY = frozenset({"t2v", "i2v", "fl2v"})
 R2V_FAMILY = frozenset({"r2v"})
 
+# timeline_data key carrying the frontend "which graph is wired into the group
+# input" witness (web/js/minimax_external_witness.js). It is stored in the
+# first-pass cache fingerprint so the cache-status panel can detect wiring
+# changes it cannot recompute from widget values alone.
+EXTERNAL_WITNESS_KEY = "externalGroupsWitness"
+_WITNESS_STR_MAX = 120
+# Named buckets of the witness, used to say *what* changed instead of "外接组".
+WITNESS_FACETS = ("wiring", "prompt", "length", "media", "other", "timeline")
+# Group records are capped frontend-side too; this only guards against a hand
+# crafted payload.
+_WITNESS_MAX_GROUPS = 256
+# Must match web/js/minimax_external_witness.js (UTF-16 FNV-1a + long-string collapse).
+_STABLE_STR_MAX = 400
+
+
+def _normalize_witness_facets(raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    facets: dict[str, str] = {}
+    for name in WITNESS_FACETS:
+        value = raw.get(name)
+        if value is None:
+            continue
+        facets[name] = str(value).strip()[:_WITNESS_STR_MAX]
+    return facets or None
+
+
+def _digest32(text: str) -> str:
+    """Byte-identical to the frontend ``digest32`` (UTF-16 code units, FNV-1a)."""
+    h = 0x811C9DC5
+    for ch in str(text or ""):
+        code = ord(ch)
+        units = (code,)
+        if code > 0xFFFF:
+            c = code - 0x10000
+            units = (0xD800 + (c >> 10), 0xDC00 + (c & 0x3FF))
+        for unit in units:
+            h ^= unit & 0xFF
+            h = (h * 0x01000193) & 0xFFFFFFFF
+            h ^= (unit >> 8) & 0xFF
+            h = (h * 0x01000193) & 0xFFFFFFFF
+    return f"{h:08x}"
+
+
+def witness_prompt_digest(prompt: str) -> str:
+    """Same digest the cache panel stores on each group's ``prompt`` field."""
+    import json
+
+    raw = str(prompt or "")
+    value = raw if len(raw) <= _STABLE_STR_MAX else f"#{len(raw)}:{_digest32(raw)}"
+    return _digest32(json.dumps(value, ensure_ascii=False))
+
+
+def execute_group_record(index: int, group: dict[str, Any] | None) -> dict[str, Any]:
+    """Identity written into first-pass cache when the frontend witness is missing."""
+    g = group if isinstance(group, dict) else {}
+    try:
+        dur = round(float(g.get("duration_sec") or 0), 6)
+    except (TypeError, ValueError):
+        dur = None
+    return {
+        "slot": f"group_{int(index)}",
+        "node": "",
+        "prompt": witness_prompt_digest(g.get("prompt") or ""),
+        "sub": "",
+        "dur": dur if dur and dur > 0 else None,
+    }
+
+
+def stamp_execute_group_records(
+    witness: dict[str, Any] | None,
+    groups: list[dict[str, Any]],
+    *,
+    family: str,
+) -> dict[str, Any]:
+    """Keep frontend per-group records when present; otherwise stamp from payloads."""
+    out = dict(witness) if isinstance(witness, dict) else {
+        "v": 4,
+        "graph": "execute",
+        "port": str(family or ""),
+        "source": "",
+        "nodes": 0,
+        "timeline": "",
+    }
+    records = out.get("groups")
+    if isinstance(records, list) and len(records) == len(groups):
+        out["groups"] = [
+            normalize_external_group_record(item) or execute_group_record(i, groups[i])
+            for i, item in enumerate(records)
+        ]
+    else:
+        out["groups"] = [execute_group_record(i, g) for i, g in enumerate(groups)]
+        if not out.get("graph"):
+            out["graph"] = "execute"
+    return out
+
+
+def normalize_external_group_record(raw: Any) -> dict[str, Any] | None:
+    """One witness record per graph-wired group (= one segment / cache slot).
+
+    ``dur`` is the group's own duration in seconds: the cache panel derives the
+    segment's frame count from it exactly like the run does. ``prompt``/``sub``
+    are digests; ``facets`` labels which bucket changed.
+    """
+    if not isinstance(raw, dict):
+        return None
+    record: dict[str, Any] = {
+        "slot": str(raw.get("slot") or "").strip()[:_WITNESS_STR_MAX],
+        "node": str(raw.get("node") or "").strip()[:_WITNESS_STR_MAX],
+        "prompt": str(raw.get("prompt") or "").strip()[:_WITNESS_STR_MAX],
+        "sub": str(raw.get("sub") or "").strip()[:_WITNESS_STR_MAX],
+    }
+    dur = raw.get("dur")
+    if dur is not None:
+        try:
+            record["dur"] = round(float(dur), 6)
+        except (TypeError, ValueError):
+            record["dur"] = None
+    else:
+        record["dur"] = None
+    facets = _normalize_witness_facets(raw.get("facets"))
+    if facets:
+        record["facets"] = facets
+    return record
+
+
+def normalize_external_witness(raw: Any) -> dict[str, Any] | None:
+    """Normalize the frontend external-group witness (``None`` when absent).
+
+    The witness rides inside ``timeline_data`` — the only value the cache-status
+    route and the Director execute path both receive. It is a change-detection
+    token, not user data, hence the narrow, versioned shape.
+
+    ``facets`` (wiring / prompt / length / media / other / timeline) and
+    ``groups`` are optional: older frontends and caches only carry the aggregate
+    ``graph`` digest, in which case the panel reports the category it *can* still
+    name, or nothing.
+    """
+    if not isinstance(raw, dict):
+        return None
+    graph = str(raw.get("graph") or raw.get("digest") or "").strip()[:_WITNESS_STR_MAX]
+    if not graph:
+        return None
+
+    def _text(key: str) -> str:
+        return str(raw.get(key) or "").strip()[:_WITNESS_STR_MAX]
+
+    def _int(key: str, fallback: int) -> int:
+        try:
+            return int(raw.get(key))
+        except (TypeError, ValueError):
+            return fallback
+
+    out: dict[str, Any] = {
+        "v": _int("v", 1),
+        "port": _text("port"),
+        "source": _text("source"),
+        "nodes": _int("nodes", 0),
+        "graph": graph,
+        "timeline": _text("timeline"),
+    }
+    fps = raw.get("fps")
+    if fps is not None:
+        try:
+            fps_value = float(fps)
+        except (TypeError, ValueError):
+            fps_value = None
+        if fps_value and fps_value > 0:
+            out["fps"] = round(fps_value, 6)
+    raw_groups = raw.get("groups")
+    if isinstance(raw_groups, list):
+        groups = [
+            record
+            for record in (
+                normalize_external_group_record(item)
+                for item in raw_groups[:_WITNESS_MAX_GROUPS]
+            )
+            if record is not None
+        ]
+        if groups:
+            out["groups"] = groups
+    # 「选择运行」selection, mirrored by the panel to report the same selected split.
+    raw_sel = raw.get("sel")
+    if isinstance(raw_sel, dict) and raw_sel.get("on") and isinstance(raw_sel.get("idx"), list):
+        picked: list[int] = []
+        for item in raw_sel["idx"][:_WITNESS_MAX_GROUPS]:
+            try:
+                picked.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if picked:
+            out["sel"] = {"on": True, "idx": picked}
+    facets = _normalize_witness_facets(raw.get("facets"))
+    if facets:
+        out["facets"] = facets
+    return out
+
 
 def _as_image_batch(image: Any) -> torch.Tensor | None:
     if image is None:
@@ -124,10 +321,31 @@ def pack_i2v_group(
     }
 
 
+def _normalize_packed_ref_image_size(value) -> str:
+    from .plan import normalize_ref_image_size
+
+    return normalize_ref_image_size(value)
+
+
+def _resolve_group_ref_image_size(group, row, timeline) -> str:
+    """Group widget wins; fall back to the Director card / output default."""
+    from .plan import resolve_ref_image_size
+
+    raw = None
+    if isinstance(group, dict):
+        raw = group.get("ref_image_size")
+        if raw is None:
+            raw = group.get("refImageSize")
+    if raw is not None and str(raw).strip() != "":
+        return resolve_ref_image_size({"ref_image_size": raw}, timeline)
+    return resolve_ref_image_size(row, timeline)
+
+
 def pack_r2v_group(
     *,
     prompt: str = "",
     duration_sec: float = DEFAULT_FL2V_DURATION_SEC,
+    ref_image_size: str = "match",
     ref_images: dict[int, Any] | None = None,
     ref_videos: dict[int, Any] | None = None,
     ref_video_audios: dict[int, Any] | None = None,
@@ -181,6 +399,7 @@ def pack_r2v_group(
         "kind": "r2v",
         "prompt": (prompt or "").strip(),
         "duration_sec": float(duration_sec) if duration_sec is not None else DEFAULT_FL2V_DURATION_SEC,
+        "ref_image_size": _normalize_packed_ref_image_size(ref_image_size),
         "first_frame": None,
         "last_frame": None,
         "ref_images": images,
@@ -339,6 +558,27 @@ def validate_external_group_inputs(
     return task_key, r2v, "r2v"
 
 
+def external_witness_from_timeline(timeline: Any) -> dict[str, Any] | None:
+    if not isinstance(timeline, dict):
+        return None
+    return normalize_external_witness(timeline.get(EXTERNAL_WITNESS_KEY))
+
+
+def external_witness_from_timeline_data(timeline_data: Any) -> dict[str, Any] | None:
+    """Witness out of a raw ``timeline_data`` widget value (JSON text or dict)."""
+    import json
+
+    if isinstance(timeline_data, dict):
+        return external_witness_from_timeline(timeline_data)
+    text = str(timeline_data or "")
+    if not text.strip():
+        return None
+    try:
+        return external_witness_from_timeline(json.loads(text))
+    except Exception:
+        return None
+
+
 def build_plan_from_external_groups(
     groups: list[dict[str, Any]],
     *,
@@ -362,8 +602,9 @@ def build_plan_from_external_groups(
         _load_refs,
         concat_common_segment_prompt,
         merge_indexed_refs,
+        drop_unusable_audio_prompt_tags,
         reinforce_r2v_prompt,
-        resolve_ref_image_size,
+        usable_ref_audio_indices,
     )
 
     timeline = _parse_timeline_meta(timeline_data)
@@ -511,31 +752,25 @@ def build_plan_from_external_groups(
                     continuity_from_prev=resolve_segment_continuity_from_prev(
                         row, segment_index=plan_idx
                     ),
-                    ref_image_size=resolve_ref_image_size(row, timeline),
+                    ref_image_size=_resolve_group_ref_image_size(g, row, timeline),
                 )
             )
         else:
-            # r2v — per-group media + Director timeline.global common media/prompt
+            # r2v — keep native stills; official match / Director max-cap resize later.
             refs = []
             for idx, tensor in sorted((g.get("ref_images") or {}).items()):
-                fitted = _fit_image(
-                    tensor, width=seg_w, height=seg_h, output_mode=seg_mode, ref_max_size=ref_max
-                )
-                refs.append(SegmentRef(index=int(idx), tensor=fitted[:1].clone()))
+                img = tensor.unsqueeze(0) if tensor.ndim == 3 else tensor
+                refs.append(SegmentRef(index=int(idx), tensor=img[:1].clone()))
             if common_refs_raw:
                 common_fitted = []
                 for cref in common_refs_raw:
-                    fitted = _fit_image(
-                        cref.tensor,
-                        width=seg_w,
-                        height=seg_h,
-                        output_mode=seg_mode,
-                        ref_max_size=ref_max,
-                    )
+                    img = cref.tensor
+                    if img.ndim == 3:
+                        img = img.unsqueeze(0)
                     common_fitted.append(
                         SegmentRef(
                             index=int(cref.index),
-                            tensor=fitted[:1].clone(),
+                            tensor=img[:1].clone(),
                             image_file=getattr(cref, "image_file", "") or "",
                         )
                     )
@@ -558,11 +793,13 @@ def build_plan_from_external_groups(
                 SegmentRefAudio(index=int(idx), audio=aud, audio_file="")
                 for idx, aud in sorted((g.get("ref_video_audios") or {}).items())
             ]
+            audio_idxs = usable_ref_audio_indices(ref_audios)
+            prompt = drop_unusable_audio_prompt_tags(prompt, audio_idxs)
             prompt = reinforce_r2v_prompt(
                 prompt,
                 ref_indices=[r.index for r in refs],
                 video_indices=[v.index for v in ref_videos],
-                audio_indices=[a.index for a in ref_audios],
+                audio_indices=audio_idxs,
             )
             row = timeline_row_for_index(timeline, int(src_index))
             if not row and isinstance(g, dict):
@@ -585,7 +822,7 @@ def build_plan_from_external_groups(
                     continuity_from_prev=resolve_segment_continuity_from_prev(
                         row, segment_index=plan_idx
                     ),
-                    ref_image_size=resolve_ref_image_size(row, timeline),
+                    ref_image_size=_resolve_group_ref_image_size(g, row, timeline),
                 )
             )
 
@@ -608,13 +845,21 @@ def build_plan_from_external_groups(
     raw["totalFrames"] = total
     raw["editMode"] = "segment"
 
-    from .segment_continuity import resolve_continuity_settings
+    from .segment_continuity import (
+        resolve_continuity_keep_tail,
+        resolve_continuity_mode,
+        resolve_continuity_redraw,
+        resolve_continuity_settings,
+    )
 
     continuity_enabled, continuity_overlap = resolve_continuity_settings(
         timeline, segment_count=len(segments)
     )
+    continuity_mode = resolve_continuity_mode(timeline)
+    continuity_redraw = resolve_continuity_redraw(timeline)
+    continuity_keep_tail = resolve_continuity_keep_tail(timeline)
 
-    return DirectorPlan(
+    plan = DirectorPlan(
         frame_rate=fps,
         total_frames=total or int(total_frames or 0),
         width=out_w,
@@ -635,5 +880,17 @@ def build_plan_from_external_groups(
         run_indices=run_indices,
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        continuity_mode=continuity_mode,
+        continuity_redraw=continuity_redraw,
+        continuity_keep_tail=continuity_keep_tail,
         global_ref_audios=list(common_audios_raw) if family == "r2v" else [],
     )
+    # Prefer the frontend wiring witness (same blob the cache panel sends).
+    # If Queue serialized timeline_data without it, stamp per-group records from
+    # the executed payloads so .pre meta always carries ``external_group``.
+    plan.external_groups_witness = stamp_execute_group_records(
+        external_witness_from_timeline(timeline),
+        groups,
+        family=family,
+    )
+    return plan

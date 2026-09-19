@@ -1,14 +1,25 @@
 [project]
-name = "ComfyUI_MiniMaxH3_Director"
+name = "minimax-h3-director"
 description = "Multi-segment MiniMax H3 Director — official MiniMaxH3ImageToVideo / ReferenceToVideo pipeline."
 version = "1.0.0"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
+classifiers = [
+    "Operating System :: OS Independent",
+    "Environment :: GPU :: NVIDIA CUDA",
+]
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
 
 [project.urls]
 Repository = "https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director"
+Documentation = "https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director#readme"
+"Bug Tracker" = "https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director/issues"
 
 [tool.comfy]
-PublisherId = ""
-DisplayName = "ComfyUI MiniMax H3 Director"
+PublisherId = "aimixer"
+DisplayName = "MiniMax H3 Director"
 Icon = ""
+requires-comfyui = ">=0.30.0"

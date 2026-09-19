@@ -26,6 +26,7 @@ import {
     refAudioLabel,
     refImageLabel,
     refVideoLabel,
+    REF_IMAGE_SIZE_OPTIONS,
     resolveSegmentRefImageSize,
     resolveSegmentTaskKey,
     resolveTaskKey,
@@ -52,6 +53,10 @@ let _activeR2vMedia = null;
 
 function clamp(n, lo, hi) {
     return Math.max(lo, Math.min(hi, n));
+}
+
+function batchFrameRate(editor) {
+    return Math.max(1, Number(editor?.getFrameRate?.() || editor?.timeline?.frameRate || 24) || 24);
 }
 
 function _refHasImage(r) {
@@ -308,13 +313,13 @@ export function wireMediaDuration(mediaEl, durEl, onReady) {
  * User-facing seconds (1 decimal). durationSec is the source of truth when set;
  * only fall back to frames for legacy rows that never stored durationSec.
  */
-function resolveSegmentDurationSec(seg, defFc) {
+function resolveSegmentDurationSec(seg, defFc, fps = 24) {
     if (seg.durationSec != null && Number.isFinite(Number(seg.durationSec))) {
-        const { durationSec } = durationToClampedMiniMaxFrames(seg.durationSec, 24);
+        const { durationSec } = durationToClampedMiniMaxFrames(seg.durationSec, fps);
         return durationSec;
     }
     const fc = parseInt(seg.frameCount ?? seg.length ?? seg._videoFrameCount ?? defFc, 10) || defFc;
-    return preferredDurationSecFromFrames(fc, 24);
+    return preferredDurationSecFromFrames(fc, fps);
 }
 
 /** Apply seconds to a segment by index (avoids stale closures after normalize). */
@@ -322,12 +327,13 @@ function applyBatchSegmentDuration(editor, index, rawSec) {
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
     const seg = editor.timeline.segments?.[index];
     if (!seg || !isVideoBatchTask(taskKey)) return null;
+    const fps = batchFrameRate(editor);
     const clamped = clamp(
         Number(rawSec) || defaultDurationSec(taskKey),
-        minDurationSec(),
-        maxDurationSec(),
+        minDurationSec(fps),
+        maxDurationSec(fps),
     );
-    const { frames, durationSec } = durationToClampedMiniMaxFrames(clamped, 24);
+    const { frames, durationSec } = durationToClampedMiniMaxFrames(clamped, fps);
     seg.durationSec = durationSec;
     seg.frameCount = frames;
     seg.length = frames;
@@ -368,6 +374,9 @@ function liveBatchSegmentFromEl(editor, el, indexAttr) {
  * stale segment objects (or only in the DOM) and get wiped.
  */
 export function flushBatchPromptInputs(editor) {
+    // Pack import rebuilds segments from JSON; stale card textareas must not
+    // write empty drafts back over the imported prompts.
+    if (editor?._suspendPromptFlush) return;
     const list = editor?.batchList;
     if (!list) return;
     const segs = editor?.timeline?.segments;
@@ -389,7 +398,15 @@ function flushBatchDurationInputs(editor) {
     flushBatchPromptInputs(editor);
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
     if (!isVideoBatchTask(taskKey)) return;
+    // With external groups connected the card's seconds field is a read-only
+    // mirror of the group node — the graph is the source of truth. Flushing it
+    // would write the value rendered *before* the group edit back over the
+    // duration `syncExternalGroupsTimeline` just rebuilt, so the panel would keep
+    // showing the old length (only for the segments whose card is in the DOM).
+    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
     for (const input of list.querySelectorAll("input[data-batch-sec-index]")) {
+        // A disabled/readOnly control is a mirror: never write it back anywhere.
+        if (input.disabled || input.readOnly) continue;
         const live = liveBatchSegmentFromEl(editor, input, "data-batch-sec-index");
         if (!live?.seg) continue;
         clearTimeout(input._t);
@@ -524,7 +541,7 @@ export const IMAGE_BATCH_STYLES = `
 .bd-batch-fc input{width:72px;background:#181818;border:1px solid #444;border-radius:5px;color:#eee;padding:5px 8px;font-size:13px}
 .bd-batch-r2v .bd-batch-fc input{width:76px;background:#161616;border-color:#3a3a3a;border-radius:6px;padding:5px 8px;font-size:13px}
 .bd-batch-refsize{display:flex;align-items:center;gap:6px;color:#c8c8c8;font-size:12px;background:#0e0e0e;border:1px solid #2a2a2a;border-radius:8px;padding:5px 10px;white-space:nowrap}
-.bd-batch-refsize select{background:#161616;border:1px solid #3a3a3a;border-radius:6px;color:#eee;padding:5px 6px;font-size:12px;max-width:88px}
+.bd-batch-refsize select{background:#161616;border:1px solid #3a3a3a;border-radius:6px;color:#eee;padding:5px 6px;font-size:12px;max-width:132px}
 .bd-batch-del{background:transparent;border:1px solid #553;color:#f88;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer}
 .bd-batch-r2v .bd-batch-del{border-radius:8px;padding:5px 10px;font-size:11px;border-color:#4a3030;color:#f0a0a0}
 .bd-batch-del:disabled{border-color:#3a3a3a;color:#777;opacity:.55;cursor:not-allowed}
@@ -814,7 +831,7 @@ export function ensureImageBatchTimeline(editor) {
     if (!isVideoBatchTask(taskKey)) {
         editor.timeline.output.exportMode = "all";
     }
-    const defFc = defaultFrameCount(taskKey);
+    const defFc = defaultFrameCount(taskKey, batchFrameRate(editor));
     if (taskKey === "i2v") {
         editor.timeline.video = {
             fileName: "",
@@ -828,6 +845,7 @@ export function ensureImageBatchTimeline(editor) {
     }
     if (!editor.timeline.segments?.length) {
         editor.timeline.segments = [newBatchSegment({
+            frameRate: batchFrameRate(editor),
             durationSec: defaultDurationSec(taskKey === "mixed" ? "t2v" : taskKey),
             ...(taskKey === "mixed" ? { taskType: "t2v" } : {}),
         })];
@@ -839,8 +857,8 @@ export function ensureImageBatchTimeline(editor) {
     for (const seg of editor.timeline.segments) {
         if (isVideoBatchTask(taskKey)) {
             const { frames, durationSec } = durationToClampedMiniMaxFrames(
-                resolveSegmentDurationSec(seg, defFc),
-                24,
+                resolveSegmentDurationSec(seg, defFc, batchFrameRate(editor)),
+                batchFrameRate(editor),
             );
             seg.durationSec = durationSec;
             seg.frameCount = frames;
@@ -872,7 +890,7 @@ export function normalizeImageBatchSegments(editor) {
     flushBatchPromptInputs(editor);
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
     const isVideo = isVideoBatchTask(taskKey);
-    const defFc = defaultFrameCount(taskKey);
+    const defFc = defaultFrameCount(taskKey, batchFrameRate(editor));
     const defSec = defaultDurationSec(taskKey);
     let start = 0;
     const segs = editor.timeline.segments || [];
@@ -880,15 +898,18 @@ export function normalizeImageBatchSegments(editor) {
     // same objects. Replacing with `{ ...seg }` orphans DOM writes and can
     // wipe group 5/6 prompts on the next sync/re-render.
     if (!segs.length) {
-        editor.timeline.segments = [newBatchSegment({ durationSec: defSec })];
+        editor.timeline.segments = [newBatchSegment({
+            frameRate: batchFrameRate(editor),
+            durationSec: defSec,
+        })];
     }
     for (const seg of editor.timeline.segments) {
         let fc = 1;
         let durationSec;
         if (isVideo) {
             const resolved = durationToClampedMiniMaxFrames(
-                clamp(resolveSegmentDurationSec(seg, defFc) || defSec, minDurationSec(), maxDurationSec()),
-                24,
+                clamp(resolveSegmentDurationSec(seg, defFc, batchFrameRate(editor)) || defSec, minDurationSec(batchFrameRate(editor)), maxDurationSec(batchFrameRate(editor))),
+                batchFrameRate(editor),
             );
             fc = resolved.frames;
             durationSec = resolved.durationSec;
@@ -924,6 +945,7 @@ export function addImageBatchGroup(editor) {
         ? resolveSegmentTaskKey(prev, taskKey)
         : "";
     editor.timeline.segments.push(newBatchSegment({
+        frameRate: batchFrameRate(editor),
         durationSec: defaultDurationSec(followType || taskKey),
         negativePrompt: "",
         ...(followType ? { taskType: followType } : {}),
@@ -2143,9 +2165,11 @@ function renderRefSlot(el, ref, slot, index, editor) {
     }
 }
 
-function frameSrc(b64) {
+function frameSrc(b64, mime) {
     if (!b64) return "";
-    return b64.startsWith("data:") ? b64 : `data:image/jpeg;base64,${b64}`;
+    if (b64.startsWith("data:")) return b64;
+    const kind = (typeof mime === "string" && mime.includes("/")) ? mime : "image/jpeg";
+    return `data:${kind};base64,${b64}`;
 }
 
 function loadFrameImages(frames) {
@@ -2180,7 +2204,7 @@ function mountLivePreview(el, seg, badgeText) {
     const img = document.createElement("img");
     img.className = "bd-live-preview";
     img.alt = "live preview";
-    img.src = frameSrc(seg.previewB64);
+    img.src = frameSrc(seg.previewB64, seg.previewMime);
     const badge = document.createElement("div");
     badge.className = "bd-batch-live-badge";
     badge.textContent = badgeText || t("batch.generating");
@@ -2304,7 +2328,7 @@ function renderImagePreview(el, seg, running, editor) {
     }
     if (seg.previewB64) {
         const img = document.createElement("img");
-        img.src = frameSrc(seg.previewB64);
+        img.src = frameSrc(seg.previewB64, seg.previewMime);
         img.alt = "preview";
         el.appendChild(img);
         return;
@@ -2414,7 +2438,7 @@ function renderBatchGroupPicker(editor, ctx) {
         const meta = document.createElement("span");
         meta.className = "bd-batch-pick-meta";
         if (isVideo) {
-            const sec = resolveSegmentDurationSec(seg, defaultFrameCount(key));
+            const sec = resolveSegmentDurationSec(seg, defaultFrameCount(key, batchFrameRate(editor)), batchFrameRate(editor));
             meta.textContent = `${Number(sec).toFixed(1)}s`;
         } else {
             meta.textContent = `#${index + 1}`;
@@ -2425,7 +2449,7 @@ function renderBatchGroupPicker(editor, ctx) {
             const img = document.createElement("img");
             img.className = "bd-batch-pick-thumb";
             img.alt = "";
-            img.src = frameSrc(thumbSrc);
+            img.src = frameSrc(thumbSrc, seg.previewMime);
             chip.appendChild(img);
         }
         chip.onclick = (e) => {
@@ -2631,7 +2655,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             sizeSel.className = "bd-select";
             const curSize = resolveSegmentRefImageSize(seg, editor.timeline?.output);
             seg.refImageSize = curSize;
-            for (const opt of ["match", "max"]) {
+            for (const opt of REF_IMAGE_SIZE_OPTIONS) {
                 const o = document.createElement("option");
                 o.value = opt;
                 o.setAttribute("data-i18n", `output.refImageSize.${opt}`);
@@ -2639,15 +2663,20 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                 if (opt === curSize) o.selected = true;
                 sizeSel.appendChild(o);
             }
-            sizeSel.onchange = (e) => {
-                e.stopPropagation();
-                const liveIdx = (editor.timeline.segments || []).findIndex((s) => s?.id && s.id === seg.id);
-                const live = editor.timeline.segments?.[liveIdx >= 0 ? liveIdx : index];
-                if (!live) return;
-                live.refImageSize = resolveSegmentRefImageSize({ refImageSize: sizeSel.value });
-                editor.commit?.(false, { syncTimeline: true });
-                editor.flushTimelineSync?.();
-            };
+            if (externalLocked) {
+                sizeSel.disabled = true;
+                sizeSel.title = t("external.refImageSizeLocked");
+            } else {
+                sizeSel.onchange = (e) => {
+                    e.stopPropagation();
+                    const liveIdx = (editor.timeline.segments || []).findIndex((s) => s?.id && s.id === seg.id);
+                    const live = editor.timeline.segments?.[liveIdx >= 0 ? liveIdx : index];
+                    if (!live) return;
+                    live.refImageSize = resolveSegmentRefImageSize({ refImageSize: sizeSel.value });
+                    editor.commit?.(false, { syncTimeline: true });
+                    editor.flushTimelineSync?.();
+                };
+            }
             sizeSel.onclick = (e) => e.stopPropagation();
             sizeRow.appendChild(sizeLabel);
             sizeRow.appendChild(sizeSel);
@@ -2656,14 +2685,15 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         if (isVideo) {
             const secRow = document.createElement("label");
             secRow.className = "bd-batch-fc";
-            const curSec = resolveSegmentDurationSec(seg, defaultFrameCount(key));
-            const { frames, durationSec: syncedSec } = durationToClampedMiniMaxFrames(curSec, 24);
-            const playSec = framesToDurationSec(frames, 24);
+            const fps = batchFrameRate(editor);
+            const curSec = resolveSegmentDurationSec(seg, defaultFrameCount(key, fps), fps);
+            const { frames, durationSec: syncedSec } = durationToClampedMiniMaxFrames(curSec, fps);
+            const playSec = framesToDurationSec(frames, fps);
             seg.durationSec = syncedSec;
             seg.frameCount = frames;
             seg.length = frames;
             seg._videoFrameCount = frames;
-            secRow.innerHTML = `${t("batch.seconds")} <input type="number" data-batch-sec-index="${index}" data-batch-seg-id="${seg.id || ""}" min="${minDurationSec()}" max="${maxDurationSec()}" step="0.1" value="${seg.durationSec}" title="${t("batch.durationTooltip", { frames, play: playSec })}">`;
+            secRow.innerHTML = `${t("batch.seconds")} <input type="number" data-batch-sec-index="${index}" data-batch-seg-id="${seg.id || ""}" min="${minDurationSec(fps)}" max="${maxDurationSec(fps)}" step="0.1" value="${seg.durationSec}" title="${t("batch.durationTooltip", { frames, play: playSec })}">`;
             const secInput = secRow.querySelector("input");
             // Do not rewrite value/title while focused: frame snapping would
             // bounce 20.7↔20.5 and interrupt typing. Normalize on blur.
@@ -2673,7 +2703,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                 const updated = applyBatchSegmentDuration(editor, index, secInput.value);
                 if (!updated) return;
                 if (!secFocused) {
-                    const play = framesToDurationSec(updated.frameCount, 24);
+                    const play = framesToDurationSec(updated.frameCount, batchFrameRate(editor));
                     secInput.value = String(updated.durationSec);
                     secInput.title = t("batch.durationTooltip", {
                         frames: updated.frameCount,
@@ -2866,6 +2896,8 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
     const seg = editor.timeline.segments[segmentIndex];
     if (!seg) return;
     seg.previewB64 = imageB64 || "";
+    if (extra.mime) seg.previewMime = extra.mime;
+    else if (!extra.live) seg.previewMime = "image/jpeg";
     if (extra.step != null) seg.previewStep = extra.step;
     if (extra.total_steps != null) seg.previewTotalSteps = extra.total_steps;
     const hasFrames = Array.isArray(extra.frames) && extra.frames.length;
@@ -2906,7 +2938,7 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
                 mountLivePreview(preview, seg, badgeText);
                 img = preview.querySelector("img.bd-live-preview");
             } else {
-                img.src = frameSrc(imageB64);
+                img.src = frameSrc(imageB64, extra.mime || seg.previewMime);
                 if (badge) badge.textContent = badgeText;
             }
             // Play the live temporal frames as a looping clip on the card.
@@ -2916,7 +2948,7 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
                 stopPlayer(preview);
             }
             const pickThumb = editor.batchPicker?.querySelector?.(`.bd-batch-pick[data-batch-index="${segmentIndex}"] img.bd-batch-pick-thumb`);
-            if (pickThumb) pickThumb.src = frameSrc(imageB64);
+            if (pickThumb) pickThumb.src = frameSrc(imageB64, extra.mime || seg.previewMime);
             return;
         }
         const pick = editor.batchPicker?.querySelector?.(`.bd-batch-pick[data-batch-index="${segmentIndex}"]`);
@@ -2929,7 +2961,7 @@ export function setImageBatchPreview(editor, segmentIndex, imageB64, extra = {})
                 img.alt = "";
                 pick.appendChild(img);
             }
-            img.src = frameSrc(imageB64);
+            img.src = frameSrc(imageB64, extra.mime || seg.previewMime);
         }
         return;
     }

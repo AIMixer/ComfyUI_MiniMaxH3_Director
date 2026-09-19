@@ -78,8 +78,23 @@ def _min_frames_for_task(task_key: str) -> int:
     return MIN_GEN_VIDEO_FRAMES
 
 
-def _segment_frame_count(raw: dict, *, default: int, task_key: str) -> int:
-    fc = int(raw.get("frameCount") or raw.get("frame_count") or raw.get("length") or default)
+def _segment_frame_count(
+    raw: dict,
+    *,
+    default: int,
+    task_key: str,
+    frame_rate: float,
+) -> int:
+    duration = raw.get("durationSec") or raw.get("duration_sec")
+    if is_video_batch_task_key(task_key) and duration is not None:
+        try:
+            from .fl2v_timeline import _duration_to_minimax_frames
+
+            fc = _duration_to_minimax_frames(float(duration), frame_rate)
+        except (TypeError, ValueError):
+            fc = int(raw.get("frameCount") or raw.get("frame_count") or raw.get("length") or default)
+    else:
+        fc = int(raw.get("frameCount") or raw.get("frame_count") or raw.get("length") or default)
     return max(_min_frames_for_task(task_key), fc)
 
 
@@ -88,11 +103,17 @@ def _gen_segment_ranges(
     *,
     default_frame_count: int,
     task_key: str,
+    frame_rate: float,
 ) -> list[tuple[int, int, dict]]:
     ranges: list[tuple[int, int, dict]] = []
     start = 0
     for raw in segments:
-        fc = _segment_frame_count(raw, default=default_frame_count, task_key=task_key)
+        fc = _segment_frame_count(
+            raw,
+            default=default_frame_count,
+            task_key=task_key,
+            frame_rate=frame_rate,
+        )
         ranges.append((start, start + fc, raw))
         start += fc
     if not ranges:
@@ -397,12 +418,14 @@ def build_gen_director_plan(
 
     output_block = timeline.get("output") or {}
     gen_block = timeline.get("gen") or {}
+    fps = float(timeline.get("frameRate") or frame_rate or 24)
     default_fc = int(gen_block.get("defaultFrameCount") or total_frames or 81)
 
     segment_ranges = _gen_segment_ranges(
         timeline.get("segments") or [],
         default_frame_count=default_fc,
         task_key=task_key,
+        frame_rate=fps,
     )
 
     if submode == "gen_blank":
@@ -650,14 +673,22 @@ def build_gen_director_plan(
     raw["timelineMode"] = timeline_mode
     src_w, src_h = _resolve_gen_image_source_dims(segment_ranges, global_block, output_block)
 
-    from .segment_continuity import resolve_continuity_settings
+    from .segment_continuity import (
+        resolve_continuity_keep_tail,
+        resolve_continuity_mode,
+        resolve_continuity_redraw,
+        resolve_continuity_settings,
+    )
 
     continuity_enabled, continuity_overlap = resolve_continuity_settings(
         timeline, segment_count=len(segments)
     )
+    continuity_mode = resolve_continuity_mode(timeline)
+    continuity_redraw = resolve_continuity_redraw(timeline)
+    continuity_keep_tail = resolve_continuity_keep_tail(timeline)
 
     return DirectorPlan(
-        frame_rate=float(timeline.get("frameRate") or frame_rate or 24),
+        frame_rate=fps,
         total_frames=total,
         width=out_w,
         height=out_h,
@@ -677,5 +708,8 @@ def build_gen_director_plan(
         run_indices=_parse_run_selection(timeline, len(segments)),
         continuity_enabled=continuity_enabled,
         continuity_overlap_frames=continuity_overlap,
+        continuity_mode=continuity_mode,
+        continuity_redraw=continuity_redraw,
+        continuity_keep_tail=continuity_keep_tail,
         global_ref_audios=shared_ref_audios,
     )

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from typing import Any
 
 import torch
@@ -105,6 +106,11 @@ CONTINUITY_SPIKE_WEIGHT = 0.0
 CONTINUITY_SPIKE_LAND_WEIGHT = 0.0
 CONTINUITY_SPIKE_SCAN = 5
 CONTINUITY_HOLD_POP_ON_TAIL = False
+# Per-segment export: low-freq grade only (not RGB lerp — that ghosted).
+# Pin prefix is trimmed, so the first visible frame was never locked.
+CONTINUITY_EXPORT_GRADE_FRAMES = 12
+CONTINUITY_EXPORT_GRADE_WEIGHT = 0.70
+CONTINUITY_EXPORT_GRADE_BLUR = 64
 
 
 def _truthy_continuity_flag(value) -> bool:
@@ -114,6 +120,73 @@ def _truthy_continuity_flag(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"true", "1", "yes", "on"}
     return False
+
+
+CONTINUITY_MODE_GUIDE = "guide"
+CONTINUITY_MODE_CONTINUE = "continue"
+DEFAULT_CONTINUITY_REDRAW = 0.10
+
+
+def resolve_continuity_mode(timeline: dict | None) -> str:
+    """Global 引导 / 引导+重绘 strategy. Default guide. Ignored when continuity is off."""
+    output = (timeline or {}).get("output") if isinstance(timeline, dict) else None
+    if not isinstance(output, dict):
+        return CONTINUITY_MODE_GUIDE
+    raw = output.get("continuityMode", output.get("continuity_mode"))
+    if isinstance(raw, str) and raw.strip().lower() in {
+        "continue",
+        "continuation",
+        "latent",
+        "guide_redraw",
+        "guide+redraw",
+        "redraw",
+    }:
+        return CONTINUITY_MODE_CONTINUE
+    return CONTINUITY_MODE_GUIDE
+
+
+def resolve_continuity_redraw(timeline: dict | None) -> float:
+    """重绘幅度 for 引导+重绘. Ignored in official Guide mode."""
+    from .h3_latent_continue import clamp_seam_min_mask
+
+    output = (timeline or {}).get("output") if isinstance(timeline, dict) else None
+    if not isinstance(output, dict):
+        return DEFAULT_CONTINUITY_REDRAW
+    raw = (
+        output.get("continuityRedraw")
+        if output.get("continuityRedraw") is not None
+        else output.get("continuity_redraw")
+    )
+    if raw is None:
+        raw = output.get("continueSeam")
+    if raw is None:
+        return DEFAULT_CONTINUITY_REDRAW
+    return clamp_seam_min_mask(raw)
+
+
+def resolve_continuity_keep_tail(timeline: dict | None) -> bool:
+    """Keep the align remainder after the pinned head (「保完整」). Default on."""
+    output = (timeline or {}).get("output") if isinstance(timeline, dict) else None
+    if not isinstance(output, dict):
+        return True
+    raw = output.get("continuityKeepTail")
+    if raw is None:
+        raw = output.get("continuity_keep_tail")
+    if raw is None:
+        return True
+    if raw is False or raw == 0:
+        return False
+    if isinstance(raw, str) and raw.strip().lower() in {"false", "0", "no", "off"}:
+        return False
+    return True
+
+
+def is_continue_mode(plan) -> bool:
+    """True when master continuity is on and strategy is latent continue."""
+    if plan is None or not getattr(plan, "continuity_enabled", False):
+        return False
+    mode = str(getattr(plan, "continuity_mode", CONTINUITY_MODE_GUIDE) or "").strip().lower()
+    return mode == CONTINUITY_MODE_CONTINUE
 
 
 def resolve_continuity_settings(timeline: dict, *, segment_count: int) -> tuple[bool, int]:
@@ -633,6 +706,49 @@ def _blur_hwc(frame: torch.Tensor, kernel: int) -> torch.Tensor:
     return t.squeeze(0).permute(1, 2, 0)
 
 
+def _grade_device() -> torch.device:
+    """Device for the export opening grade.
+
+    The grade is a per-pixel box blur plus an elementwise lerp. Neither couples
+    a pixel to any other frame or to its neighbours' ordering, so the GPU
+    reproduces the CPU numbers to float32 rounding while turning a twelve frame
+    pass from minutes into milliseconds. ``H3_DIRECTOR_GRADE_DEVICE=cpu`` forces
+    the original CPU path (useful for A/B or when VRAM is tight).
+    """
+    forced = os.environ.get("H3_DIRECTOR_GRADE_DEVICE", "").strip().lower()
+    if forced in {"cpu", "off", "0"}:
+        return torch.device("cpu")
+    try:
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+    except Exception:
+        pass
+    return torch.device("cpu")
+
+
+def _box_blur_bhwc(
+    frames: torch.Tensor, kernel: int, device: torch.device
+) -> torch.Tensor:
+    """Batch form of :func:`_blur_hwc` — same reflect pad, same box kernel.
+
+    ``avg_pool2d`` is independent per sample, so blurring N frames in one call
+    on one device is identical to blurring them one at a time.
+    """
+    k = int(kernel)
+    if k < 3:
+        return frames.detach().to(device=device, dtype=torch.float32)
+    if k % 2 == 0:
+        k += 1
+    x = frames.detach().to(device=device, dtype=torch.float32)
+    if x.dim() == 3:
+        x = x.unsqueeze(0)
+    t = x.permute(0, 3, 1, 2)
+    pad = k // 2
+    t = torch.nn.functional.pad(t, (pad, pad, pad, pad), mode="reflect")
+    t = torch.nn.functional.avg_pool2d(t, kernel_size=k, stride=1)
+    return t.permute(0, 2, 3, 1)
+
+
 def _lowfreq_appearance_pull(
     src: torch.Tensor,
     guide: torch.Tensor,
@@ -657,6 +773,108 @@ def _lowfreq_appearance_pull(
     b_guide = _blur_hwc(g, blur)
     out = src.float() + w * (b_guide - b_src)
     return out.clamp(0.0, 1.0).to(dtype=src.dtype)
+
+
+def _grade_pull_cpu(
+    out: torch.Tensor,
+    last: torch.Tensor,
+    weights: list,
+    blur: int,
+) -> None:
+    """Reference path: frame at a time on the CPU, one blur per frame.
+
+    Kept verbatim as the fallback so a GPU-less or VRAM-starved run still
+    produces the same pixels it always did.
+    """
+    for i, w in enumerate(weights):
+        out[i] = _lowfreq_appearance_pull(out[i], last, weight=w, blur=blur)
+
+
+def _grade_pull_batched(
+    out: torch.Tensor,
+    last: torch.Tensor,
+    weights: list,
+    blur: int,
+) -> None:
+    """Same grade, but the guide is blurred once and the frames in one batch.
+
+    ``_lowfreq_appearance_pull`` recomputed the guide blur on every frame even
+    though ``guide[-1]`` never changes, and ran every box blur on the CPU. Both
+    fixes are arithmetic-neutral: the guide term is hoisted out of the loop, and
+    the per-frame blurs become a single batched ``avg_pool2d`` on the GPU.
+    """
+    cnt = len(weights)
+    device = _grade_device()
+    src = out[:cnt]
+    g = last
+    if g.dim() == 4:
+        g = g[0]
+    if tuple(g.shape[:2]) != tuple(src.shape[1:3]):
+        g = fit_canvas(g.unsqueeze(0), int(src.shape[2]), int(src.shape[1]))[0]
+    b_guide = _box_blur_bhwc(g.unsqueeze(0), blur, device)[0]
+    b_src = _box_blur_bhwc(src, blur, device)
+    w = torch.tensor(weights, device=device, dtype=torch.float32).view(-1, 1, 1, 1)
+    s = src.detach().to(device=device, dtype=torch.float32)
+    res = (s + w * (b_guide.unsqueeze(0) - b_src)).clamp_(0.0, 1.0)
+    out[:cnt] = res.to(device=out.device, dtype=out.dtype)
+
+
+def match_export_opening_grade(
+    body: torch.Tensor,
+    guide: torch.Tensor,
+    *,
+    frames: int = CONTINUITY_EXPORT_GRADE_FRAMES,
+    weight0: float = CONTINUITY_EXPORT_GRADE_WEIGHT,
+    blur: int = CONTINUITY_EXPORT_GRADE_BLUR,
+) -> torch.Tensor:
+    """Match opening lighting/grade of an exported clip to the previous tail.
+
+    Uses low-frequency residual only so pose edges are not copied (no 重影).
+    Applied on per-segment exports because concat seam soften never runs there.
+
+    The weights, the low-frequency residual and the clamp are unchanged from the
+    frame-at-a-time version; only where and how often the blurs run changed.
+    """
+    if (
+        body is None
+        or guide is None
+        or int(body.shape[0]) < 1
+        or int(guide.shape[0]) < 1
+        or int(frames) < 1
+        or float(weight0) <= 0
+        or int(blur) < 3
+    ):
+        return body
+    n = min(int(frames), int(body.shape[0]))
+    last = guide[-1]
+    # The reference loop breaks at the first weight <= 1e-4, leaving the frames
+    # past that point untouched. Collect the same prefix up front.
+    weights: list = []
+    for i in range(n):
+        w = float(weight0) * (1.0 - float(i) / float(n))
+        if w <= 1e-4:
+            break
+        weights.append(w)
+
+    out = body.clone()
+    if weights:
+        try:
+            _grade_pull_batched(out, last, weights, int(blur))
+        except Exception as exc:  # no CUDA / OOM / driver surprise
+            log.warning(
+                "Segment continuity: export opening grade fell back to CPU "
+                "(%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            _grade_pull_cpu(out, last, weights, int(blur))
+    log.info(
+        "Segment continuity: export opening grade %df weight=%.2f blur=%d",
+        n,
+        float(weight0),
+        int(blur),
+    )
+    return out
 
 
 def _soften_body0_toward_prev(

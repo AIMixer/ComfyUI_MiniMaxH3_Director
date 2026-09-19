@@ -34,17 +34,11 @@ def _even(n: int) -> int:
 def _frames_to_rgb_u8(frames: torch.Tensor) -> np.ndarray:
     if not isinstance(frames, torch.Tensor) or frames.ndim != 4:
         raise ValueError(f"Expected NHWC frames tensor, got {type(frames)} shape={getattr(frames, 'shape', None)}")
-    if frames.dtype == torch.uint8:
-        # Already 8-bit [0,255] (uint8 assembly pipeline) — no rescale.
-        arr = frames.detach().cpu().numpy()
-    else:
-        arr = frames.detach().cpu().float().clamp(0.0, 1.0).numpy()
+    arr = frames.detach().cpu().float().clamp(0.0, 1.0).numpy()
     if arr.shape[-1] >= 3:
         arr = arr[..., :3]
     else:
         raise ValueError(f"Expected at least 3 channels, got shape {arr.shape}")
-    if arr.dtype == np.uint8:
-        return arr
     return (arr * 255.0).astype(np.uint8)
 
 
@@ -160,13 +154,24 @@ def write_frames_to_mp4(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        # Pass the payload via communicate(input=...) instead of a manual
-        # stdin.write()+stdin.close(): communicate() flushes stdin again, and
-        # flushing an already-closed pipe raises "ValueError: flush of closed
-        # file". communicate() also ignores BrokenPipeError internally when
-        # ffmpeg exits early, so no extra guard is needed here.
-        _, stderr = proc.communicate(input=rgb.tobytes())
-        if proc.returncode != 0 or not tmp_mp4.is_file() or tmp_mp4.stat().st_size <= 0:
+        # Do not write+close stdin then communicate(): on Linux that raises
+        # ``ValueError: flush of closed file`` after ffmpeg closes the pipe.
+        # communicate(input=) writes and closes once, and drains stderr.
+        raw = np.ascontiguousarray(rgb)
+        try:
+            _stdout, stderr = proc.communicate(input=raw.tobytes())
+        except (BrokenPipeError, ValueError) as exc:
+            # ffmpeg already closed stdin (common after a long rawvideo feed).
+            try:
+                if proc.poll() is None:
+                    proc.wait(timeout=180)
+            except Exception:
+                proc.kill()
+                proc.wait()
+            stderr = b""
+            if not tmp_mp4.is_file() or tmp_mp4.stat().st_size <= 0:
+                raise RuntimeError(f"ffmpeg encode failed: {exc}") from exc
+        if proc.returncode not in (0, None) or not tmp_mp4.is_file() or tmp_mp4.stat().st_size <= 0:
             err = (stderr or b"").decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"ffmpeg encode failed (code={proc.returncode}): {err or 'unknown'}")
 

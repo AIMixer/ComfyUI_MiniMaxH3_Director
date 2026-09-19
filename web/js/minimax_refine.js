@@ -7,11 +7,17 @@ import {
     resolutionFromSelector,
     snapResolutionDim,
 } from "./minimax_gen_timeline.js";
+import { injectExternalGroupsWitness } from "./minimax_external_witness.js";
+import { collectSelfLiftWitness } from "./minimax_selflift.js";
+import { collectSemanticBridgeWitness } from "./minimax_semantic_bridge.js";
 
 const REFINE_CLASS = "MiniMaxH3DirectorRefine";
+const SELFLIFT_CLASS = "MiniMaxH3DirectorSelfLift";
+const SEMANTIC_BRIDGE_CLASS = "MiniMaxH3DirectorSemanticBridge";
 const DIRECTOR_CLASSES = new Set(["MiniMaxH3Director", "ComfyMiniMaxH3Director"]);
 const CACHE_STATUS_WIDGET = "first_pass_cache_status";
 const FOLLOW_DIRECTOR_ASPECT = "跟随导演台";
+const PACKER_CLASSES = new Set([SELFLIFT_CLASS, SEMANTIC_BRIDGE_CLASS]);
 
 function isRefineNode(node) {
     const cls = node?.comfyClass || node?.type || "";
@@ -262,6 +268,109 @@ function directorValue(node, name, fallback) {
     return value == null || value === "" ? fallback : value;
 }
 
+/** Fingerprint key → what the user actually changed. */
+const CACHE_DIFF_LABELS = {
+    seed: "seed",
+    start: "片段起点",
+    end: "片段终点（时间范围变化）",
+    prompt: "提示词",
+    negative: "反向提示词",
+    task_key: "生成模式",
+    width: "宽度",
+    height: "高度",
+    frame_rate: "帧率",
+    output_mode: "输出模式",
+    refs: "参考图片",
+    ref_audios: "参考音频",
+    ref_videos: "参考视频",
+    ref_video: "参考视频",
+    ref_video_start: "参考视频起点",
+    source_video: "源视频",
+    continuity: "段间连续性",
+    continuity_overlap: "上下文帧数",
+    continuity_mode: "引导方式",
+    continuity_redraw: "重绘幅度",
+    continuity_keep_tail: "保完整",
+    cfg: "CFG",
+    steps: "一采步数",
+    sampler: "一采采样器",
+    scheduler: "调度器",
+    sigmas: "一采噪声表",
+    sigmas_source: "一采 SIGMAS 接线",
+    shift_video: "视频 shift",
+    shift_audio: "音频 shift",
+    "<invalid-meta>": "缓存信息损坏",
+    external_wiring: "外接组接线",
+    external_prompt: "外接组提示词",
+    external_length: "外接组时长",
+    external_shift: "外接组时间轴推移",
+    external_media: "外接组参考素材",
+    external_other: "外接组其他参数",
+    external_groups_off: "外接组（缓存写入后接线已断开）",
+    "<unverified-external>": "未记录外接组（旧版写入）",
+    selflift: "SelfLift",
+    sl_split: "SelfLift 分段方式",
+    sl_high: "SelfLift 高清步数",
+    sl_trans: "SelfLift 过渡步",
+    sl_scale: "SelfLift 低清倍率",
+    sl_model: "SelfLift 3D 权重",
+    sl_samp: "SelfLift 采样器",
+    sl_carry: "SelfLift 低清承接",
+    sl_rho: "SelfLift rho",
+    sl_wmin: "SelfLift w_min",
+    sl_wmax: "SelfLift w_max",
+    sl_up: "SelfLift 插值",
+    sl_chunk: "SelfLift 时间分块",
+    sl_tile: "SelfLift 空间分块",
+    sl_tiles: "SelfLift 分块数",
+    sl_overlap: "SelfLift 分块重叠",
+    sl_hires_model: "SelfLift 高清模型",
+    semantic_bridge: "Semantic Bridge",
+    sb_adapter: "Semantic Bridge 权重",
+    sb_alpha: "Semantic Bridge alpha",
+    sb_mag: "Semantic Bridge magnitude_match",
+    refine: "Refine",
+    refine_mode: "二采模式",
+    refine_passes: "二采次数",
+    refine_seed_mode: "二采 seed",
+    refine_target: "二采目标画布",
+    refine_sampler: "二采采样器",
+    refine_sigmas: "二采噪声表",
+    refine_sigmas_wired: "二采 SIGMAS 接线",
+    refine_sample_model: "二采模型",
+    refine_skip_fl2v: "跳过 fl2v 二采",
+};
+
+function diffLabel(key) {
+    return CACHE_DIFF_LABELS[key] || key;
+}
+
+/**
+ * One compact line naming the segments that cannot be reused. 1 group = 1
+ * segment = 1 cache slot, and a segment is compared against its own group only,
+ * so an edit to one group leaves the others matching — listing every segment
+ * would bury that (and the rest of the panel) under a dozen lines.
+ */
+function externalMismatchLine(data) {
+    const rows = Array.isArray(data?.segments) ? data.segments : [];
+    const bad = rows.filter((row) => !row?.matches);
+    if (!bad.length) return "";
+    const reasons = (row) => {
+        const keys = (Array.isArray(row?.diff_keys) ? row.diff_keys : [])
+            .filter((key) => key !== "<missing-cache>");
+        return keys.length ? keys.map(diffLabel).join("、") : "无缓存";
+    };
+    if (bad.length === rows.length && rows.length > 1) {
+        const all = [...new Set(bad.flatMap((row) => reasons(row).split("、")))].join("、");
+        return `不匹配：全部 ${rows.length} 段（${all}）`;
+    }
+    const parts = bad.slice(0, 4).map(
+        (row) => `${row?.slot || `第 ${row?.segment} 段`}（${reasons(row)}）`,
+    );
+    if (bad.length > parts.length) parts.push(`…共 ${bad.length} 段`);
+    return `不匹配：${parts.join("、")}`;
+}
+
 function directorHasSigmasLink(node) {
     const inp = (node?.inputs || []).find((i) => String(i.name) === "sigmas");
     if (!inp) return false;
@@ -269,7 +378,78 @@ function directorHasSigmasLink(node) {
     return Array.isArray(inp.links) && inp.links.length > 0;
 }
 
-function cacheStatusPayload(director) {
+function inputLinked(node, name) {
+    const inp = (node?.inputs || []).find((i) => String(i.name) === name);
+    if (!inp) return false;
+    if (inp.link != null) return true;
+    return Array.isArray(inp.links) && inp.links.length > 0;
+}
+
+function widgetStr(node, name, fallback) {
+    const v = widgetValue(widgetByName(node, name));
+    if (v == null || v === "") return fallback;
+    return String(v);
+}
+
+function widgetNum(node, name, fallback) {
+    const n = Number(widgetValue(widgetByName(node, name)));
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function collectRefineWitness(refine) {
+    if (!refine) return null;
+    return {
+        enabled: true,
+        mode: readMode(refine) || "refine",
+        upscale_method: readUpscaleMethod(refine) || "h3_latent",
+        sampler: widgetStr(refine, "sampler", ""),
+        passes: widgetNum(refine, "passes", 1),
+        seed_mode: widgetStr(refine, "seed_mode", "inherit"),
+        aspect_ratio: widgetStr(refine, "aspect_ratio", FOLLOW_DIRECTOR_ASPECT),
+        megapixels: widgetNum(refine, "megapixels", 1),
+        width: widgetNum(refine, "width", 0),
+        height: widgetNum(refine, "height", 0),
+        skip_fl2v: widgetByName(refine, "skip_fl2v") == null
+            ? true
+            : boolWidgetValue(refine, "skip_fl2v"),
+        confirm_first_pass: boolWidgetValue(refine, "confirm_first_pass"),
+        enable_latent_chunking: boolWidgetValue(refine, "enable_latent_chunking"),
+        enable_tiling: boolWidgetValue(refine, "enable_tiling"),
+        tile_count: widgetNum(refine, "tile_count", 2),
+        tile_overlap: widgetNum(refine, "tile_overlap", 128),
+        latent_upscale_model: widgetStr(refine, "latent_upscale_model", ""),
+        has_sample_model: inputLinked(refine, "refine_model") || inputLinked(refine, "model"),
+        has_upscale_model: inputLinked(refine, "upscale_model"),
+        has_sigmas_tensor: inputLinked(refine, "sigmas"),
+    };
+}
+
+const DIFF_PRIORITY = [
+    "seed",
+    "semantic_bridge",
+    "sb_adapter",
+    "sb_alpha",
+    "sb_mag",
+    "prompt",
+    "end",
+    "height",
+    "width",
+    "refs",
+    "ref_max",
+];
+
+function sortDiffKeys(keys) {
+    return [...keys].sort((a, b) => {
+        const ia = DIFF_PRIORITY.indexOf(a);
+        const ib = DIFF_PRIORITY.indexOf(b);
+        if (ia === -1 && ib === -1) return String(a).localeCompare(String(b));
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+    });
+}
+
+function cacheStatusPayload(director, refine) {
     try {
         director?._minimaxEditor?._writeTimelineWidget?.();
     } catch {
@@ -277,7 +457,12 @@ function cacheStatusPayload(director) {
     }
     return {
         node_id: String(director.id),
-        timeline_data: String(directorValue(director, "timeline_data", "")),
+        // Keep the graph-wired external-group witness current: the status route
+        // runs on the backend where i2v_groups / r2v_groups links are invisible.
+        timeline_data: injectExternalGroupsWitness(
+            director,
+            String(directorValue(director, "timeline_data", "")),
+        ),
         task_type: String(directorValue(director, "task_type", "")),
         global_prompt: String(directorValue(director, "global_prompt", "")),
         total_frames: Number(directorValue(director, "total_frames", 124)),
@@ -293,6 +478,12 @@ function cacheStatusPayload(director) {
         shift_video: Number(directorValue(director, "shift_video", 12)),
         shift_audio: Number(directorValue(director, "shift_audio", 3)),
         sigmas_linked: directorHasSigmasLink(director),
+        // SelfLift is a graph-wired pack, not a Director widget. The run writes
+        // sl_* into first-pass meta; the panel must send the same pack or it
+        // always reports those keys as diffs.
+        selflift: collectSelfLiftWitness(director),
+        semantic_bridge: collectSemanticBridgeWitness(director),
+        refine: collectRefineWitness(refine),
     };
 }
 
@@ -317,54 +508,60 @@ function renderCacheStatus(node, data, kind = "normal") {
     const seeds = Array.isArray(data?.cached_seeds) && data.cached_seeds.length
         ? data.cached_seeds.join(", ")
         : "—";
-    const diffLabels = {
-        seed: "seed",
-        start: "片段起点",
-        end: "片段终点（时间范围变化）",
-        prompt: "提示词",
-        negative: "反向提示词",
-        task_key: "生成模式",
-        width: "宽度",
-        height: "高度",
-        frame_rate: "帧率",
-        output_mode: "输出模式",
-        refs: "参考图片",
-        ref_audios: "参考音频",
-        ref_videos: "参考视频",
-        ref_video: "参考视频",
-        ref_video_start: "参考视频起点",
-        source_video: "源视频",
-        continuity: "段间连续性",
-        continuity_overlap: "上下文帧数",
-        cfg: "CFG",
-        steps: "一采步数",
-        sampler: "一采采样器",
-        scheduler: "调度器",
-        sigmas: "一采噪声表",
-        sigmas_source: "一采 SIGMAS 接线",
-        shift_video: "视频 shift",
-        shift_audio: "音频 shift",
-        "<invalid-meta>": "缓存信息损坏",
-    };
-    const diffs = Array.isArray(data?.diff_keys)
-        ? data.diff_keys
-            .filter((key) => key !== "<missing-cache>")
-            .slice(0, 8)
-            .map((key) => diffLabels[key] || key)
-        : [];
+    const diffLabels = CACHE_DIFF_LABELS;
+    const diffs = sortDiffKeys(
+        (Array.isArray(data?.diff_keys) ? data.diff_keys : [])
+            .filter((key) => key !== "<missing-cache>"),
+    )
+        .slice(0, 12)
+        .map((key) => diffLabels[key] || key);
     const selTotal = data?.selected_total;
     const selMatched = data?.selected_matched;
     const selActive = Number.isFinite(selTotal) && Number(selTotal) !== total;
     const lines = [
         `一采缓存：${data?.exists ? `存在（${cached}/${total} 段）` : "不存在"}`,
-        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`
+        `一采匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`
             + (selActive ? ` · 选中 ${selMatched ?? 0}/${selTotal ?? 0}` : ""),
     ];
+    const confirmOn = Boolean(data?.confirm_first_pass);
+    const canConfirm = Boolean(data?.can_confirm_refine);
+    const confirmReason = String(data?.confirm_refine_reason || "");
+    if (!confirmOn) {
+        lines.push("确认二采：未开启「先确认一采」— Queue 会一采+二采连续跑");
+    } else if (canConfirm) {
+        lines.push("确认二采：可以 — 一采指纹匹配（含 Semantic Bridge），Queue 将跳过一采只跑二采");
+    } else if (confirmReason === "refine_skipped") {
+        lines.push("确认二采：不可以 — 当前选中段不会跑二采（如 skip_fl2v）");
+    } else {
+        lines.push("确认二采：不可以 — 一采指纹不匹配，Queue 只会写一采 / 重跑一采");
+    }
     lines.push(`缓存 seed：${seeds}`);
     lines.push(`当前 seed：${data?.current_seed ?? "—"}`);
     const finalCached = Number(data?.final_cached_count || 0);
-    lines.push(`成片缓存：${finalCached}/${total} 段（含音频；部分重跑会接这里）`);
-    if (diffs.length) lines.push(`差异：${diffs.join(", ")}`);
+    const finalMatched = Number(data?.final_matched_count || 0);
+    lines.push(
+        `成片匹配：${finalMatched}/${total} 段`
+            + (finalCached !== finalMatched ? `（磁盘仍有 ${finalCached} 段旧成片，不会当这一轮二采复用）` : ""),
+    );
+    if (diffs.length) lines.push(`一采差异：${diffs.join("、")}`);
+    if (data?.mode === "external_groups") {
+        // External groups are not on the timeline: each segment is compared
+        // against its own group (prompt / duration / its reference slots) plus
+        // the plan-level knobs.
+        lines.push("核对方式：外接组");
+        const mismatch = externalMismatchLine(data);
+        if (mismatch) lines.push(mismatch);
+    }
+    const unverified = Number(data?.unverified_count || 0);
+    if (unverified > 0) {
+        lines.push(`提示：${unverified} 段缓存未记录外接组信息（旧版写入），这些段会重采一次`);
+    }
+    const staleExternal = Number(data?.stale_external_count || 0);
+    if (staleExternal > 0) {
+        lines.push(
+            `提示：${staleExternal} 段缓存由外接组计划写入，当前未检测到外接组接线，这些段会重采一采`,
+        );
+    }
     ui.body.textContent = lines.join("\n");
 }
 
@@ -383,14 +580,18 @@ async function refreshFirstPassCacheStatus(node) {
         const response = await api.fetchApi("/minimax/director/first_pass_cache_status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(cacheStatusPayload(director)),
+            body: JSON.stringify(cacheStatusPayload(director, node)),
         });
         const data = await response.json();
         if (seq !== node._mmxCacheStatusSeq) return;
         if (!response.ok || data?.error) {
             throw new Error(data?.error || `HTTP ${response.status}`);
         }
-        renderCacheStatus(node, data, data.matches ? "ok" : (data.exists ? "warn" : "muted"));
+        const confirmOn = Boolean(data?.confirm_first_pass);
+        const tone = confirmOn
+            ? (data.can_confirm_refine ? "ok" : (data.exists ? "warn" : "muted"))
+            : (data.matches ? "ok" : (data.exists ? "warn" : "muted"));
+        renderCacheStatus(node, data, tone);
     } catch (error) {
         if (seq !== node._mmxCacheStatusSeq) return;
         renderCacheStatus(node, `缓存检查失败：${error?.message || error}`, "error");
@@ -968,6 +1169,7 @@ function syncRefineWidgetVisibility(node) {
     const showH3Model = latentOnly || (upscale && method === "h3_latent");
     setWidgetVisible(node, "upscale_method", upscale);
     setWidgetVisible(node, "latent_upscale_model", showH3Model);
+    setWidgetVisible(node, "enable_latent_chunking", showH3Model);
     setWidgetVisible(node, "h3_latent_model", false);
     setWidgetVisible(node, "upscale_model", false);
     setWidgetVisible(node, "schedule", false);
@@ -978,6 +1180,10 @@ function syncRefineWidgetVisibility(node) {
     setWidgetVisible(node, "sampler", !latentOnly);
     setWidgetVisible(node, "passes", !latentOnly);
     setWidgetVisible(node, "seed_mode", !latentOnly);
+    setWidgetVisible(node, "enable_tiling", !latentOnly);
+    const tilingOn = !latentOnly && Boolean(widgetValue(widgetByName(node, "enable_tiling")));
+    setWidgetVisible(node, "tile_count", tilingOn);
+    setWidgetVisible(node, "tile_overlap", tilingOn);
     setWidgetVisible(node, "target_width", false);
     setWidgetVisible(node, "target_height", false);
     ensureFirstPassCacheUI(node);
@@ -1021,6 +1227,7 @@ function installRefineResolutionUI(node) {
     };
     hookWidget(node, "mode", () => syncRefineWidgetVisibility(node));
     hookWidget(node, "upscale_method", () => syncRefineWidgetVisibility(node));
+    hookWidget(node, "enable_tiling", () => syncRefineWidgetVisibility(node));
     hookWidget(node, "aspect_ratio", onAspect);
     hookWidget(node, "megapixels", () => syncRefineComputedSize(node));
     hookWidget(node, "width", () => {
@@ -1040,10 +1247,11 @@ function installRefineResolutionUI(node) {
         const prev = node.onWidgetChanged;
         node.onWidgetChanged = function (name, ...rest) {
             const r = prev?.apply(this, [name, ...rest]);
-            if (name === "mode" || name === "upscale_method" || name === "aspect_ratio" || name === "megapixels") {
+            if (name === "mode" || name === "upscale_method" || name === "aspect_ratio" || name === "megapixels" || name === "enable_tiling") {
                 migrateRefineWidgets(this);
                 syncRefineWidgetVisibility(this);
             }
+            scheduleCacheStatusRefresh(this);
             return r;
         };
     }
@@ -1061,6 +1269,18 @@ function refreshAllRefineNodes() {
     const graph = app.graph ?? app.canvas?.graph;
     for (const node of graph?._nodes ?? graph?.nodes ?? []) {
         refreshRefineNode(node);
+    }
+}
+
+/**
+ * Packer (SelfLift / SemanticBridge) edits only change the cache-status
+ * witness. Re-running the full migrate/visibility pass on every Refine node
+ * would reset width/height/megapixels while the user is mid-edit.
+ */
+function scheduleCacheStatusForAllRefineNodes() {
+    const graph = app.graph ?? app.canvas?.graph;
+    for (const node of graph?._nodes ?? graph?.nodes ?? []) {
+        if (isRefineNode(node)) scheduleCacheStatusRefresh(node);
     }
 }
 
@@ -1086,6 +1306,21 @@ app.registerExtension({
             nodeType.prototype.onConnectionsChange = function (...args) {
                 const result = onConnectionsChange?.apply(this, args);
                 refreshCacheStatusForDirector(this);
+                return result;
+            };
+            return;
+        }
+        if (PACKER_CLASSES.has(nodeData?.name)) {
+            const onWidgetChanged = nodeType.prototype.onWidgetChanged;
+            nodeType.prototype.onWidgetChanged = function (...args) {
+                const result = onWidgetChanged?.apply(this, args);
+                scheduleCacheStatusForAllRefineNodes();
+                return result;
+            };
+            const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+            nodeType.prototype.onConnectionsChange = function (...args) {
+                const result = onConnectionsChange?.apply(this, args);
+                scheduleCacheStatusForAllRefineNodes();
                 return result;
             };
             return;
