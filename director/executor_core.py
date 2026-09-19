@@ -13,6 +13,11 @@ from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_e
 from ..lib.task_modes import SUPPORTED_TASK_KEYS
 from ..nodes.conditioning import run_minimax_conditioning
 from .core_sampling import ShiftedModelCache, sample_single_stage
+from .selflift.pack import (
+    selflift_enabled,
+    selflift_will_run,
+)
+from .selflift.sample import sample_selflift_stage
 from .refine_pack import (
     confirm_first_pass_enabled,
     first_pass_sigmas_override,
@@ -67,6 +72,7 @@ from .segment_cache import (
     load_first_pass_av_latent,
     load_first_pass_cache,
     load_first_pass_frames_stale,
+    load_first_pass_low_carry,
     load_segment_audio,
     load_segment_av_latent,
     load_segment_cache,
@@ -108,8 +114,9 @@ def _segment_disk_cache_needed(
     if will_refine or hold_after_first:
         return True
     from .face_refine.pack import face_refine_enabled
+    from .selflift.pack import selflift_enabled as _selflift_on
 
-    if face_refine_enabled(plan):
+    if face_refine_enabled(plan) or _selflift_on(plan):
         return True
     if plan.continuity_enabled:
         return True
@@ -716,6 +723,7 @@ def execute_director_plan_core(
     completed_refine_passes: dict[int, list[tuple[str, torch.Tensor]]] = {}
     completed_av_latents: dict[int, dict] = {}
     completed_first_pass_av: dict[int, dict] = {}
+    completed_low_carry: dict[int, dict] = {}
     completed_av_handoff: dict[int, dict] = {}
     completed_audios: dict[int, dict] = {}
     # Segments actually executed by _run_one_segment in THIS run.
@@ -806,6 +814,7 @@ def execute_director_plan_core(
         prev_tail = None
         prev_av = None
         prev_first_pass_av = None
+        prev_low_carry = None
         prev_audio = None
         prev_end_frame = None
         prev_idx = seg.index - 1
@@ -852,6 +861,13 @@ def execute_director_plan_core(
                 )
                 if prev_first_pass_av is not None:
                     completed_first_pass_av[prev_idx] = prev_first_pass_av
+            prev_low_carry = completed_low_carry.get(prev_idx)
+            if prev_low_carry is None and prev_seg is not None and selflift_enabled(plan):
+                prev_low_carry = load_first_pass_low_carry(
+                    node_id, prev_seg, plan, allow_stale=True
+                )
+                if prev_low_carry is not None:
+                    completed_low_carry[prev_idx] = prev_low_carry
             prev_handoff = completed_av_handoff.get(prev_idx)
             if prev_handoff is None and prev_seg is not None:
                 prev_handoff = load_segment_handoff_meta(
@@ -999,6 +1015,12 @@ def execute_director_plan_core(
             ref_image_size=official_ref_image_size(resolve_ref_image_size(seg, plan)),
         )
         cond_s = time.perf_counter() - t_cond
+
+        from .semantic_bridge import apply_semantic_bridge
+
+        positive, sb_note = apply_semantic_bridge(positive, plan, task_key=seg.task_key)
+        if sb_note:
+            log.info("MiniMax H3 Director: %s", sb_note)
 
         trim_frames = 0
         after_shift = None
@@ -1336,9 +1358,48 @@ def execute_director_plan_core(
             cached_sample = int(cached_h.get("sample_frames") or 0)
             if cached_sample > 0:
                 sample_len = cached_sample
+            cached_low = pre_cache.get("low_carry")
+            if isinstance(cached_low, dict) and "samples" in cached_low:
+                completed_low_carry[seg.index] = cached_low
             reports.append(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: 命中一采缓存 "
                 f"(seed={int(getattr(plan, 'sample_seed', seed) or seed)})，跳过一采，开始二采"
+            )
+        elif selflift_will_run(plan, seg):
+            samples, low_carry = sample_selflift_stage(
+                model=model,
+                positive=positive,
+                negative=negative,
+                latent=latent,
+                seed=seed,
+                cfg=cfg,
+                steps=steps,
+                sampler_name=sampler,
+                scheduler=scheduler,
+                pack=plan.selflift,
+                shift_video=shift_video,
+                shift_audio=shift_audio,
+                sigmas=first_pass_sigmas,
+                on_phase=_report_sample_phase,
+                on_step_preview=_report_step_preview if live_tae_preview else None,
+                preview_every=1,
+                after_shift=after_shift,
+                shift_cache=shift_cache,
+                prev_low_carry=prev_low_carry if use_motion_context else None,
+                pin_frames=trim_frames,
+                prev_end_frame=prev_end_frame,
+                vae=vae,
+                canvas_width=ctx_w,
+                canvas_height=ctx_h,
+            )
+            if isinstance(low_carry, dict) and "samples" in low_carry:
+                completed_low_carry[seg.index] = low_carry
+            sl = plan.selflift or {}
+            reports.append(
+                f"Segment {ui_idx + 1}/{timeline_seg_total}: SelfLift "
+                f"scale={float(sl.get('lowres_scale') or 0):.2f} "
+                f"{sl.get('split_mode') or 'highres_steps'} "
+                f"carry={'on' if sl.get('native_low_carry', True) and use_motion_context else 'off'}"
             )
         else:
             samples = sample_single_stage(
@@ -1415,13 +1476,14 @@ def execute_director_plan_core(
             target_len=target_len,
             keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
         )
-        if (will_refine or continuity_active or run_face_refine) and not skip_first_sample:
+        if (will_refine or continuity_active or run_face_refine or selflift_enabled(plan)) and not skip_first_sample:
             save_first_pass_cache(
                 node_id,
                 seg,
                 plan,
                 av_latent=first_pass_samples,
                 frames=pre_export,
+                low_carry=completed_low_carry.get(seg.index),
                 handoff={
                     "trim_frames": int(trim_frames),
                     "export_frames": int(export_len),
@@ -1591,6 +1653,7 @@ def execute_director_plan_core(
                     "VRAM cleanup before face refine"
                 )
             from .face_refine.runtime import apply_segment_face_refine
+            from .face_refine.track import FACE_REFINE_SKIP_NO_FACE
 
             keep_pre_face = bool(export_pre_face_refine)
             face_in = chunk.detach().cpu().float().contiguous() if keep_pre_face else chunk
@@ -1630,7 +1693,15 @@ def execute_director_plan_core(
                 if next_seg is not None and is_continuity_active(plan, next_seg)
                 else 0
             )
-            if fade_head or fade_tail:
+            face_skipped = str(face_note or "").startswith(FACE_REFINE_SKIP_NO_FACE)
+            if face_skipped:
+                log.warning(
+                    "MiniMax H3 Director segment %d/%d: %s",
+                    ui_idx + 1,
+                    timeline_seg_total,
+                    face_note,
+                )
+            elif fade_head or fade_tail:
                 chunk = fade_stitch_at_seams(
                     chunk, face_in, head_frames=fade_head, tail_frames=fade_tail
                 )
@@ -1760,6 +1831,7 @@ def execute_director_plan_core(
             seg.index,
             completed_av_latents,
             completed_first_pass_av,
+            completed_low_carry,
             completed_refine_passes,
         )
         if export_segments_mode:
@@ -1855,6 +1927,11 @@ def execute_director_plan_core(
             )
             if cached_first is not None:
                 completed_first_pass_av[seg.index] = cached_first
+            cached_low = load_first_pass_low_carry(
+                node_id, seg, plan, allow_stale=True
+            )
+            if cached_low is not None:
+                completed_low_carry[seg.index] = cached_low
             cached_handoff = load_segment_handoff_meta(
                 node_id, seg, plan, allow_stale=used_stale
             )

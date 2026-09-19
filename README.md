@@ -23,6 +23,8 @@
 | **外部多组接线** | `Director Group (Image to Video)` / `(Reference to Video)` + `Groups Combine`；连入导演台 `i2v_groups` / `r2v_groups` 后外部优先覆盖 UI 素材，仍支持跑批与选择运行 |
 | **原生立体声音频** | 与画面同次采样生成；`v2v`/`rv2v` 可选生成声音 / 使用原声 / 静音 |
 | **段间引导** | 默认关闭；多段 `t2v` / `i2v` / `fl2v` / `r2v` / `v2v` / `rv2v` 时可开启，将上一段生成结果的末尾运动（及生成音频）钉入下一段采样再裁掉前缀。上下文帧数：5 / 22 / 39 / 56，**默认推荐为 22**。**感谢 [ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context) 提供的实现思路** |
+| **语义桥 (Semantic Bridge)** | 外接 **MiniMax H3 Director Semantic Bridge** 到导演台 `selflift` 上方的 `semantic_bridge` 口。未接线 = 完全相同。接线后用 student MLP 改写官方 cond token（RMS-norm → 残差混合）。权重自行放到 `models/semantic_bridge/`，本插件不分发；节点里换 adapter 即可在原版与 BUNNY 之间切换，不要串两座桥。原版偏构图/空间/计数等静态关系；BUNNY 偏动作归属与复杂多人。蒸馏于 FL2VA；`r2v` / `v2v` / `rv2v` 为强制兼容，请谨慎使用。参考 [speach1sdef178/MiniMax-H3-Semantic-Bridge](https://huggingface.co/speach1sdef178/MiniMax-H3-Semantic-Bridge)、[JOKER141/BUNNY_H3_Conditioning_Bridge](https://huggingface.co/JOKER141/BUNNY_H3_Conditioning_Bridge) |
+| **渐进一采 (SelfLift)** | 外接 **MiniMax H3 Director SelfLift** 到导演台 `selflift` 口（Refine 上方）。未接线 = 原来的单阶段一采。接线后一采变为低清前缀 + 3D lift + 高清收尾，画布仍是导演台分辨率。Euler。**感谢 [slmonker/selflift-Avatar](https://github.com/slmonker/selflift-Avatar) 提供的实现思路** |
 | **二采 / 放大 (Refine)** | 外接 **MiniMax H3 Director Refine** 到导演台 `refine` 口。未接线 = 原来的单次采样。`refine` = 同分辨率精修；`upscale` = 先放大到目标画布再按 SIGMAS 二采（像素插值 / RTX VSR / H3 latent）；`latent_upscale` = 只放大 H3 latent、不二采。`passes` 可多次精修（upscale 只放大一次）。可选接 `refine_model` 换二采 UNET。`images` 为二采后成片，`images_pre_refine` 为一采（放大前）画面 |
 | **运行报告** | `report` 口输出分段计划、每段任务摘要 |
 | **导演包导入导出** | 工具栏「导入/导出导演包」：zip 内保存时间轴 JSON 与参考图/视频/音频。目录名为英文（`shared_params/`、`asset_groups/01/`、`Picture1`…），与切到 EN 后的界面用语对应，避免路径编码问题 |
@@ -32,7 +34,7 @@
 ### 输入 / 输出
 
 **输入：** `model` → `video_vae` → `audio_vae` → `clip`  
-**可选：** `i2v_groups`（Image to Video 多组）/ `r2v_groups`（Reference to Video 多组）/ `refine`（`MiniMax H3 Director Refine`）
+**可选：** `i2v_groups`（Image to Video 多组）/ `r2v_groups`（Reference to Video 多组）/ `semantic_bridge`（`MiniMax H3 Director Semantic Bridge`）/ `selflift`（`MiniMax H3 Director SelfLift`）/ `refine`（`MiniMax H3 Director Refine`）
 
 **输出：** `images` → `audio` → `fps` → `frame_count` → `source_images` → `report` → `images_pre_refine`
 
@@ -226,6 +228,9 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 - [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) — 权重与文档
 - [NikoDemon80/ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context) — 段间运动/音频续拍思路参考
 - [LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) — H3 3D latent 放大架构与权重格式参考
+- [slmonker/selflift-Avatar](https://github.com/slmonker/selflift-Avatar) — SelfLift 渐进一采思路参考
+- [speach1sdef178/MiniMax-H3-Semantic-Bridge](https://huggingface.co/speach1sdef178/MiniMax-H3-Semantic-Bridge) — Semantic Bridge student 公式与适配器格式参考
+- [JOKER141/BUNNY_H3_Conditioning_Bridge](https://huggingface.co/JOKER141/BUNNY_H3_Conditioning_Bridge) — 同架构的动作逻辑 / 多人场景适配器参考
 
 ## 许可证
 

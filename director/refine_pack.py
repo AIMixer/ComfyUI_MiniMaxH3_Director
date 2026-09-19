@@ -415,6 +415,10 @@ def normalize_refine_pack(
     if not latent_name:
         latent_name = str(raw.get("h3_latent_model") or "").strip()
     upscale = raw.get("upscale_model")
+    # Cache-status witness has no tensors: honor the boolean flags it sends.
+    has_sample = sample_model is not None or bool(raw.get("has_sample_model"))
+    has_upscale = upscale is not None or bool(raw.get("has_upscale_model"))
+    has_sigmas = sigma_tensor is not None or bool(raw.get("has_sigmas_tensor"))
     return {
         "enabled": True,
         "mode": mode,
@@ -427,9 +431,9 @@ def normalize_refine_pack(
         "skip_fl2v": bool(raw.get("skip_fl2v", True)),
         "upscale_method": method,
         "upscale_model": upscale,
-        "has_upscale_model": upscale is not None,
+        "has_upscale_model": has_upscale,
         "sample_model": sample_model,
-        "has_sample_model": sample_model is not None,
+        "has_sample_model": has_sample,
         "latent_upscale_ref": latent_raw,
         "latent_upscale_module": latent_mod,
         "latent_upscale_model": latent_name,
@@ -439,7 +443,7 @@ def normalize_refine_pack(
         "sigmas": ",".join(f"{x:g}" for x in parsed),
         "sigmas_parsed": parsed,
         "sigmas_tensor": sigma_tensor,
-        "has_sigmas_tensor": sigma_tensor is not None,
+        "has_sigmas_tensor": has_sigmas,
         "confirm_first_pass": bool(raw.get("confirm_first_pass", False)),
         "enable_latent_chunking": bool(raw.get("enable_latent_chunking", False)),
         "enable_tiling": bool(raw.get("enable_tiling", False)),

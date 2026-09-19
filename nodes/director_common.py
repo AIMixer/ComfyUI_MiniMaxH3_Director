@@ -250,6 +250,8 @@ def prepare_director_plan(
     unique_id: str | None,
     i2v_groups=None,
     r2v_groups=None,
+    selflift=None,
+    semantic_bridge=None,
     refine=None,
     face_refine=None,
 ):
@@ -293,6 +295,8 @@ def prepare_director_plan(
             height=height,
             ref_max_size=ref_max_size,
         )
+        plan = _attach_selflift(plan, selflift)
+        plan = _attach_semantic_bridge(plan, semantic_bridge)
         plan = _attach_refine(plan, refine)
         plan = _attach_face_refine(plan, face_refine)
         log.info(
@@ -320,9 +324,25 @@ def prepare_director_plan(
         height=height,
         ref_max_size=ref_max_size,
     )
+    plan = _attach_selflift(plan, selflift)
+    plan = _attach_semantic_bridge(plan, semantic_bridge)
     plan = _attach_refine(plan, refine)
     plan = _attach_face_refine(plan, face_refine)
     log.info(plan_summary(plan).replace("\n", " | "))
+    return plan
+
+
+def _attach_selflift(plan, selflift):
+    from ..director.selflift.pack import normalize_selflift_pack
+
+    plan.selflift = normalize_selflift_pack(selflift)
+    return plan
+
+
+def _attach_semantic_bridge(plan, semantic_bridge):
+    from ..director.semantic_bridge import normalize_semantic_bridge_pack
+
+    plan.semantic_bridge = normalize_semantic_bridge_pack(semantic_bridge)
     return plan
 
 

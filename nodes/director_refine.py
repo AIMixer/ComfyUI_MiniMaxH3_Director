@@ -199,8 +199,10 @@ class MiniMaxH3DirectorRefine:
                         "tooltip": (
                             "先确认一采再二采。默认关：一采完立刻二采（与现在相同）。"
                             "开：没有一采缓存时只跑一采并写出缓存/_pre.mp4；"
-                            "已有精确匹配的一采缓存（同一 seed 及一采参数）则跳过一采只跑二采。"
+                            "已有精确匹配的一采缓存（同一 seed、一采参数、SelfLift、"
+                            "Semantic Bridge 接线与 alpha / magnitude_match）则跳过一采只跑二采。"
                             "seed 请用 fixed，或第二次 Queue 前改回写出缓存时的 seed。"
+                            "Refine 面板「确认二采」与执行层用同一套指纹，不一致时不会跳过一采。"
                         ),
                     },
                 ),

@@ -8,11 +8,16 @@ import {
     snapResolutionDim,
 } from "./minimax_gen_timeline.js";
 import { injectExternalGroupsWitness } from "./minimax_external_witness.js";
+import { collectSelfLiftWitness } from "./minimax_selflift.js";
+import { collectSemanticBridgeWitness } from "./minimax_semantic_bridge.js";
 
 const REFINE_CLASS = "MiniMaxH3DirectorRefine";
+const SELFLIFT_CLASS = "MiniMaxH3DirectorSelfLift";
+const SEMANTIC_BRIDGE_CLASS = "MiniMaxH3DirectorSemanticBridge";
 const DIRECTOR_CLASSES = new Set(["MiniMaxH3Director", "ComfyMiniMaxH3Director"]);
 const CACHE_STATUS_WIDGET = "first_pass_cache_status";
 const FOLLOW_DIRECTOR_ASPECT = "跟随导演台";
+const PACKER_CLASSES = new Set([SELFLIFT_CLASS, SEMANTIC_BRIDGE_CLASS]);
 
 function isRefineNode(node) {
     const cls = node?.comfyClass || node?.type || "";
@@ -289,6 +294,37 @@ const CACHE_DIFF_LABELS = {
     external_other: "外接组其他参数",
     external_groups_off: "外接组（缓存写入后接线已断开）",
     "<unverified-external>": "未记录外接组（旧版写入）",
+    selflift: "SelfLift",
+    sl_split: "SelfLift 分段方式",
+    sl_high: "SelfLift 高清步数",
+    sl_trans: "SelfLift 过渡步",
+    sl_scale: "SelfLift 低清倍率",
+    sl_model: "SelfLift 3D 权重",
+    sl_samp: "SelfLift 采样器",
+    sl_carry: "SelfLift 低清承接",
+    sl_rho: "SelfLift rho",
+    sl_wmin: "SelfLift w_min",
+    sl_wmax: "SelfLift w_max",
+    sl_up: "SelfLift 插值",
+    sl_chunk: "SelfLift 时间分块",
+    sl_tile: "SelfLift 空间分块",
+    sl_tiles: "SelfLift 分块数",
+    sl_overlap: "SelfLift 分块重叠",
+    sl_hires_model: "SelfLift 高清模型",
+    semantic_bridge: "Semantic Bridge",
+    sb_adapter: "Semantic Bridge 权重",
+    sb_alpha: "Semantic Bridge alpha",
+    sb_mag: "Semantic Bridge magnitude_match",
+    refine: "Refine",
+    refine_mode: "二采模式",
+    refine_passes: "二采次数",
+    refine_seed_mode: "二采 seed",
+    refine_target: "二采目标画布",
+    refine_sampler: "二采采样器",
+    refine_sigmas: "二采噪声表",
+    refine_sigmas_wired: "二采 SIGMAS 接线",
+    refine_sample_model: "二采模型",
+    refine_skip_fl2v: "跳过 fl2v 二采",
 };
 
 function diffLabel(key) {
@@ -328,7 +364,78 @@ function directorHasSigmasLink(node) {
     return Array.isArray(inp.links) && inp.links.length > 0;
 }
 
-function cacheStatusPayload(director) {
+function inputLinked(node, name) {
+    const inp = (node?.inputs || []).find((i) => String(i.name) === name);
+    if (!inp) return false;
+    if (inp.link != null) return true;
+    return Array.isArray(inp.links) && inp.links.length > 0;
+}
+
+function widgetStr(node, name, fallback) {
+    const v = widgetValue(widgetByName(node, name));
+    if (v == null || v === "") return fallback;
+    return String(v);
+}
+
+function widgetNum(node, name, fallback) {
+    const n = Number(widgetValue(widgetByName(node, name)));
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function collectRefineWitness(refine) {
+    if (!refine) return null;
+    return {
+        enabled: true,
+        mode: readMode(refine) || "refine",
+        upscale_method: readUpscaleMethod(refine) || "h3_latent",
+        sampler: widgetStr(refine, "sampler", ""),
+        passes: widgetNum(refine, "passes", 1),
+        seed_mode: widgetStr(refine, "seed_mode", "inherit"),
+        aspect_ratio: widgetStr(refine, "aspect_ratio", FOLLOW_DIRECTOR_ASPECT),
+        megapixels: widgetNum(refine, "megapixels", 1),
+        width: widgetNum(refine, "width", 0),
+        height: widgetNum(refine, "height", 0),
+        skip_fl2v: widgetByName(refine, "skip_fl2v") == null
+            ? true
+            : boolWidgetValue(refine, "skip_fl2v"),
+        confirm_first_pass: boolWidgetValue(refine, "confirm_first_pass"),
+        enable_latent_chunking: boolWidgetValue(refine, "enable_latent_chunking"),
+        enable_tiling: boolWidgetValue(refine, "enable_tiling"),
+        tile_count: widgetNum(refine, "tile_count", 2),
+        tile_overlap: widgetNum(refine, "tile_overlap", 128),
+        latent_upscale_model: widgetStr(refine, "latent_upscale_model", ""),
+        has_sample_model: inputLinked(refine, "refine_model") || inputLinked(refine, "model"),
+        has_upscale_model: inputLinked(refine, "upscale_model"),
+        has_sigmas_tensor: inputLinked(refine, "sigmas"),
+    };
+}
+
+const DIFF_PRIORITY = [
+    "seed",
+    "semantic_bridge",
+    "sb_adapter",
+    "sb_alpha",
+    "sb_mag",
+    "prompt",
+    "end",
+    "height",
+    "width",
+    "refs",
+    "ref_max",
+];
+
+function sortDiffKeys(keys) {
+    return [...keys].sort((a, b) => {
+        const ia = DIFF_PRIORITY.indexOf(a);
+        const ib = DIFF_PRIORITY.indexOf(b);
+        if (ia === -1 && ib === -1) return String(a).localeCompare(String(b));
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+    });
+}
+
+function cacheStatusPayload(director, refine) {
     try {
         director?._minimaxEditor?._writeTimelineWidget?.();
     } catch {
@@ -357,6 +464,12 @@ function cacheStatusPayload(director) {
         shift_video: Number(directorValue(director, "shift_video", 12)),
         shift_audio: Number(directorValue(director, "shift_audio", 3)),
         sigmas_linked: directorHasSigmasLink(director),
+        // SelfLift is a graph-wired pack, not a Director widget. The run writes
+        // sl_* into first-pass meta; the panel must send the same pack or it
+        // always reports those keys as diffs.
+        selflift: collectSelfLiftWitness(director),
+        semantic_bridge: collectSemanticBridgeWitness(director),
+        refine: collectRefineWitness(refine),
     };
 }
 
@@ -382,25 +495,41 @@ function renderCacheStatus(node, data, kind = "normal") {
         ? data.cached_seeds.join(", ")
         : "—";
     const diffLabels = CACHE_DIFF_LABELS;
-    const diffs = Array.isArray(data?.diff_keys)
-        ? data.diff_keys
-            .filter((key) => key !== "<missing-cache>")
-            .slice(0, 8)
-            .map((key) => diffLabels[key] || key)
-        : [];
+    const diffs = sortDiffKeys(
+        (Array.isArray(data?.diff_keys) ? data.diff_keys : [])
+            .filter((key) => key !== "<missing-cache>"),
+    )
+        .slice(0, 12)
+        .map((key) => diffLabels[key] || key);
     const selTotal = data?.selected_total;
     const selMatched = data?.selected_matched;
     const selActive = Number.isFinite(selTotal) && Number(selTotal) !== total;
     const lines = [
         `一采缓存：${data?.exists ? `存在（${cached}/${total} 段）` : "不存在"}`,
-        `当前匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`
+        `一采匹配：${data?.matches ? `是（${matched}/${total} 段）` : "否"}`
             + (selActive ? ` · 选中 ${selMatched ?? 0}/${selTotal ?? 0}` : ""),
     ];
+    const confirmOn = Boolean(data?.confirm_first_pass);
+    const canConfirm = Boolean(data?.can_confirm_refine);
+    const confirmReason = String(data?.confirm_refine_reason || "");
+    if (!confirmOn) {
+        lines.push("确认二采：未开启「先确认一采」— Queue 会一采+二采连续跑");
+    } else if (canConfirm) {
+        lines.push("确认二采：可以 — 一采指纹匹配（含 Semantic Bridge），Queue 将跳过一采只跑二采");
+    } else if (confirmReason === "refine_skipped") {
+        lines.push("确认二采：不可以 — 当前选中段不会跑二采（如 skip_fl2v）");
+    } else {
+        lines.push("确认二采：不可以 — 一采指纹不匹配，Queue 只会写一采 / 重跑一采");
+    }
     lines.push(`缓存 seed：${seeds}`);
     lines.push(`当前 seed：${data?.current_seed ?? "—"}`);
     const finalCached = Number(data?.final_cached_count || 0);
-    lines.push(`成片缓存：${finalCached}/${total} 段（含音频；部分重跑会接这里）`);
-    if (diffs.length) lines.push(`差异：${diffs.join("、")}`);
+    const finalMatched = Number(data?.final_matched_count || 0);
+    lines.push(
+        `成片匹配：${finalMatched}/${total} 段`
+            + (finalCached !== finalMatched ? `（磁盘仍有 ${finalCached} 段旧成片，不会当这一轮二采复用）` : ""),
+    );
+    if (diffs.length) lines.push(`一采差异：${diffs.join("、")}`);
     if (data?.mode === "external_groups") {
         // External groups are not on the timeline: each segment is compared
         // against its own group (prompt / duration / its reference slots) plus
@@ -437,14 +566,18 @@ async function refreshFirstPassCacheStatus(node) {
         const response = await api.fetchApi("/minimax/director/first_pass_cache_status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(cacheStatusPayload(director)),
+            body: JSON.stringify(cacheStatusPayload(director, node)),
         });
         const data = await response.json();
         if (seq !== node._mmxCacheStatusSeq) return;
         if (!response.ok || data?.error) {
             throw new Error(data?.error || `HTTP ${response.status}`);
         }
-        renderCacheStatus(node, data, data.matches ? "ok" : (data.exists ? "warn" : "muted"));
+        const confirmOn = Boolean(data?.confirm_first_pass);
+        const tone = confirmOn
+            ? (data.can_confirm_refine ? "ok" : (data.exists ? "warn" : "muted"))
+            : (data.matches ? "ok" : (data.exists ? "warn" : "muted"));
+        renderCacheStatus(node, data, tone);
     } catch (error) {
         if (seq !== node._mmxCacheStatusSeq) return;
         renderCacheStatus(node, `缓存检查失败：${error?.message || error}`, "error");
@@ -511,7 +644,7 @@ function ensureFirstPassCacheUI(node) {
     const widget = node.addDOMWidget(CACHE_STATUS_WIDGET, "cache_status", root, {
         getValue: () => "",
         setValue: () => {},
-        getMinHeight: () => 148,
+        getMinHeight: () => 188,
         hideOnZoom: false,
     });
     // Status is derived UI, not a positional backend widget value.
@@ -646,6 +779,7 @@ function installRefineResolutionUI(node) {
                 migrateRefineWidgets(this);
                 syncRefineWidgetVisibility(this);
             }
+            scheduleCacheStatusRefresh(this);
             return r;
         };
     }
@@ -688,6 +822,21 @@ app.registerExtension({
             nodeType.prototype.onConnectionsChange = function (...args) {
                 const result = onConnectionsChange?.apply(this, args);
                 refreshCacheStatusForDirector(this);
+                return result;
+            };
+            return;
+        }
+        if (PACKER_CLASSES.has(nodeData?.name)) {
+            const onWidgetChanged = nodeType.prototype.onWidgetChanged;
+            nodeType.prototype.onWidgetChanged = function (...args) {
+                const result = onWidgetChanged?.apply(this, args);
+                refreshAllRefineNodes();
+                return result;
+            };
+            const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+            nodeType.prototype.onConnectionsChange = function (...args) {
+                const result = onConnectionsChange?.apply(this, args);
+                refreshAllRefineNodes();
                 return result;
             };
             return;

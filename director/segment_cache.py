@@ -262,6 +262,12 @@ def first_pass_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[s
     else:
         fp["steps"] = int(getattr(plan, "sample_steps", 25) or 25)
         fp["scheduler"] = str(getattr(plan, "sample_scheduler", "") or "")
+    from .selflift.pack import selflift_fingerprint
+
+    fp.update(selflift_fingerprint(plan))
+    from .semantic_bridge import semantic_bridge_fingerprint
+
+    fp.update(semantic_bridge_fingerprint(plan))
     return fp
 
 
@@ -274,6 +280,12 @@ def segment_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str,
     from .face_refine.pack import face_refine_fingerprint
 
     fp.update(face_refine_fingerprint(plan))
+    from .selflift.pack import selflift_fingerprint
+
+    fp.update(selflift_fingerprint(plan))
+    from .semantic_bridge import semantic_bridge_fingerprint
+
+    fp.update(semantic_bridge_fingerprint(plan))
     return fp
 
 
@@ -434,6 +446,77 @@ def _fingerprint_diff_keys(stored: Any, expected: dict[str, Any]) -> list[str]:
     return [k for k in keys if stored.get(k) != expected.get(k)]
 
 
+def _inspect_drop_keys(plan, *, first_pass: bool = True) -> set[str]:
+    """Keys the status panel cannot reconstruct (linked SIGMAS tensors)."""
+    drop: set[str] = set()
+    if first_pass and getattr(plan, "sample_sigmas_linked", False):
+        drop.add("sigmas")
+    pack = getattr(plan, "refine", None)
+    if isinstance(pack, dict) and pack.get("has_sigmas_tensor"):
+        parsed = pack.get("sigmas_parsed") or ()
+        if not parsed and not (pack.get("sigmas") or ""):
+            drop.add("refine_sigmas")
+    return drop
+
+
+def _cmp_inspect_fingerprints(
+    stored: Any,
+    expected: dict[str, Any],
+    *,
+    drop_keys: set[str] | frozenset[str] = frozenset(),
+) -> tuple[bool, list[str]]:
+    if not isinstance(stored, dict):
+        return False, ["<invalid-meta>"]
+    stored_cmp = {k: v for k, v in stored.items() if k not in drop_keys}
+    expected_cmp = {k: v for k, v in expected.items() if k not in drop_keys}
+    return stored_cmp == expected_cmp, _fingerprint_diff_keys(stored_cmp, expected_cmp)
+
+
+def _stamp_confirm_refine(result: dict[str, Any], plan: DirectorPlan) -> dict[str, Any]:
+    """Same gate as executor: confirm_first + first-pass exact match + refine will run.
+
+    ``can_confirm_refine`` is what Refine's panel must show as「确认二采」.
+    """
+    from .refine_pack import confirm_first_pass_enabled, refine_will_sample
+
+    confirm = confirm_first_pass_enabled(plan)
+    rows = list(result.get("segments") or [])
+    selected = [row for row in rows if row.get("selected")]
+    if not selected:
+        selected = rows
+    first_ok = bool(selected) and all(bool(row.get("matches")) for row in selected)
+    segs = list(getattr(plan, "segments", None) or [])
+    will = False
+    saw_seg = False
+    for row in selected:
+        raw_idx = row.get("index")
+        if raw_idx is None:
+            raw_idx = int(row.get("segment") or 1) - 1
+        try:
+            idx = int(raw_idx)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(segs):
+            saw_seg = True
+            if refine_will_sample(plan, segs[idx]):
+                will = True
+    if not saw_seg:
+        pack = getattr(plan, "refine", None)
+        will = isinstance(pack, dict) and bool(pack.get("enabled"))
+    if not confirm:
+        reason = "confirm_off"
+    elif not will:
+        reason = "refine_skipped"
+    elif not first_ok:
+        reason = "first_pass_mismatch"
+    else:
+        reason = "ok"
+    result["confirm_first_pass"] = confirm
+    result["can_confirm_refine"] = bool(confirm and first_ok and will)
+    result["confirm_refine_reason"] = reason
+    return result
+
+
 def load_segment_handoff_meta(
     node_id: str | None,
     seg: SegmentPlan,
@@ -524,6 +607,42 @@ def load_first_pass_av_latent(
         return payload
     except Exception as exc:
         log.debug("Segment %d first-pass AV latent skipped: %s", idx + 1, exc)
+        return None
+
+
+def load_first_pass_low_carry(
+    node_id: str | None,
+    seg: SegmentPlan,
+    plan: DirectorPlan,
+    *,
+    allow_stale: bool = False,
+) -> dict | None:
+    """Load SelfLift native low-res carry (``.pre.low.pt``). Missing file = None."""
+    if not node_id:
+        return None
+    root = _cache_root(node_id)
+    if root is None:
+        return None
+    idx = seg.index
+    meta_path = root / f"seg_{idx:04d}.pre.meta.json"
+    low_path = root / f"seg_{idx:04d}.pre.low.pt"
+    if not low_path.is_file():
+        return None
+    try:
+        if meta_path.is_file():
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = first_pass_cache_fingerprint(seg, plan)
+            if stored != expected:
+                if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
+                    return None
+                if not allow_stale:
+                    return None
+        payload = torch.load(low_path, map_location="cpu", weights_only=False)
+        if not isinstance(payload, dict) or "samples" not in payload:
+            return None
+        return payload
+    except Exception as exc:
+        log.debug("Segment %d SelfLift low-carry skipped: %s", idx + 1, exc)
         return None
 
 
@@ -692,6 +811,7 @@ def save_first_pass_cache(
     av_latent: dict | None = None,
     frames: torch.Tensor | None = None,
     handoff: dict[str, Any] | None = None,
+    low_carry: dict | None = None,
 ) -> None:
     """Persist first-pass AV latent for confirm-then-refine. Never raises."""
     if not node_id:
@@ -707,6 +827,7 @@ def save_first_pass_cache(
     latent_path = root / f"seg_{idx:04d}.pre.av.pt"
     frames_path = root / f"seg_{idx:04d}.pre.pt"
     handoff_path = root / f"seg_{idx:04d}.pre.handoff.json"
+    low_path = root / f"seg_{idx:04d}.pre.low.pt"
     try:
         cpu_latent = _av_latent_to_cpu(av_latent)
         _write_via_temp(latent_path, lambda p: torch.save(cpu_latent, p))
@@ -723,6 +844,11 @@ def save_first_pass_cache(
         if isinstance(frames, torch.Tensor) and frames.numel() > 0:
             payload = _frames_to_disk(frames)
             _write_via_temp(frames_path, lambda p: torch.save(payload, p))
+        if isinstance(low_carry, dict) and "samples" in low_carry:
+            cpu_low = _av_latent_to_cpu(low_carry)
+            _write_via_temp(low_path, lambda p: torch.save(cpu_low, p))
+        elif low_path.is_file():
+            _safe_unlink(low_path)
         log.debug(
             "Cached first-pass segment %d for node %s (seed=%s)",
             idx + 1,
@@ -839,6 +965,7 @@ def load_first_pass_cache(
     latent_path = root / f"seg_{idx:04d}.pre.av.pt"
     frames_path = root / f"seg_{idx:04d}.pre.pt"
     handoff_path = root / f"seg_{idx:04d}.pre.handoff.json"
+    low_path = root / f"seg_{idx:04d}.pre.low.pt"
     if not meta_path.is_file() or not latent_path.is_file():
         return None
     try:
@@ -882,7 +1009,15 @@ def load_first_pass_cache(
                     handoff = data
             except Exception:
                 handoff = {}
-        return {"av_latent": payload, "frames": frames, "handoff": handoff}
+        low_carry = None
+        if low_path.is_file():
+            try:
+                loaded_low = torch.load(low_path, map_location="cpu", weights_only=False)
+                if isinstance(loaded_low, dict) and "samples" in loaded_low:
+                    low_carry = loaded_low
+            except Exception as exc:
+                log.debug("Segment %d first-pass low-carry skipped: %s", idx + 1, exc)
+        return {"av_latent": payload, "frames": frames, "handoff": handoff, "low_carry": low_carry}
     except Exception as exc:
         log.warning("Failed to load segment %d first-pass cache: %s", idx + 1, exc)
         return None
@@ -1148,6 +1283,10 @@ def _inspect_external_group_cache(
         "selected_cached": 0,
         "selected_matched": 0,
         "final_cached_count": 0,
+        "final_matched_count": 0,
+        "can_confirm_refine": False,
+        "confirm_first_pass": False,
+        "confirm_refine_reason": "confirm_off",
         "diff_keys": [],
         "segments": [],
         "mode": "external_groups",
@@ -1313,7 +1452,7 @@ def _inspect_external_group_cache(
     # Only the group list knows the true segment count; the disk scan does not.
     if local_slots:
         result["count_source"] = "cache_files"
-    return result
+    return _stamp_confirm_refine(result, plan)
 
 
 def inspect_first_pass_cache(
@@ -1325,8 +1464,10 @@ def inspect_first_pass_cache(
     """Inspect first-pass cache files without loading their tensor payloads.
 
     Always walks the whole timeline so「选择运行」unselected slots stay visible.
-    ``final_cached_count`` is file presence only (``seg_XXXX.pt``), not a
-    fingerprint match — Refine knobs are not on this status request.
+    First-pass match (incl. Semantic Bridge) is the same gate the executor uses
+    to skip 一采 and run 二采 when「先确认一采」is on. ``can_confirm_refine``
+    must stay aligned with that. ``final_matched_count`` compares成片 meta
+    against ``segment_cache_fingerprint`` (file presence alone is not reuse).
 
     ``external_groups``: wiring witness of graph-wired ``i2v_groups`` /
     ``r2v_groups``. When present the group-derived keys cannot be rebuilt from
@@ -1349,6 +1490,11 @@ def inspect_first_pass_cache(
         "selected_cached": 0,
         "selected_matched": 0,
         "final_cached_count": 0,
+        "final_matched_count": 0,
+        "final_diff_keys": [],
+        "can_confirm_refine": False,
+        "confirm_first_pass": False,
+        "confirm_refine_reason": "confirm_off",
         "diff_keys": [],
         "segments": [],
         "mode": "timeline",
@@ -1365,6 +1511,7 @@ def inspect_first_pass_cache(
 
     cached_seeds: set[int] = set()
     all_diffs: set[str] = set()
+    all_final_diffs: set[str] = set()
     rows: list[dict[str, Any]] = []
     final_cached = 0
     stale_external = 0
@@ -1376,8 +1523,6 @@ def inspect_first_pass_cache(
         meta_exists = meta_path.is_file()
         latent_exists = latent_path.is_file()
         cache_exists = meta_exists and latent_exists
-        if (root / f"seg_{idx:04d}.pt").is_file():
-            final_cached += 1
         stored: Any = None
         read_error = ""
         if meta_exists:
@@ -1387,16 +1532,11 @@ def inspect_first_pass_cache(
                 read_error = str(exc)
 
         expected = first_pass_cache_fingerprint(seg, plan)
-        stored_cmp = stored
-        expected_cmp = expected
-        if getattr(plan, "sample_sigmas_linked", False) and isinstance(stored, dict):
-            stored_cmp = {k: v for k, v in stored.items() if k != "sigmas"}
-            expected_cmp = {k: v for k, v in expected.items() if k != "sigmas"}
-        matches = bool(
-            cache_exists
-            and isinstance(stored, dict)
-            and stored_cmp == expected_cmp
-        )
+        drop_first = _inspect_drop_keys(plan, first_pass=True)
+        fp_match, fp_diff = _cmp_inspect_fingerprints(
+            stored, expected, drop_keys=drop_first,
+        ) if isinstance(stored, dict) else (False, ["<invalid-meta>"] if meta_exists else ["<missing-cache>"])
+        matches = bool(cache_exists and fp_match)
         # A row stamped with an external-group witness was written by a group
         # run, while this request has no group input at all (link removed, or a
         # queued/API submit). Such a row can never be reused, and the UI-card
@@ -1406,10 +1546,26 @@ def inspect_first_pass_cache(
         if stale_external_row:
             diff = ["external_groups_off"]
             stale_external += 1
-        elif isinstance(stored, dict):
-            diff = _fingerprint_diff_keys(stored_cmp, expected_cmp)
+            matches = False
         else:
-            diff = ["<invalid-meta>"] if meta_exists else ["<missing-cache>"]
+            diff = fp_diff
+        final_path = root / f"seg_{idx:04d}.pt"
+        final_meta_path = root / f"seg_{idx:04d}.meta.json"
+        final_exists = final_path.is_file()
+        final_match = False
+        final_diff: list[str] = []
+        if final_exists and final_meta_path.is_file():
+            try:
+                stored_final = json.loads(final_meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                stored_final = None
+            expected_final = segment_cache_fingerprint(seg, plan)
+            drop_final = _inspect_drop_keys(plan, first_pass=False)
+            final_match, final_diff = _cmp_inspect_fingerprints(
+                stored_final, expected_final, drop_keys=drop_final,
+            )
+        elif final_exists:
+            final_diff = ["<invalid-meta>"]
         if not cache_exists:
             status = "missing"
         elif matches:
@@ -1424,21 +1580,29 @@ def inspect_first_pass_cache(
         except (TypeError, ValueError):
             cached_seed = None
         all_diffs.update(diff)
+        all_final_diffs.update(final_diff)
+        if final_exists:
+            final_cached += 1
         rows.append(
             {
                 "segment": idx + 1,
+                "index": idx,
                 "exists": cache_exists,
                 "matches": matches,
                 "status": status,
                 "selected": is_selected,
                 "cached_seed": cached_seed,
                 "diff_keys": diff,
+                "final_exists": final_exists,
+                "final_matches": final_match,
+                "final_diff_keys": final_diff,
                 "error": read_error,
             }
         )
 
     cached_count = sum(1 for row in rows if row["exists"])
     matched_count = sum(1 for row in rows if row["matches"])
+    final_matched = sum(1 for row in rows if row.get("final_matches"))
     selected_rows = [row for row in rows if row["selected"]]
     selected_total = len(selected_rows) if selected_set is not None else len(rows)
     total = len(rows)
@@ -1453,12 +1617,14 @@ def inspect_first_pass_cache(
             "selected_cached": sum(1 for row in selected_rows if row["exists"]),
             "selected_matched": sum(1 for row in selected_rows if row["matches"]),
             "final_cached_count": final_cached,
+            "final_matched_count": final_matched,
+            "final_diff_keys": sorted(all_final_diffs),
             "diff_keys": sorted(all_diffs),
             "segments": rows,
             "stale_external_count": stale_external,
         }
     )
-    return result
+    return _stamp_confirm_refine(result, plan)
 
 
 def clear_segment_cache(node_id: str | None, kind: str = "final") -> int:
