@@ -454,9 +454,18 @@ def execute_director_plan_core(
     live_tae_preview = raw_live in (True, 1, "1", "true", "True", "on")
 
     all_segments = plan.segments
-    # Drop caches for deleted/shortened timelines. Use every segment index (not
-    # run_indices): unselected「选择运行」slots still fill merge/export from disk.
-    prune_segment_cache(node_id, [seg.index for seg in all_segments])
+    # Full runs can prune slots deleted from the timeline. Partial runs are
+    # append-only: the frontend may submit only the currently selected group
+    # while another Queue is filling the remaining slots, so pruning here would
+    # erase already completed .pre.* caches from earlier selections.
+    if plan.run_indices is None:
+        prune_segment_cache(node_id, [seg.index for seg in all_segments])
+    else:
+        log.info(
+            "Partial run: preserving existing segment caches before sampling "
+            "(%d selected segment(s)).",
+            len(plan.run_indices),
+        )
     # Strictly honor「选择运行」— never force-sample unselected segments.
     run_indices = plan.run_indices if plan.run_indices is not None else frozenset(range(len(all_segments)))
 
@@ -1298,7 +1307,13 @@ def execute_director_plan_core(
             target_len=target_len,
             keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
         )
-        if (will_refine or continuity_active or run_face_refine or selflift_enabled(plan)) and not skip_first_sample:
+        if (
+            will_refine
+            or continuity_active
+            or run_face_refine
+            or selflift_enabled(plan)
+            or plan.run_indices is not None
+        ) and not skip_first_sample:
             save_first_pass_cache(
                 node_id,
                 seg,
