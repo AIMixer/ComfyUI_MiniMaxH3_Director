@@ -15,6 +15,7 @@ import {
     imageBatchRequiresFixedOutput,
     isContinuityMasterEnabled,
     isCustomAspectRatio,
+    isKeepAspectRatio,
     isPromptBatchTask,
     isSegmentContinuityFromPrev,
     isVideoBatchTask,
@@ -23,6 +24,8 @@ import {
     MAX_REFERENCE_IMAGES,
     MAX_REFERENCE_VIDEOS,
     MINIMAX_CANVAS_MULTIPLE,
+    KEEP_ASPECT_RATIO,
+    keepAspectResolution,
     minFrameCount,
     newBatchSegment,
     NO_VIDEO_UPLOAD_TASKS,
@@ -2901,6 +2904,7 @@ class MiniMaxH3DirectorEditor {
             </span>
             <label data-i18n="output.resolution">输出分辨率</label>
             <select class="bd-select" data-r="out-aspect" data-i18n-title="tooltip.aspectRatio" style="max-width:200px">
+                <option value="${KEEP_ASPECT_RATIO}">${aspectDisplayLabel(KEEP_ASPECT_RATIO)}</option>
                 ${RESOLUTION_ASPECTS.map(([label]) => `<option value="${label}"${label === DEFAULT_ASPECT_RATIO ? " selected" : ""}>${aspectDisplayLabel(label)}</option>`).join("")}
                 <option value="${CUSTOM_ASPECT_RATIO}">${aspectDisplayLabel(CUSTOM_ASPECT_RATIO)}</option>
             </select>
@@ -6414,6 +6418,9 @@ class MiniMaxH3DirectorEditor {
         if (isCustomAspectRatio(ar)) {
             return this.applyCustomResolution(out.width, out.height);
         }
+        if (isKeepAspectRatio(ar)) {
+            return this.applyKeepAspectResolution(megapixels);
+        }
         const resolved = resolutionFromSelector(
             ar,
             megapixels ?? out.megapixels ?? this.outMp?.value ?? DEFAULT_MEGAPIXELS,
@@ -6443,6 +6450,59 @@ class MiniMaxH3DirectorEditor {
             this.outMp.value = String(resolved.megapixels);
         }
         return resolved;
+    }
+
+    /**
+     * 跟随图片 / Keep aspect ratio: the canvas takes the first picture's shape at the
+     * megapixel budget. With no picture yet (or t2v) the current width × height stay;
+     * the backend works it out again from the picture file at run time.
+     */
+    applyKeepAspectResolution(megapixels = null) {
+        const out = this.timeline.output || {};
+        const mult = out.multiple ?? MINIMAX_CANVAS_MULTIPLE;
+        const mp = clampMegapixels(megapixels ?? out.megapixels ?? this.outMp?.value ?? DEFAULT_MEGAPIXELS);
+        const source = this.getKeepAspectSourceDimensions();
+        const kept = keepAspectResolution(source.width, source.height, mp, mult);
+        const width = kept ? kept.width : snapResolutionDim(out.width ?? this.widthWidget?.value ?? 864, mult);
+        const height = kept ? kept.height : snapResolutionDim(out.height ?? this.heightWidget?.value ?? 480, mult);
+        this.timeline.output = {
+            ...out,
+            mode: "fixed",
+            aspectRatio: KEEP_ASPECT_RATIO,
+            megapixels: mp,
+            multiple: mult,
+            width,
+            height,
+            longEdge: Math.max(width, height),
+        };
+        if (this.widthWidget) this.widthWidget.value = width;
+        if (this.heightWidget) this.heightWidget.value = height;
+        if (this.refMaxWidget) this.refMaxWidget.value = Math.max(width, height);
+        if (this.outW) this.outW.value = String(width);
+        if (this.outH) this.outH.value = String(height);
+        if (this.outAspect) this.outAspect.value = KEEP_ASPECT_RATIO;
+        if (this.outMp && document.activeElement !== this.outMp) {
+            this.outMp.value = String(mp);
+        }
+        return { width, height, megapixels: mp, aspectRatio: KEEP_ASPECT_RATIO, multiple: mult, fromPicture: !!kept, source };
+    }
+
+    /** Size of the first picture the run uses (the backend picks the same one): (0, 0) when unknown. */
+    getKeepAspectSourceDimensions() {
+        const tl = this.timeline || {};
+        const segs = [];
+        for (const seg of tl.segments || []) segs.push(seg.genImage, seg.startImage, ...(seg.refs || []));
+        const shots = [];
+        for (const shot of tl.shots || []) shots.push(shot.startImage, shot.endImage);
+        const globals = [tl.global?.genImage, ...(tl.global?.refs || [])];
+        const cands = this.isFl2vMode?.() ? [...shots, ...segs, ...globals] : [...segs, ...shots, ...globals];
+        for (const c of cands) {
+            if (!c || !(c.imageFile || c.imageB64)) continue;
+            const w = +(c.width || 0);
+            const h = +(c.height || 0);
+            return w > 0 && h > 0 ? { width: w, height: h } : { width: 0, height: 0 };
+        }
+        return { width: 0, height: 0 };
     }
 
     /** Apply explicit custom width × height (snapped to canvas multiple). */
@@ -6504,6 +6564,16 @@ class MiniMaxH3DirectorEditor {
 
     updateOutputPreview() {
         if (!this.outPreview) return;
+        const selectorMode = this.isImageBatch() || this.isGenMode() || this.isFl2vMode()
+            || NO_VIDEO_UPLOAD_TASKS.has(this.getTaskKey());
+        if (selectorMode && isKeepAspectRatio(this.timeline.output?.aspectRatio)) {
+            // Pictures report their size after loading and call this — the canvas follows them here.
+            const kept = this.applyKeepAspectResolution();
+            this.outPreview.textContent = (kept.fromPicture
+                ? t("output.preview.keep", { w: kept.width, h: kept.height, sw: kept.source.width, sh: kept.source.height, mp: kept.megapixels })
+                : t("output.preview.keepNoPicture", { mp: kept.megapixels })) + this._exportPreviewSuffix();
+            return;
+        }
         if (this.isImageBatch() && (this.getTaskKey() === "i2i" || this.getTaskKey() === "i2v")) {
             const out = this.timeline.output || {};
             if ((out.mode || "long_edge") === "long_edge") {
