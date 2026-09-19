@@ -299,6 +299,57 @@ def upscale_image_batch(
     return work
 
 
+def _latent_hw_of(stream) -> tuple[int, int] | None:
+    """Best-effort latent (H, W) of a video stream; None when unreadable."""
+    samples = stream.get("samples") if isinstance(stream, dict) else stream
+    try:
+        if torch.is_tensor(samples) and samples.ndim >= 2:
+            return int(samples.shape[-2]), int(samples.shape[-1])
+    except Exception:
+        pass
+    return None
+
+
+def _resize_positive_to_canvas(
+    refine_positive,
+    src_hw: tuple[int, int] | None,
+    dst_hw: tuple[int, int] | None,
+    notes: list[str],
+):
+    """Re-pin keyframes / cond latents to the refine canvas.
+
+    The upscaled latent and the positive's MiniMax payload (i2v source keyframe,
+    Guide keyframes, prebuilt layout) must agree, or model forward crashes with
+    a patchify row mismatch ([N_src, 96] vs [N_dst, 96]). SelfLift applies the
+    same rewrite via selflift/cond.py resize_positive_spatial.
+    """
+    from .selflift.cond import resize_positive_spatial
+
+    if src_hw is None or dst_hw is None:
+        return refine_positive
+    if tuple(src_hw) == tuple(dst_hw):
+        return refine_positive
+    try:
+        resized = resize_positive_spatial(
+            refine_positive,
+            int(src_hw[0]),
+            int(src_hw[1]),
+            int(dst_hw[0]),
+            int(dst_hw[1]),
+        )
+    except Exception as exc:
+        log.warning(
+            "Refine cond resize to latent %dx%d failed (%s); "
+            "keeping first-pass conditioning.",
+            int(dst_hw[0]),
+            int(dst_hw[1]),
+            exc,
+        )
+        return refine_positive
+    notes.append("cond resize")
+    return resized
+
+
 def _source_canvas(plan, first_pass_images: torch.Tensor | None) -> tuple[int, int]:
     if first_pass_images is not None and getattr(first_pass_images, "ndim", 0) >= 3:
         return int(first_pass_images.shape[2]), int(first_pass_images.shape[1])
@@ -368,6 +419,11 @@ def _apply_h3_latent_upscale(
         audio_latent.pop("noise_mask", None)
     work = _join_av(encoded, audio_latent, work)
     notes = [f"{tw}×{th}", "h3_latent"]
+    from .selflift.grid import pixel_to_latent_hw
+
+    src_hw = _latent_hw_of(video_latent) or pixel_to_latent_hw(src_w, src_h)
+    dst_hw = _latent_hw_of(encoded) or pixel_to_latent_hw(tw, th)
+    refine_positive = _resize_positive_to_canvas(refine_positive, src_hw, dst_hw, notes)
     if pin_frames > 0:
         try:
             prefix = None
@@ -676,6 +732,14 @@ def apply_segment_refine(
                 )
                 encoded = _encode_video(vae, frames)
                 work = _join_av(encoded, audio_latent, work)
+                from .selflift.grid import pixel_to_latent_hw
+
+                _src_w, _src_h = _source_canvas(plan, first_pass_images)
+                src_hw = _latent_hw_of(video_latent) or pixel_to_latent_hw(_src_w, _src_h)
+                dst_hw = _latent_hw_of(encoded) or pixel_to_latent_hw(tw, th)
+                refine_positive = _resize_positive_to_canvas(
+                    refine_positive, src_hw, dst_hw, note_parts
+                )
                 if guide_pin > 0:
                     try:
                         refine_positive, pinned, work = _repin_after_upscale(
