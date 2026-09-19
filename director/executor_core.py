@@ -869,6 +869,12 @@ def execute_director_plan_core(
         )
         cond_s = time.perf_counter() - t_cond
 
+        from .semantic_bridge import apply_semantic_bridge
+
+        positive, sb_note = apply_semantic_bridge(positive, plan, task_key=seg.task_key)
+        if sb_note:
+            log.info("MiniMax H3 Director: %s", sb_note)
+
         trim_frames = 0
         after_shift = None
         if use_motion_context:
@@ -1470,6 +1476,7 @@ def execute_director_plan_core(
                     "VRAM cleanup before face refine"
                 )
             from .face_refine.runtime import apply_segment_face_refine
+            from .face_refine.track import FACE_REFINE_SKIP_NO_FACE
 
             keep_pre_face = bool(export_pre_face_refine)
             face_in = chunk.detach().cpu().float().contiguous() if keep_pre_face else chunk
@@ -1509,7 +1516,15 @@ def execute_director_plan_core(
                 if next_seg is not None and is_continuity_active(plan, next_seg)
                 else 0
             )
-            if fade_head or fade_tail:
+            face_skipped = str(face_note or "").startswith(FACE_REFINE_SKIP_NO_FACE)
+            if face_skipped:
+                log.warning(
+                    "MiniMax H3 Director segment %d/%d: %s",
+                    ui_idx + 1,
+                    timeline_seg_total,
+                    face_note,
+                )
+            elif fade_head or fade_tail:
                 chunk = fade_stitch_at_seams(
                     chunk, face_in, head_frames=fade_head, tail_frames=fade_tail
                 )

@@ -18,6 +18,9 @@ import torch.nn.functional as F
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.face_refine")
 
+# Prefix is stable: executor skips seam fade / extra sample when this is returned.
+FACE_REFINE_SKIP_NO_FACE = "FaceRefine skipped"
+
 _DETECTOR_CACHE: dict[str, Any] = {}
 
 
@@ -195,8 +198,11 @@ def _rank_box(box, frame_w: int, frame_h: int, select: str) -> float:
 def track_and_crop(
     images: torch.Tensor,
     pack: dict[str, Any],
-) -> tuple[torch.Tensor, dict[str, Any], str]:
-    """Return (crops [K,ch,cw,3], transform, report)."""
+) -> tuple[torch.Tensor | None, dict[str, Any] | None, str]:
+    """Return (crops [K,ch,cw,3], transform, report).
+
+    No face in any frame → ``(None, None, skip_note)``. Caller keeps decoded frames.
+    """
     if images.ndim != 4 or images.shape[0] < 1:
         raise ValueError("FaceRefine 需要 IMAGE 视频帧 [N,H,W,C]。")
     frames = images[..., :3].contiguous()
@@ -249,9 +255,14 @@ def track_and_crop(
         found += 1
 
     if found == 0:
-        raise ValueError(
-            "FaceRefine 未检测到人脸。请换检测器、降低 confidence，或确认成片里有可见的脸。"
+        detector_name = str(pack.get("detector") or "face_yolov8m.pt")
+        note = (
+            f"{FACE_REFINE_SKIP_NO_FACE}: 未检测到人脸"
+            f"（共 {n_frames} 帧，检测器={detector_name}，confidence={conf:g}）。"
+            "沿用解码成片，未做脸部修复；可换检测器或降低 confidence。"
         )
+        log.warning(note)
+        return None, None, note
 
     raw_cx = _interp_gaps(cx, valid)
     raw_cy = _interp_gaps(cy, valid)

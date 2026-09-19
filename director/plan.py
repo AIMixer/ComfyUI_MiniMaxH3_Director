@@ -291,6 +291,7 @@ class DirectorPlan:
     audio_decode_cache: dict = field(default_factory=dict, repr=False)
     refine: dict | None = None
     selflift: dict | None = None
+    semantic_bridge: dict | None = None
     face_refine: dict | None = None
     # Sampling knobs stamped at execute time (first-pass cache fingerprint).
     sample_seed: int = 0
@@ -1079,6 +1080,14 @@ def plan_summary(plan: DirectorPlan) -> str:
             f"Global task: {get_task_prompt_spec(plan.global_task_type).label}",
         ]
         try:
+            from .semantic_bridge import semantic_bridge_report_line
+
+            bridge_line = semantic_bridge_report_line(plan)
+        except Exception:
+            bridge_line = None
+        if bridge_line:
+            lines.append(bridge_line)
+        try:
             from .selflift.pack import selflift_report_line
 
             selflift_line = selflift_report_line(plan)
@@ -1193,6 +1202,14 @@ def plan_summary(plan: DirectorPlan) -> str:
         )
     else:
         lines.append("Segment continuity: OFF (per-segment generation)")
+    try:
+        from .semantic_bridge import semantic_bridge_report_line
+
+        bridge_line = semantic_bridge_report_line(plan)
+    except Exception:
+        bridge_line = None
+    if bridge_line:
+        lines.append(bridge_line)
     refine_line = None
     try:
         from .refine_pack import refine_report_line

@@ -63,6 +63,8 @@ def apply_segment_face_refine(
     base = frames[..., :3].contiguous().float().cpu()
     n_src = int(base.shape[0])
     crops, transform, track_note = track_and_crop(base, pack)
+    if crops is None or transform is None:
+        return base[:n_src].contiguous(), track_note
     canvas_w, canvas_h = transform["canvas"]
     assert_minimax_canvas(int(canvas_w), int(canvas_h))
     gen_len = minimax_align_frame_count(int(crops.shape[0]))
