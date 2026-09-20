@@ -22,6 +22,9 @@ def snap_dimension(value: int, stride: int = MINIMAX_CANVAS_STRIDE) -> int:
 # sent without switching the aspect preset each time.
 KEEP_ASPECT_RATIO = "跟随图片"
 DEFAULT_KEEP_MEGAPIXELS = 0.4
+# The Director's width/height widgets stop at 8192; a very long panorama at a high
+# megapixel value would go past that, so the canvas is shrunk back to it.
+MAX_MINIMAX_CANVAS = 8192
 
 
 def is_keep_aspect(output_block: dict | None) -> bool:
@@ -52,8 +55,11 @@ def keep_aspect_dimensions(
         mp = DEFAULT_KEEP_MEGAPIXELS
     mp = min(16.0, max(0.1, mp))
     scale = math.sqrt(mp * 1024 * 1024 / (src_w * src_h))
-    w = max(stride, int(math.floor(src_w * scale / stride + 0.5)) * stride)
-    h = max(stride, int(math.floor(src_h * scale / stride + 0.5)) * stride)
+    snap = lambda v: max(stride, int(math.floor(v / stride + 0.5)) * stride)
+    w, h = snap(src_w * scale), snap(src_h * scale)
+    if max(w, h) > MAX_MINIMAX_CANVAS:
+        shrink = MAX_MINIMAX_CANVAS / max(w, h)
+        w, h = snap(w * shrink), snap(h * shrink)
     return w, h
 
 
