@@ -22,6 +22,8 @@ export const DEFAULT_ASPECT_RATIO = "16:9 (宽屏)";
 export const CUSTOM_ASPECT_RATIO = "自定义";
 /** Canvas follows the first picture's shape at the megapixel budget (backend: lib/image_prep.keep_aspect_*). */
 export const KEEP_ASPECT_RATIO = "跟随图片";
+/** The Director's width/height widgets stop here. */
+export const MAX_MINIMAX_CANVAS = 8192;
 /** Official MiniMax template default: 0.4 MP → 864×480 at 16:9 (multiple=32) */
 export const DEFAULT_MEGAPIXELS = 0.4;
 export const MIN_MEGAPIXELS = 0.1;
@@ -92,8 +94,14 @@ export function keepAspectResolution(srcW, srcH, megapixels, multiple = MINIMAX_
     const mp = clampMegapixels(megapixels);
     const mult = Math.max(8, parseInt(multiple, 10) || MINIMAX_CANVAS_MULTIPLE);
     const scale = Math.sqrt((mp * 1024 * 1024) / (w0 * h0));
-    const width = Math.max(mult, Math.round((w0 * scale) / mult) * mult);
-    const height = Math.max(mult, Math.round((h0 * scale) / mult) * mult);
+    const snap = v => Math.max(mult, Math.round(v / mult) * mult);
+    let width = snap(w0 * scale);
+    let height = snap(h0 * scale);
+    if (Math.max(width, height) > MAX_MINIMAX_CANVAS) {          // the widgets stop at 8192
+        const shrink = MAX_MINIMAX_CANVAS / Math.max(width, height);
+        width = snap(width * shrink);
+        height = snap(height * shrink);
+    }
     return { width, height, megapixels: mp, aspectRatio: KEEP_ASPECT_RATIO, multiple: mult };
 }
 
