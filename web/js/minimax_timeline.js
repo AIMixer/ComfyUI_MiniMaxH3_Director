@@ -1465,6 +1465,11 @@ function inputViewUrl(relativePath, type = "input") {
     return api.apiURL(`/view?${params.toString()}`);
 }
 
+// Sizes of pictures that came from somewhere else (phone / API): those refs carry only a
+// file name, so Keep aspect ratio reads the picture once and remembers it.
+const KEEP_DIMS = new Map();
+const KEEP_DIMS_PENDING = new Set();
+
 const MEDIA_PICKER_VIEW_KEY = "minimax.director.mediaPickerView";
 
 function readMediaPickerView() {
@@ -6535,9 +6540,37 @@ class MiniMaxH3DirectorEditor {
             if (!c || !(c.imageFile || c.imageB64)) continue;
             const w = +(c.width || 0);
             const h = +(c.height || 0);
-            return w > 0 && h > 0 ? { width: w, height: h } : { width: 0, height: 0 };
+            if (w > 0 && h > 0) return { width: w, height: h };
+            const known = KEEP_DIMS.get(c.imageFile);
+            if (known) {
+                c.width = known.width;
+                c.height = known.height;
+                return known;
+            }
+            this.loadKeepAspectDims(c);
+            return { width: 0, height: 0 };
         }
         return { width: 0, height: 0 };
+    }
+
+    /** Read a picture's size once, then re-apply Keep aspect ratio with it. */
+    loadKeepAspectDims(ref) {
+        const file = ref?.imageFile;
+        if (!file || KEEP_DIMS_PENDING.has(file)) return;
+        KEEP_DIMS_PENDING.add(file);
+        const img = new Image();
+        img.onload = () => {
+            KEEP_DIMS_PENDING.delete(file);
+            if (!img.naturalWidth || !img.naturalHeight) return;
+            KEEP_DIMS.set(file, { width: img.naturalWidth, height: img.naturalHeight });
+            if (isKeepAspectRatio(this.timeline?.output?.aspectRatio)) {
+                this.applyKeepAspectResolution();
+                this.updateOutputPreview();
+                this.scheduleTimelineSync?.();
+            }
+        };
+        img.onerror = () => KEEP_DIMS_PENDING.delete(file);
+        img.src = inputViewUrl(file);
     }
 
     /** Apply explicit custom width × height (snapped to canvas multiple). */
