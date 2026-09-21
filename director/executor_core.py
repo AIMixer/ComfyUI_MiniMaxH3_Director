@@ -450,9 +450,11 @@ def execute_director_plan_core(
     live_tae_preview = raw_live in (True, 1, "1", "true", "True", "on")
 
     all_segments = plan.segments
-    # Drop caches for deleted/shortened timelines. Use every segment index (not
+    # Drop caches for segments that left the timeline. Uses every segment (not
     # run_indices): unselected「选择运行」slots still fill merge/export from disk.
-    prune_segment_cache(node_id, [seg.index for seg in all_segments])
+    # The cache layer maps each segment to its identity slot, so inserting a
+    # segment does not look like "every later slot was deleted".
+    prune_segment_cache(node_id, plan, all_segments)
     # Strictly honor「选择运行」— never force-sample unselected segments.
     run_indices = plan.run_indices if plan.run_indices is not None else frozenset(range(len(all_segments)))
 
