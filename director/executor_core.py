@@ -346,14 +346,18 @@ def _release_segment_pixels(
     progress_pos: dict[int, int],
     completed_pre_face: dict[int, torch.Tensor] | None = None,
     segment_pre_face: list[torch.Tensor] | None = None,
+    preserve_indices: frozenset[int] | None = None,
 ) -> bool:
     """Drop full-resolution pixels for a finished predecessor. Audio stays.
 
     Replaces IMAGE-list slots with a 1-frame poster. Safe after mp4 + the
-    next segment has already pinned / phase-trimmed this index.
+    next segment has already pinned / phase-trimmed this index. Selected
+    partial-run slots are excluded via ``preserve_indices``.
     """
     idx = int(index)
     if idx < 0:
+        return False
+    if preserve_indices is not None and idx in preserve_indices:
         return False
     chunk = completed_outputs.pop(idx, None)
     pre = completed_pre_refine.pop(idx, None)
@@ -450,14 +454,24 @@ def execute_director_plan_core(
     live_tae_preview = raw_live in (True, 1, "1", "true", "True", "on")
 
     all_segments = plan.segments
-    # Drop caches for deleted/shortened timelines. Use every segment index (not
-    # run_indices): unselected「选择运行」slots still fill merge/export from disk.
-    prune_segment_cache(node_id, [seg.index for seg in all_segments])
+    # Full runs can prune slots deleted from the timeline. Partial runs are
+    # append-only: the frontend may submit only the currently selected group
+    # while another Queue is filling the remaining slots, so pruning here would
+    # erase already completed .pre.* caches from earlier selections.
+    if plan.run_indices is None:
+        prune_segment_cache(node_id, [seg.index for seg in all_segments])
+    else:
+        log.info(
+            "Partial run: preserving existing segment caches before sampling "
+            "(%d selected segment(s)).",
+            len(plan.run_indices),
+        )
     # Strictly honor「选择运行」— never force-sample unselected segments.
     run_indices = plan.run_indices if plan.run_indices is not None else frozenset(range(len(all_segments)))
 
     run_list = sorted(run_indices)
     seg_total = len(run_list)
+    preserve_output_indices = run_indices if plan.run_indices is not None else None
     progress_pos = {idx: pos for pos, idx in enumerate(run_list)}
     passthrough_indices: list[int] = []
     # External groups may compact selected packs to 0..N-1 while UI still shows
@@ -1299,7 +1313,13 @@ def execute_director_plan_core(
             target_len=target_len,
             keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
         )
-        if (will_refine or continuity_active or run_face_refine or selflift_enabled(plan)) and not skip_first_sample:
+        if (
+            will_refine
+            or continuity_active
+            or run_face_refine
+            or selflift_enabled(plan)
+            or plan.run_indices is not None
+        ) and not skip_first_sample:
             save_first_pass_cache(
                 node_id,
                 seg,
@@ -1469,12 +1489,17 @@ def execute_director_plan_core(
         decode_s = time.perf_counter() - t_decode
         pre_face_chunk = chunk
         if run_face_refine and not hold_after_first:
-            if clear_vram_before_face_refine:
-                cleanup_segment_vram(enabled=True, unload_models=True)
-                reports.append(
-                    f"Segment {ui_idx + 1}/{timeline_seg_total}: "
-                    "VRAM cleanup before face refine"
-                )
+            # FaceRefine starts a fresh MiniMax conditioning pass. Reusing the
+            # previous refine sampler graph leaves quantized/AIMDO pages and a
+            # ShiftedModel clone live while the text encoder is re-entered;
+            # on Windows this can become a native access violation in
+            # encode_token_weights. Always isolate this phase.
+            shift_cache.clear()
+            cleanup_segment_vram(enabled=True, unload_models=True)
+            reports.append(
+                f"Segment {ui_idx + 1}/{timeline_seg_total}: "
+                "VRAM cleanup before face refine"
+            )
             from .face_refine.runtime import apply_segment_face_refine
             from .face_refine.track import FACE_REFINE_SKIP_NO_FACE
 
@@ -1660,6 +1685,7 @@ def execute_director_plan_core(
                         progress_pos=progress_pos,
                         completed_pre_face=completed_pre_face,
                         segment_pre_face=segment_pre_face,
+                        preserve_indices=preserve_output_indices,
                     )
         if seg.index in run_indices:
             if clear_vram_between_segments and segment_outputs:
@@ -1688,6 +1714,7 @@ def execute_director_plan_core(
                     progress_pos=progress_pos,
                     completed_pre_face=completed_pre_face,
                     segment_pre_face=segment_pre_face,
+                    preserve_indices=preserve_output_indices,
                 )
             if plan.export_mode == "all":
                 output_chunks.append(chunk)
@@ -1907,7 +1934,9 @@ def execute_director_plan_core(
             segment_pre_face = []
     shift_cache.clear()
     if clear_vram_between_segments:
-        cleanup_segment_vram(enabled=True, unload_models=False)
+        # A selected-run execution is complete at this boundary. Do not leave
+        # H3/refine weights or AIMDO cast pages resident for the next Queue.
+        cleanup_segment_vram(enabled=True, unload_models=True)
     return (
         combined,
         segment_outputs,

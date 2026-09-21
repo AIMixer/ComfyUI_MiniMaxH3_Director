@@ -347,10 +347,19 @@ def _audio_payload_to_cpu(audio: dict[str, Any] | None) -> dict[str, Any] | None
 
 def _frames_to_disk(tensor: torch.Tensor) -> torch.Tensor:
     """Store pixel frames as uint8 [0,255]. Export is 8-bit anyway; float32 is 4× larger."""
-    x = tensor.detach().cpu()
-    if x.dtype == torch.uint8:
-        return x.contiguous()
-    return x.float().clamp(0, 1).mul(255).round().clamp(0, 255).to(torch.uint8).contiguous()
+    if tensor.dtype == torch.uint8:
+        return tensor.detach().cpu().contiguous()
+    shape = tuple(int(x) for x in tensor.shape)
+    result = torch.empty(shape, dtype=torch.uint8, device="cpu")
+    for start in range(0, shape[0], 8):
+        end = min(shape[0], start + 8)
+        source = tensor[start:end].detach().to(device="cpu", dtype=torch.float32)
+        work = torch.empty_like(source)
+        torch.clamp(source, 0, 1, out=work)
+        work.mul_(255).round_()
+        result[start:end].copy_(work.to(torch.uint8))
+        del source, work
+    return result.contiguous()
 
 
 def _frames_from_disk(loaded: Any) -> torch.Tensor | None:
