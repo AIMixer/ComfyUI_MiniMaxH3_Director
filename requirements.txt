@@ -10,3 +10,8 @@ scenedetect>=0.6.4,<0.8
 # Optional: Refine upscale_method=nvidia_rtx_vsr (NVIDIA RTX GPU only).
 # Do not add as a hard dep — AMD / cloud / no-VSR installs would break.
 # pip install nvidia-vfx --extra-index-url https://pypi.nvidia.com
+
+# Director FaceRefine (track + crop + stitch). Unconnected Director does not
+# import this at execute time. Weights are not pip-installable: put
+# face_yolov8m.pt (or similar) in models/ultralytics/bbox/
+ultralytics>=8.0

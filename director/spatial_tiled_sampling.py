@@ -119,14 +119,106 @@ def _crop_packed(packed, full_shapes, axis: str, start: int, end: int):
     return packed_out, tile_shapes, (pad_h, pad_w)
 
 
-def _crop_matching_video(tensor, full_h: int, full_w: int, axis: str, start: int, end: int):
-    if not isinstance(tensor, torch.Tensor) or tensor.ndim != 5:
-        return tensor
-    if int(tensor.shape[-2]) != int(full_h) or int(tensor.shape[-1]) != int(full_w):
-        return tensor
-    cropped = _crop_spatial_5d(tensor, axis, start, end)
+def _as_bcthw(tensor):
+    if not isinstance(tensor, torch.Tensor):
+        return None, False
+    if tensor.ndim == 5:
+        return tensor, False
+    if tensor.ndim == 4:
+        return tensor.unsqueeze(0), True
+    return None, False
+
+
+def _crop_generate_video(tensor, full_h: int, full_w: int, axis: str, start: int, end: int):
+    """Crop a generate-canvas video latent. Returns (tensor, cropped?)."""
+    video, squeezed = _as_bcthw(tensor)
+    if video is None:
+        return tensor, False
+    if int(video.shape[-2]) != int(full_h) or int(video.shape[-1]) != int(full_w):
+        return tensor, False
+    cropped = _crop_spatial_5d(video, axis, start, end)
     cropped, _, _ = _pad_even_hw(cropped)
+    if squeezed:
+        cropped = cropped.squeeze(0)
+    return cropped, True
+
+
+def _crop_matching_video(tensor, full_h: int, full_w: int, axis: str, start: int, end: int):
+    cropped, _ = _crop_generate_video(tensor, full_h, full_w, axis, start, end)
     return cropped
+
+
+def _crop_ref_block(blk, full_h: int, full_w: int, axis: str, start: int, end: int):
+    """Crop a PackedLayout ref whose latent sits on the generate canvas.
+
+    Layout sizes ref_img rows from ``latent_h`` / ``latent_w``, while
+    ``cond_video_rows`` patchifies the tensor. Both must move together.
+    """
+    if not isinstance(blk, dict):
+        return blk
+    out = dict(blk)
+    cropped, did = _crop_generate_video(out.get("latent"), full_h, full_w, axis, start, end)
+    if not did:
+        return out
+    out["latent"] = cropped
+    work = cropped.unsqueeze(0) if cropped.ndim == 4 else cropped
+    out["latent_h"] = int(work.shape[-2])
+    out["latent_w"] = int(work.shape[-1])
+    if "latent_t" in out:
+        out["latent_t"] = int(work.shape[-3])
+    return out
+
+
+def _crop_keyframe(item, full_h: int, full_w: int, axis: str, start: int, end: int):
+    if not isinstance(item, dict):
+        return item
+    copied = dict(item)
+    copied["latent"] = _crop_matching_video(
+        item.get("latent"), full_h, full_w, axis, start, end
+    )
+    return copied
+
+
+def _sync_cond_video_latents(payload: dict, full_h: int, full_w: int, axis: str, start: int, end: int):
+    """Keep cond tensors aligned with the cropped keyframes / refs the layout uses."""
+    keyframes = payload.get("keyframes") or []
+    refs = payload.get("refs") or []
+    kf_video = [kf["latent"] for kf in keyframes if isinstance(kf, dict) and kf.get("latent") is not None]
+    ref_video = [blk["latent"] for blk in refs if isinstance(blk, dict) and blk.get("latent") is not None]
+    if kf_video or ref_video:
+        payload["cond_video_latents"] = kf_video + ref_video
+        return
+    cond_video = payload.get("cond_video_latents")
+    if cond_video:
+        payload["cond_video_latents"] = [
+            _crop_matching_video(item, full_h, full_w, axis, start, end)
+            for item in cond_video
+        ]
+
+
+def _cond_video_row_count(latents) -> int:
+    total = 0
+    for item in latents or []:
+        video, _ = _as_bcthw(item)
+        if video is None:
+            continue
+        total += int(video.shape[2]) * (int(video.shape[3]) // 2) * (int(video.shape[4]) // 2)
+    return total
+
+
+def _layout_cond_row_count(layout) -> int:
+    upd = getattr(layout, "img_update", None)
+    if upd is None:
+        return -1
+    return int((~upd.bool()).sum().item())
+
+
+def _cond_entry(cond):
+    if isinstance(cond, dict):
+        return cond
+    if isinstance(cond, (list, tuple)) and len(cond) >= 2 and isinstance(cond[1], dict):
+        return cond[1]
+    return None
 
 
 def _iter_payloads(cfg_guider):
@@ -135,9 +227,10 @@ def _iter_payloads(cfg_guider):
         if not group:
             continue
         for cond in group:
-            if not isinstance(cond, dict):
+            item = _cond_entry(cond)
+            if item is None:
                 continue
-            model_conds = cond.get("model_conds") or {}
+            model_conds = item.get("model_conds") or {}
             yield model_conds
 
 
@@ -193,22 +286,26 @@ def _install_tile_payloads(cfg_guider, *, axis: str, start: int, end: int, tile_
             continue
         restorations.append((payload_cond, "cond", payload))
         new_payload = dict(payload)
-        keyframes = []
-        for item in list(payload.get("keyframes") or []):
-            copied = dict(item)
-            copied["latent"] = _crop_matching_video(
-                item.get("latent"), full_h, full_w, axis, start, end
-            )
-            keyframes.append(copied)
-        if keyframes:
-            new_payload["keyframes"] = keyframes
-        cond_video = payload.get("cond_video_latents")
-        if cond_video:
-            new_payload["cond_video_latents"] = [
-                _crop_matching_video(item, full_h, full_w, axis, start, end)
-                for item in cond_video
+        if payload.get("keyframes"):
+            new_payload["keyframes"] = [
+                _crop_keyframe(item, full_h, full_w, axis, start, end)
+                for item in payload.get("keyframes") or []
             ]
-        new_payload["layout"] = _rebuild_layout(new_payload, latent_t, tile_h, tile_w, audio_t)
+        if payload.get("refs"):
+            new_payload["refs"] = [
+                _crop_ref_block(item, full_h, full_w, axis, start, end)
+                for item in payload.get("refs") or []
+            ]
+        _sync_cond_video_latents(new_payload, full_h, full_w, axis, start, end)
+        layout = _rebuild_layout(new_payload, latent_t, tile_h, tile_w, audio_t)
+        cond_rows = _cond_video_row_count(new_payload.get("cond_video_latents"))
+        layout_rows = _layout_cond_row_count(layout)
+        if cond_rows > 0 and layout_rows >= 0 and cond_rows != layout_rows:
+            raise ValueError(
+                f"tile cond rows {cond_rows} != layout {layout_rows} "
+                f"(axis={axis} {start}:{end})"
+            )
+        new_payload["layout"] = layout
         payload_cond.cond = new_payload
     return restorations
 

@@ -818,6 +818,7 @@ export function stripFl2vPromptBody(text) {
 }
 
 export function flushFl2vPromptDraft(editor) {
+    if (editor?._suspendPromptFlush) return;
     const ui = editor?.fl2vUi;
     if (!ui?.prompt && !ui?.negative) return;
     const shots = editor.timeline?.shots || [];

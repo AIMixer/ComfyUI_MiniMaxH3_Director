@@ -293,6 +293,9 @@ class DirectorPlan:
     # freed when the run ends (replaces the old never-cleared process cache).
     audio_decode_cache: dict = field(default_factory=dict, repr=False)
     refine: dict | None = None
+    selflift: dict | None = None
+    semantic_bridge: dict | None = None
+    face_refine: dict | None = None
     # Sampling knobs stamped at execute time (first-pass cache fingerprint).
     sample_seed: int = 0
     sample_cfg: float = 1.0
@@ -303,6 +306,11 @@ class DirectorPlan:
     sample_sigmas_linked: bool = False
     sample_shift_video: float = 12.0
     sample_shift_audio: float = 3.0
+    # Frontend witness of the graph-wired external groups (i2v_groups /
+    # r2v_groups). Those inputs arrive as tensors at execute time, so the
+    # cache-status panel cannot rebuild the segments from widget values; it
+    # compares this witness instead. See director/external_groups.py.
+    external_groups_witness: dict | None = None
     # Set during execute when export_mode=segments (minimax_seg_export folder).
     segment_mp4_run_dir: str | None = None
 
@@ -1074,6 +1082,22 @@ def plan_summary(plan: DirectorPlan) -> str:
             f"Output: {plan.width}×{plan.height} ({plan.output_mode})",
             f"Global task: {get_task_prompt_spec(plan.global_task_type).label}",
         ]
+        try:
+            from .semantic_bridge import semantic_bridge_report_line
+
+            bridge_line = semantic_bridge_report_line(plan)
+        except Exception:
+            bridge_line = None
+        if bridge_line:
+            lines.append(bridge_line)
+        try:
+            from .selflift.pack import selflift_report_line
+
+            selflift_line = selflift_report_line(plan)
+        except Exception:
+            selflift_line = None
+        if selflift_line:
+            lines.append(selflift_line)
         refine_line = None
         try:
             from .refine_pack import refine_report_line
@@ -1083,6 +1107,14 @@ def plan_summary(plan: DirectorPlan) -> str:
             refine_line = None
         if refine_line:
             lines.append(refine_line)
+        try:
+            from .face_refine.pack import face_refine_report_line
+
+            face_line = face_refine_report_line(plan)
+        except Exception:
+            face_line = None
+        if face_line:
+            lines.append(face_line)
         if plan.continuity_enabled:
             pinned = [
                 seg.index + 1
@@ -1217,6 +1249,14 @@ def plan_summary(plan: DirectorPlan) -> str:
         )
     else:
         lines.append("Segment continuity: OFF (per-segment generation)")
+    try:
+        from .semantic_bridge import semantic_bridge_report_line
+
+        bridge_line = semantic_bridge_report_line(plan)
+    except Exception:
+        bridge_line = None
+    if bridge_line:
+        lines.append(bridge_line)
     refine_line = None
     try:
         from .refine_pack import refine_report_line
@@ -1226,6 +1266,14 @@ def plan_summary(plan: DirectorPlan) -> str:
         refine_line = None
     if refine_line:
         lines.append(refine_line)
+    try:
+        from .face_refine.pack import face_refine_report_line
+
+        face_line = face_refine_report_line(plan)
+    except Exception:
+        face_line = None
+    if face_line:
+        lines.append(face_line)
     if plan.run_indices is not None:
         selected = sorted(plan.run_indices)
         skipped = [i + 1 for i in range(plan.segment_count) if i not in plan.run_indices]

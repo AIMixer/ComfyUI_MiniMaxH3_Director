@@ -380,6 +380,9 @@ function liveBatchSegmentFromEl(editor, el, indexAttr) {
  * stale segment objects (or only in the DOM) and get wiped.
  */
 export function flushBatchPromptInputs(editor) {
+    // Pack import rebuilds segments from JSON; stale card textareas must not
+    // write empty drafts back over the imported prompts.
+    if (editor?._suspendPromptFlush) return;
     const list = editor?.batchList;
     if (!list) return;
     const segs = editor?.timeline?.segments;
@@ -401,7 +404,15 @@ function flushBatchDurationInputs(editor) {
     flushBatchPromptInputs(editor);
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
     if (!isVideoBatchTask(taskKey)) return;
+    // With external groups connected the card's seconds field is a read-only
+    // mirror of the group node — the graph is the source of truth. Flushing it
+    // would write the value rendered *before* the group edit back over the
+    // duration `syncExternalGroupsTimeline` just rebuilt, so the panel would keep
+    // showing the old length (only for the segments whose card is in the DOM).
+    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
     for (const input of list.querySelectorAll("input[data-batch-sec-index]")) {
+        // A disabled/readOnly control is a mirror: never write it back anywhere.
+        if (input.disabled || input.readOnly) continue;
         const live = liveBatchSegmentFromEl(editor, input, "data-batch-sec-index");
         if (!live?.seg) continue;
         clearTimeout(input._t);
@@ -2760,15 +2771,20 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                 if (opt === curSize) o.selected = true;
                 sizeSel.appendChild(o);
             }
-            sizeSel.onchange = (e) => {
-                e.stopPropagation();
-                const liveIdx = (editor.timeline.segments || []).findIndex((s) => s?.id && s.id === seg.id);
-                const live = editor.timeline.segments?.[liveIdx >= 0 ? liveIdx : index];
-                if (!live) return;
-                live.refImageSize = resolveSegmentRefImageSize({ refImageSize: sizeSel.value });
-                editor.commit?.(false, { syncTimeline: true });
-                editor.flushTimelineSync?.();
-            };
+            if (externalLocked) {
+                sizeSel.disabled = true;
+                sizeSel.title = t("external.refImageSizeLocked");
+            } else {
+                sizeSel.onchange = (e) => {
+                    e.stopPropagation();
+                    const liveIdx = (editor.timeline.segments || []).findIndex((s) => s?.id && s.id === seg.id);
+                    const live = editor.timeline.segments?.[liveIdx >= 0 ? liveIdx : index];
+                    if (!live) return;
+                    live.refImageSize = resolveSegmentRefImageSize({ refImageSize: sizeSel.value });
+                    editor.commit?.(false, { syncTimeline: true });
+                    editor.flushTimelineSync?.();
+                };
+            }
             sizeSel.onclick = (e) => e.stopPropagation();
             sizeRow.appendChild(sizeLabel);
             sizeRow.appendChild(sizeSel);

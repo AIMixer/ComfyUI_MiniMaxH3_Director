@@ -360,7 +360,7 @@ def _unbind_mask(mask):
 
 
 def _prefix_steps_from_latent(latent: dict) -> int:
-    raw = latent.pop(PREFIX_STEPS_KEY, 0) if isinstance(latent, dict) else 0
+    raw = latent.get(PREFIX_STEPS_KEY, 0) if isinstance(latent, dict) else 0
     try:
         return max(0, int(raw or 0))
     except (TypeError, ValueError):
@@ -381,85 +381,104 @@ class _PrefixRemask:
         sigmas: Any,
         video_shape: tuple[int, ...],
         seam_min: float | None = None,
+        audio_shape: tuple[int, ...] | None = None,
     ):
         self.prefix_steps = int(prefix_steps)
         self.sigmas = _schedule_values(sigmas)
         self.video_shape = tuple(int(x) for x in video_shape)
+        self.audio_shape = tuple(int(x) for x in audio_shape) if audio_shape else None
         self.seam_min = clamp_seam_min_mask(SEAM_MIN_MASK if seam_min is None else seam_min)
         self.current_video_mask: torch.Tensor | None = None
+        self.current_audio_mask: torch.Tensor | None = None
 
     def _live_weights(self, sigma, extra_options=None) -> torch.Tensor:
         current = float(torch.as_tensor(sigma).detach().float().reshape(-1)[0])
         schedule = self.sigmas or _schedule_values((extra_options or {}).get("sigmas", ()))
         ratio = _next_sigma_ratio(current, schedule)
-        # Head stays fully open. Seam follows sigma, floored at the user seam.
+        floor = float(self.seam_min)
         live = []
-        for base in prefix_token_weights(self.prefix_steps, seam_min=self.seam_min):
-            if base >= 0.999:
-                live.append(1.0)
-            elif self.seam_min <= 0.0:
-                live.append(max(0.0, float(base) * max(float(ratio), 0.0)))
-            else:
-                live.append(max(self.seam_min, float(base) * max(float(ratio), 0.5)))
+        for base in prefix_token_weights(self.prefix_steps, seam_min=floor):
+            value = float(base) * max(0.0, float(ratio))
+            if floor > 0.0:
+                value = max(floor, value)
+            live.append(max(0.0, min(1.0, value)))
         return torch.tensor(live, dtype=torch.float32)
 
-    def denoise_mask_function(self, sigma, denoise_mask, extra_options=None):
-        weights = self._live_weights(sigma, extra_options)
-        _b, _c, t, h, w = self.video_shape
-        device = denoise_mask.device if torch.is_tensor(denoise_mask) else "cpu"
-        dtype = denoise_mask.dtype if torch.is_tensor(denoise_mask) else torch.float32
-        streams = _unbind_mask(denoise_mask)
-        if streams and torch.is_tensor(streams[0]):
-            device = streams[0].device
-            dtype = streams[0].dtype
-        spatial = torch.ceil(
-            _spatial_video_mask(
-                t,
-                self.prefix_steps,
-                height=h,
-                width=w,
-                device=device,
-                dtype=torch.float32,
-                weights=weights,
-            )
-            * 256.0
-        ) / 256.0
-        # H3 apply_model must see [B,1,T,H,W]; never a 1D/3D token strip.
-        self.current_video_mask = spatial
+    def _sync_shapes(self, extra_options=None) -> None:
+        """Prefer the sampler's packed latent_shapes over storage-space sizes."""
+        model = (extra_options or {}).get("model") if extra_options else None
+        shapes = getattr(model, "latent_shapes", None) if model is not None else None
+        if shapes is None and model is not None:
+            inner = getattr(model, "inner_model", None) or getattr(model, "model", None)
+            shapes = getattr(inner, "latent_shapes", None)
+            if shapes is None and inner is not None:
+                shapes = getattr(getattr(inner, "inner_model", None), "latent_shapes", None)
+        if not shapes:
+            return
+        try:
+            video = tuple(int(x) for x in shapes[0])
+            if len(video) == 5:
+                self.video_shape = video
+            if len(shapes) > 1:
+                audio = tuple(int(x) for x in shapes[1])
+                if audio:
+                    self.audio_shape = audio
+        except Exception:
+            return
 
+    def _quantize(self, mask: torch.Tensor) -> torch.Tensor:
+        return torch.ceil(mask.float() * 256.0).div(256.0).to(dtype=mask.dtype)
+
+    def denoise_mask_function(self, sigma, denoise_mask, extra_options=None):
+        self._sync_shapes(extra_options)
+        weights = self._live_weights(sigma, extra_options)
+
+        if torch.is_tensor(denoise_mask) and denoise_mask.ndim == 3 and len(self.video_shape) == 5:
+            elems = int(math.prod(self.video_shape[1:]))
+            last = int(denoise_mask.shape[-1])
+            if last >= elems:
+                try:
+                    packed = denoise_mask.clone()
+                    video = packed[..., :elems].reshape(self.video_shape)
+                    video = self._quantize(_apply_video_prefix_weights(video, weights))
+                    packed[..., :elems] = video.reshape(packed.shape[0], 1, elems).to(
+                        dtype=packed.dtype
+                    )
+                    self.current_video_mask = video[:, :1].contiguous()
+                    return packed
+                except RuntimeError:
+                    return denoise_mask
+            return self._quantize(_apply_video_prefix_weights(denoise_mask, weights))
+
+        streams = _unbind_mask(denoise_mask)
         if streams and torch.is_tensor(streams[0]) and streams[0].ndim == 5:
-            video = _apply_video_prefix_weights(streams[0].float(), weights)
-            video = torch.ceil(video * 256.0) / 256.0
+            video = self._quantize(_apply_video_prefix_weights(streams[0], weights))
+            self.current_video_mask = video[:, :1].contiguous()
             rest = [s for s in streams[1:]]
             if rest:
                 return _nested(video.to(dtype=streams[0].dtype), rest[0], denoise_mask)
             return video.to(dtype=streams[0].dtype)
 
-        if torch.is_tensor(denoise_mask) and denoise_mask.ndim == 3 and len(self.video_shape) == 5:
-            elems = int(math.prod(self.video_shape[1:]))
-            last = int(denoise_mask.shape[-1])
-            # Packed AV is [B,1,video_flat+audio_flat]; video-only pack is == elems.
-            if last >= elems:
-                packed = denoise_mask.clone()
-                video = packed[..., :elems].reshape(self.video_shape)
-                video = _apply_video_prefix_weights(video.float(), weights)
-                video = torch.ceil(video * 256.0) / 256.0
-                packed[..., :elems] = video.reshape(packed.shape[0], 1, elems).to(
-                    dtype=packed.dtype
-                )
-                return packed
-            video = _apply_video_prefix_weights(denoise_mask.float(), weights)
-            return torch.ceil(video * 256.0).div(256.0).to(dtype=denoise_mask.dtype)
-
         if torch.is_tensor(denoise_mask) and denoise_mask.ndim == 5:
-            video = _apply_video_prefix_weights(denoise_mask.float(), weights)
-            return torch.ceil(video * 256.0).div(256.0).to(dtype=denoise_mask.dtype)
+            video = self._quantize(_apply_video_prefix_weights(denoise_mask, weights))
+            self.current_video_mask = video[:, :1].contiguous()
+            return video
         return denoise_mask
 
     def apply_model_wrapper(self, executor, *args, **kwargs):
-        mask = self.current_video_mask
-        if torch.is_tensor(mask) and mask.ndim == 5 and mask.shape[-2] >= 2 and mask.shape[-1] >= 2:
-            kwargs["denoise_mask"] = mask
+        # Paint live prefix weights onto the cond mask the sampler already
+        # unpacked. Never replace it with a storage-shaped tensor — that
+        # desyncs H3 patch-row labels from the packed AV latent (honeycomb).
+        sigma = args[1] if len(args) > 1 else kwargs.get("t")
+        mask = kwargs.get("denoise_mask")
+        if sigma is None or not torch.is_tensor(mask) or mask.ndim != 5:
+            return executor(*args, **kwargs)
+        if int(mask.shape[2]) < self.prefix_steps:
+            return executor(*args, **kwargs)
+        weights = self._live_weights(sigma)
+        painted = self._quantize(_apply_video_prefix_weights(mask, weights))
+        kwargs["denoise_mask"] = painted
+        self.current_video_mask = painted[:, :1].contiguous()
         return executor(*args, **kwargs)
 
 
@@ -481,10 +500,21 @@ def install_continue_prefix_remask(model, latent: dict, sigmas) -> Any:
         if not callable(getattr(patched, "set_model_denoise_mask_function", None)):
             log.warning("Director continue: MODEL has no denoise-mask hook; static mask only.")
             return model
+        audio_shape = tuple(streams[1].shape) if len(streams) > 1 and torch.is_tensor(streams[1]) else None
         state = _PrefixRemask(
-            prefix_steps, sigmas, tuple(streams[0].shape), seam_min=_seam_min_from_latent(latent)
+            prefix_steps,
+            sigmas,
+            tuple(streams[0].shape),
+            seam_min=_seam_min_from_latent(latent),
+            audio_shape=audio_shape,
         )
         patched.set_model_denoise_mask_function(state.denoise_mask_function)
+        log.info(
+            "Director continue remask: prefix=%d seam_min=%.2f "
+            "(whole prefix × next/current σ, last token stays at floor)",
+            prefix_steps,
+            float(state.seam_min),
+        )
         try:
             from comfy.patcher_extension import WrappersMP
 
@@ -514,6 +544,7 @@ def uninstall_continue_prefix_remask(model) -> None:
     if state is not None:
         try:
             state.current_video_mask = None
+            state.current_audio_mask = None
         except Exception:
             pass
         try:
