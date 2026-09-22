@@ -10,6 +10,8 @@ import torch
 from ..lib.image_prep import ensure_minimax_canvas
 from .core_sampling import sample_single_stage
 from .refine_pack import (
+    DEFAULT_UPSCALE_MEGAPIXELS,
+    canvas_from_source_megapixels,
     latent_upscale_model_name,
     refine_model_for,
     refine_needs_canvas,
@@ -309,13 +311,12 @@ def _source_canvas(plan, first_pass_images: torch.Tensor | None) -> tuple[int, i
 
 
 def _resolve_refine_canvas(plan, pack: dict) -> tuple[int, int]:
-    tw = int(pack.get("target_width") or 0)
-    th = int(pack.get("target_height") or 0)
-    if tw > 0 and th > 0:
-        return ensure_minimax_canvas(tw, th)
-    return ensure_minimax_canvas(
-        max(int(getattr(plan, "width", 1280) or 1280), 32),
-        max(int(getattr(plan, "height", 720) or 720), 32),
+    src_w = max(int(getattr(plan, "width", 0) or 0), 32)
+    src_h = max(int(getattr(plan, "height", 0) or 0), 32)
+    return canvas_from_source_megapixels(
+        src_w,
+        src_h,
+        pack.get("megapixels") or DEFAULT_UPSCALE_MEGAPIXELS,
     )
 
 
@@ -745,6 +746,7 @@ def apply_segment_refine(
         sigma_steps = max(1, len(sigma_list) - 1)
         how = "sigmas wired" if wired_sigmas else f"sigma {sigma_sampler}"
         note_parts.append(f"{how} {sigma_steps}-step")
+        note_parts.append(f"seed {refine_seed_for(pack, seed, 0)}")
         if pack.get("enable_tiling"):
             tile_count = max(1, min(8, int(pack.get("tile_count") or 2)))
             overlap = max(0, int(pack.get("tile_overlap") or 128))
@@ -758,14 +760,16 @@ def apply_segment_refine(
             )
         # Pass 1 samples after optional upscale; later passes are same-canvas refine only.
         for i in range(n_passes):
+            refine_seed = refine_seed_for(pack, seed, pass_index=i)
             log.info(
-                "Director refine pass %d/%d (%s %s %d-step%s)",
+                "Director refine pass %d/%d (%s %s %d-step%s, seed=%s)",
                 i + 1,
                 n_passes,
                 "sigmas wired" if wired_sigmas else "sigma",
                 sigma_sampler,
                 sigma_steps,
                 ", custom model" if refine_model is not model else "",
+                refine_seed,
             )
             if on_phase:
                 on_phase("refine", (i + 0.5) / n_passes)
@@ -774,7 +778,7 @@ def apply_segment_refine(
                 positive=refine_positive,
                 negative=negative,
                 latent=work,
-                seed=refine_seed_for(pack, seed, pass_index=i),
+                seed=refine_seed,
                 cfg=cfg,
                 steps=sigma_steps,
                 sampler_name=sigma_sampler,

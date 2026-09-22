@@ -41,6 +41,14 @@ function widgetValue(w) {
 function setWidgetVisible(node, name, visible) {
     const w = widgetByName(node, name);
     if (!w) return;
+    applyWidgetVisible(w, visible);
+    for (const linked of w.linkedWidgets || []) {
+        applyWidgetVisible(linked, visible);
+    }
+}
+
+function applyWidgetVisible(w, visible) {
+    if (!w) return;
     w.hidden = !visible;
     if (!w.options) w.options = {};
     w.options.hidden = !visible;
@@ -82,7 +90,7 @@ const ASPECT_CHOICES = new Set([
 ]);
 
 const UPSCALE_METHOD_VALUES = new Set(["lanczos", "nvidia_rtx_vsr", "h3_latent"]);
-const SEED_MODE_VALUES = new Set(["inherit", "offset"]);
+const SEED_MODE_VALUES = new Set(["inherit", "offset", "independent"]);
 const SAMPLER_HINTS = new Set([
     "euler", "euler_ancestral", "heun", "heunpp2", "dpm_2", "dpm_2_ancestral",
     "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_sde",
@@ -154,9 +162,41 @@ function migrateLegacyPrePassesValues(node) {
     seedW.value = "inherit";
 }
 
+function migrateIndependentSeedSlot(node) {
+    const seedW = widgetByName(node, "seed");
+    const aspectW = widgetByName(node, "aspect_ratio");
+    const mpW = widgetByName(node, "megapixels");
+    const widthW = widgetByName(node, "width");
+    const heightW = widgetByName(node, "height");
+    const skipW = widgetByName(node, "skip_fl2v");
+    const rawSeed = widgetValue(seedW);
+    if (!seedW) return;
+    const numeric = Number(rawSeed);
+    if (Number.isFinite(numeric) && numeric >= 0 && !ASPECT_CHOICES.has(rawSeed)) return;
+    if (!ASPECT_CHOICES.has(rawSeed)) {
+        seedW.value = 0;
+        return;
+    }
+    const rawAspect = widgetValue(aspectW);
+    const rawMp = widgetValue(mpW);
+    const rawWidth = widgetValue(widthW);
+    const rawHeight = widgetValue(heightW);
+    seedW.value = 0;
+    if (aspectW) aspectW.value = rawSeed;
+    const mp = Number(rawAspect);
+    if (mpW && Number.isFinite(mp) && mp >= 0.1 && mp <= 16) mpW.value = mp;
+    const width = Number(rawMp);
+    if (widthW && Number.isFinite(width) && width >= 32 && width <= 8192) widthW.value = width;
+    const height = Number(rawWidth);
+    if (heightW && Number.isFinite(height) && height >= 32 && height <= 8192) heightW.value = height;
+    if (skipW && (rawHeight === true || rawHeight === false)) skipW.value = rawHeight;
+}
+
 function migrateRefineWidgets(node) {
     migrateLegacyPrePassesValues(node);
+    migrateIndependentSeedSlot(node);
     migrateRefineWidgetOrder(node);
+    repairSeedControlWidget(node);
     const seedW = widgetByName(node, "seed_mode");
     const aspectW = widgetByName(node, "aspect_ratio");
     const mpW = widgetByName(node, "megapixels");
@@ -165,9 +205,7 @@ function migrateRefineWidgets(node) {
     if (seedW && !SEED_MODE_VALUES.has(String(widgetValue(seedW) ?? "").trim().toLowerCase())) {
         seedW.value = "inherit";
     }
-    if (aspectW && !ASPECT_CHOICES.has(widgetValue(aspectW))) {
-        aspectW.value = FOLLOW_DIRECTOR_ASPECT;
-    }
+    if (aspectW) aspectW.value = FOLLOW_DIRECTOR_ASPECT;
     if (mpW) {
         const n = Number(widgetValue(mpW));
         if (!Number.isFinite(n) || n < 0.1 || n > 16) mpW.value = 1.0;
@@ -187,6 +225,90 @@ function migrateRefineWidgets(node) {
     setWidgetVisible(node, "sigmas", false);
     setWidgetVisible(node, "h3_latent_model", false);
     setWidgetVisible(node, "upscale_model", false);
+}
+
+function isControlAfterGenerateValue(value) {
+    const s = String(value ?? "").trim().toLowerCase();
+    return /^(fixed|increment|decrement|randomize|固定|递增|递减|随机)/.test(s);
+}
+
+function eachSeedControlWidget(node, fn) {
+    const seedW = widgetByName(node, "seed");
+    const seen = new Set();
+    for (const linked of seedW?.linkedWidgets || []) {
+        seen.add(linked);
+        fn(linked);
+    }
+    for (const w of node.widgets || []) {
+        if (seen.has(w) || w === seedW) continue;
+        const n = String(w.name || w.label || "");
+        if (/(control[_\s]?after[_\s]?generate|生成后控制)/i.test(n)) fn(w);
+    }
+}
+
+function collectIndependentSeedWidgets(node) {
+    const seedW = widgetByName(node, "seed");
+    if (!seedW) return [];
+    const extras = [seedW];
+    eachSeedControlWidget(node, (w) => extras.push(w));
+    return [...new Set(extras.filter(Boolean))];
+}
+
+/** Keep seed + 生成后控制 visually under seed_mode (INPUT_TYPES keeps seed last). */
+function placeIndependentSeedWidgets(node) {
+    const widgets = node.widgets;
+    if (!Array.isArray(widgets)) return;
+    const seedMode = widgetByName(node, "seed_mode");
+    const move = collectIndependentSeedWidgets(node);
+    if (!seedMode || !move.length) return;
+    const alreadyAfter = widgets.indexOf(seedMode);
+    if (alreadyAfter >= 0) {
+        const next = widgets.slice(alreadyAfter + 1, alreadyAfter + 1 + move.length);
+        if (next.length === move.length && next.every((w, i) => w === move[i])) return;
+    }
+    for (const w of move) {
+        const i = widgets.indexOf(w);
+        if (i >= 0) widgets.splice(i, 1);
+    }
+    const insertAt = widgets.indexOf(seedMode);
+    if (insertAt < 0) {
+        widgets.push(...move);
+        return;
+    }
+    widgets.splice(insertAt + 1, 0, ...move);
+}
+
+function canvasFromSourceMegapixels(srcW, srcH, megapixels, multiple = 32) {
+    const sw = Math.max(32, Number(srcW) || 864);
+    const sh = Math.max(32, Number(srcH) || 480);
+    let mp = Number(megapixels);
+    if (!Number.isFinite(mp) || mp < 0.1) mp = 1.0;
+    mp = Math.min(16, mp);
+    const total = mp * 1024 * 1024;
+    const ar = sw / sh;
+    let height = Math.sqrt(total / ar);
+    let width = ar * height;
+    width = snapResolutionDim(width, multiple);
+    height = snapResolutionDim(height, multiple);
+    if (width < sw || height < sh) {
+        const scale = Math.max(sw / width, sh / height, 1);
+        width = snapResolutionDim(width * scale, multiple);
+        height = snapResolutionDim(height * scale, multiple);
+    }
+    return { width: Math.max(width, multiple), height: Math.max(height, multiple) };
+}
+
+function repairSeedControlWidget(node) {
+    const mpW = widgetByName(node, "megapixels");
+    eachSeedControlWidget(node, (w) => {
+        const raw = widgetValue(w);
+        if (isControlAfterGenerateValue(raw)) return;
+        const n = Number(raw);
+        if (Number.isFinite(n) && n >= 0.1 && n <= 16 && mpW) {
+            mpW.value = n;
+        }
+        w.value = "fixed";
+    });
 }
 
 function isFollowAspect(value) {
@@ -319,6 +441,7 @@ const CACHE_DIFF_LABELS = {
     refine_mode: "二采模式",
     refine_passes: "二采次数",
     refine_seed_mode: "二采 seed",
+    refine_seed: "二采独立种子",
     refine_target: "二采目标画布",
     refine_sampler: "二采采样器",
     refine_sigmas: "二采噪声表",
@@ -391,7 +514,8 @@ function collectRefineWitness(refine) {
         sampler: widgetStr(refine, "sampler", ""),
         passes: widgetNum(refine, "passes", 1),
         seed_mode: widgetStr(refine, "seed_mode", "inherit"),
-        aspect_ratio: widgetStr(refine, "aspect_ratio", FOLLOW_DIRECTOR_ASPECT),
+        seed: widgetNum(refine, "seed", 0),
+        aspect_ratio: FOLLOW_DIRECTOR_ASPECT,
         megapixels: widgetNum(refine, "megapixels", 1),
         width: widgetNum(refine, "width", 0),
         height: widgetNum(refine, "height", 0),
@@ -523,6 +647,15 @@ function renderCacheStatus(node, data, kind = "normal") {
     }
     lines.push(`缓存 seed：${seeds}`);
     lines.push(`当前 seed：${data?.current_seed ?? "—"}`);
+    const director = connectedDirector(node);
+    const mode = readMode(node);
+    if (director && (mode === "upscale" || mode === "latent_upscale")) {
+        const sw = Number(directorValue(director, "width", 864));
+        const sh = Number(directorValue(director, "height", 480));
+        const mp = widgetNum(node, "megapixels", 1);
+        const canvas = canvasFromSourceMegapixels(sw, sh, mp);
+        lines.push(`二采画布：${canvas.width}×${canvas.height}（跟随一采 ${sw}×${sh} · ${mp}MP）`);
+    }
     const finalCached = Number(data?.final_cached_count || 0);
     const finalMatched = Number(data?.final_matched_count || 0);
     lines.push(
@@ -686,13 +819,10 @@ function syncRefineWidgetVisibility(node) {
     const upscale = mode === "upscale";
     const latentOnly = mode === "latent_upscale";
     const needsCanvas = upscale || latentOnly;
-    const aspect = widgetValue(widgetByName(node, "aspect_ratio"));
-    const follow = isFollowAspect(aspect);
-    const custom = isCustomAspect(aspect);
-    setWidgetVisible(node, "aspect_ratio", needsCanvas);
-    setWidgetVisible(node, "megapixels", needsCanvas && !follow && !custom);
-    setWidgetVisible(node, "width", needsCanvas && custom);
-    setWidgetVisible(node, "height", needsCanvas && custom);
+    setWidgetVisible(node, "aspect_ratio", false);
+    setWidgetVisible(node, "megapixels", needsCanvas);
+    setWidgetVisible(node, "width", false);
+    setWidgetVisible(node, "height", false);
     const method = readUpscaleMethod(node);
     const showH3Model = latentOnly || (upscale && method === "h3_latent");
     setWidgetVisible(node, "upscale_method", upscale);
@@ -708,6 +838,10 @@ function syncRefineWidgetVisibility(node) {
     setWidgetVisible(node, "sampler", !latentOnly);
     setWidgetVisible(node, "passes", !latentOnly);
     setWidgetVisible(node, "seed_mode", !latentOnly);
+    placeIndependentSeedWidgets(node);
+    const independent = String(widgetValue(widgetByName(node, "seed_mode")) || "").trim().toLowerCase() === "independent";
+    setWidgetVisible(node, "seed", !latentOnly && independent);
+    eachSeedControlWidget(node, (w) => applyWidgetVisible(w, !latentOnly && independent));
     setWidgetVisible(node, "enable_tiling", !latentOnly);
     const tilingOn = !latentOnly && Boolean(widgetValue(widgetByName(node, "enable_tiling")));
     setWidgetVisible(node, "tile_count", tilingOn);
@@ -716,7 +850,6 @@ function syncRefineWidgetVisibility(node) {
     setWidgetVisible(node, "target_height", false);
     ensureFirstPassCacheUI(node);
     setWidgetVisible(node, CACHE_STATUS_WIDGET, true);
-    if (needsCanvas && !follow && !custom) syncRefineComputedSize(node);
     try {
         const size = node.computeSize?.();
         if (Array.isArray(size) && size.length >= 2) {
@@ -766,6 +899,10 @@ function installRefineResolutionUI(node) {
         const w = widgetByName(node, "height");
         if (w) w.value = snapResolutionDim(widgetValue(w));
     });
+    hookWidget(node, "seed_mode", () => {
+        syncRefineWidgetVisibility(node);
+        scheduleCacheStatusRefresh(node, 0);
+    });
     hookWidget(node, "confirm_first_pass", () => {
         syncRefineWidgetVisibility(node);
         scheduleCacheStatusRefresh(node, 0);
@@ -775,7 +912,7 @@ function installRefineResolutionUI(node) {
         const prev = node.onWidgetChanged;
         node.onWidgetChanged = function (name, ...rest) {
             const r = prev?.apply(this, [name, ...rest]);
-            if (name === "mode" || name === "upscale_method" || name === "aspect_ratio" || name === "megapixels" || name === "enable_tiling") {
+            if (name === "mode" || name === "upscale_method" || name === "aspect_ratio" || name === "megapixels" || name === "enable_tiling" || name === "seed_mode") {
                 migrateRefineWidgets(this);
                 syncRefineWidgetVisibility(this);
             }
