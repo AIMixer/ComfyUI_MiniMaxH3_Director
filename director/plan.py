@@ -29,6 +29,7 @@ from ..lib.video_io import (
     logical_frame_count,
     logical_frame_map,
     load_timeline_segment,
+    resolve_video_path,
     video_clips_from_timeline,
 )
 from .gen_timeline import (
@@ -401,13 +402,29 @@ def load_source_video_from_timeline(timeline: dict) -> torch.Tensor:
     return load_timeline_segment(timeline, 0, max(1, total))
 
 
-def _load_refs(ref_list: list[dict]) -> list[SegmentRef]:
+def _load_refs(
+    ref_list: list[dict],
+    *,
+    materialize_media: bool = True,
+) -> list[SegmentRef]:
+    """Load reference image slots, optionally without decoding image pixels."""
     refs: list[SegmentRef] = []
     for item in ref_list or []:
         index = int(item.get("index", item.get("slot", len(refs))))
         if index < 0 or index >= MAX_REFERENCE_IMAGES:
             continue
-        tensor = load_reference_tensor(item)
+        if materialize_media:
+            tensor = load_reference_tensor(item)
+        else:
+            tensor = None
+            image_file = item.get("imageFile")
+            if image_file:
+                rel = str(image_file).replace("\\", "/")
+                path = os.path.join(folder_paths.get_input_directory(), rel.replace("/", os.sep))
+                if os.path.isfile(path):
+                    tensor = torch.empty(0, dtype=torch.float32)
+            elif item.get("imageB64"):
+                tensor = torch.empty(0, dtype=torch.float32)
         if tensor is not None:
             image_file = str(
                 item.get("imageFile") or item.get("image_file") or item.get("fileName") or ""
@@ -570,8 +587,10 @@ def _load_ref_videos(
     video_list: list[dict],
     timeline: dict,
     num_frames: int,
+    *,
+    materialize_media: bool = True,
 ) -> list[SegmentRefVideo]:
-    """Load up to 3 standalone reference videos for r2v / ReferenceToVideo."""
+    """Load reference videos, optionally keeping only identity metadata."""
     out: list[SegmentRefVideo] = []
     for item in video_list or []:
         if not isinstance(item, dict) or not _ref_video_entry_has_file(item):
@@ -579,12 +598,20 @@ def _load_ref_videos(
         index = int(item.get("index", item.get("slot", len(out))))
         if index < 0 or index >= MAX_REFERENCE_VIDEOS:
             continue
-        try:
-            tensor = load_reference_video_clip(item, timeline, num_frames, start_frame=0)
-        except Exception as exc:
-            log.warning("Failed to load reference video slot %s: %s", index, exc)
-            continue
-        if tensor is None or tensor.numel() <= 0:
+        if materialize_media:
+            try:
+                tensor = load_reference_video_clip(item, timeline, num_frames, start_frame=0)
+            except Exception as exc:
+                log.warning("Failed to load reference video slot %s: %s", index, exc)
+                continue
+        else:
+            try:
+                resolve_video_path(item)
+            except Exception as exc:
+                log.warning("Failed to load reference video slot %s: %s", index, exc)
+                continue
+            tensor = torch.empty(0, dtype=torch.float32)
+        if tensor is None or (materialize_media and tensor.numel() <= 0):
             continue
         rel = str(item.get("videoFile") or item.get("fileName") or "").strip()
         out.append(SegmentRefVideo(index=index, tensor=tensor, video_file=rel, meta=dict(item)))
@@ -778,6 +805,7 @@ def build_director_plan(
     width: int,
     height: int,
     ref_max_size: int,
+    materialize_media: bool = True,
 ) -> DirectorPlan:
     timeline: dict = {}
     if timeline_data and timeline_data.strip():
@@ -793,7 +821,10 @@ def build_director_plan(
 
     task_type = global_block.get("taskType") or global_task_type or "v2v — 视频转视频(Video to Video)"
     prompt = global_block.get("prompt") or global_prompt or ""
-    global_refs = _load_refs(global_block.get("refs") or [])
+    global_refs = _load_refs(
+        global_block.get("refs") or [],
+        materialize_media=materialize_media,
+    )
     global_ref_audios = _load_ref_audios(
         global_block.get("refAudios") or global_block.get("ref_audios") or []
     )
@@ -812,6 +843,7 @@ def build_director_plan(
             width=width,
             height=height,
             ref_max_size=ref_max_size,
+            materialize_media=materialize_media,
         )
     if is_gen_timeline(timeline, task_key_early):
         return build_gen_director_plan(
@@ -823,6 +855,7 @@ def build_director_plan(
             width=width,
             height=height,
             ref_max_size=ref_max_size,
+            materialize_media=materialize_media,
         )
 
     frame_map = logical_frame_map(timeline)
@@ -842,13 +875,21 @@ def build_director_plan(
             "No source video in MiniMax H3 Director. Upload a video inside the node timeline UI before running."
         )
 
-    try:
-        probe = load_timeline_segment(load_timeline, 0, 1)
-        loaded_h = int(probe.shape[1])
-        loaded_w = int(probe.shape[2])
-    except Exception as exc:
-        log.warning("Could not probe source video frame: %s", exc)
-        video_meta = load_timeline.get("video") or {}
+    video_meta = timeline.get("video") or {}
+    if not (video_meta.get("width") and video_meta.get("height")):
+        clips_meta = video_clips_from_timeline(timeline)
+        if clips_meta:
+            video_meta = {**clips_meta[0], **video_meta}
+    if materialize_media:
+        try:
+            probe = load_timeline_segment(load_timeline, 0, 1)
+            loaded_h = int(probe.shape[1])
+            loaded_w = int(probe.shape[2])
+        except Exception as exc:
+            log.warning("Could not probe source video frame: %s", exc)
+            loaded_w = int(video_meta.get("width") or width)
+            loaded_h = int(video_meta.get("height") or height)
+    else:
         loaded_w = int(video_meta.get("width") or width)
         loaded_h = int(video_meta.get("height") or height)
 
@@ -891,7 +932,10 @@ def build_director_plan(
             seg_prompt = (seg_data.get("prompt") or "").strip() or prompt
             seg_task = seg_data.get("taskType") or seg_data.get("task_type") or task_type
             # Segment mode: only this segment's refs — never inherit global.refs / refAudios.
-            seg_refs = _load_refs(seg_data.get("refs") or [])
+            seg_refs = _load_refs(
+                seg_data.get("refs") or [],
+                materialize_media=materialize_media,
+            )
             seg_ref_audios = _load_ref_audios(
                 seg_data.get("refAudios") or seg_data.get("ref_audios") or []
             )

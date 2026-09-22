@@ -209,13 +209,22 @@ def _load_fl2v_segment_refs(
     height: int,
     output_mode: str,
     ref_max_size: int,
+    materialize_media: bool = True,
 ):
     """Build SegmentRef 0/1 from mixed-timeline fl2v start/end images."""
     from .fl2v_timeline import _fit_image, _unify_fl2v_pair_canvas
-    from .plan import SegmentRef
+    from .plan import SegmentRef, _load_refs
 
     start_raw = _fl2v_image_raw(seg_data, 0)
     end_raw = _fl2v_image_raw(seg_data, 1)
+    if not materialize_media:
+        refs = []
+        for index, raw in ((0, start_raw), (1, end_raw)):
+            if isinstance(raw, dict):
+                item = dict(raw)
+                item["index"] = index
+                refs.extend(_load_refs([item], materialize_media=False))
+        return refs
     start_img = None
     end_img = None
     if start_raw:
@@ -370,6 +379,7 @@ def build_gen_director_plan(
     width: int,
     height: int,
     ref_max_size: int,
+    materialize_media: bool = True,
 ):
     """Build DirectorPlan for generation timeline modes (lazy import avoids cycles)."""
     from .plan import (
@@ -401,7 +411,10 @@ def build_gen_director_plan(
 
     submode = gen_submode(timeline, task_key)
     prompt = global_block.get("prompt") or global_prompt or ""
-    global_refs = _load_refs(global_block.get("refs") or [])
+    global_refs = _load_refs(
+        global_block.get("refs") or [],
+        materialize_media=materialize_media,
+    )
     # r2v/r2i shared「公共参数」: off unless timeline.global.commonEnabled is set.
     common_enabled = bool(
         global_block.get("commonEnabled")
@@ -475,7 +488,7 @@ def build_gen_director_plan(
         source_video = torch.full(
             (max(1, len(segment_ranges)), 16, 16, 3), 0.5, dtype=torch.float32
         )
-    else:
+    elif materialize_media:
         source_clips = _build_gen_source_clips(
             segment_ranges,
             task_key=task_key,
@@ -493,6 +506,11 @@ def build_gen_director_plan(
             source_video = torch.full((len(source_clips), 16, 16, 3), 0.5, dtype=torch.float32)
         else:
             source_video = cat_frames_variable_size(source_clips)
+    else:
+        source_clips = []
+        source_video = torch.full(
+            (max(1, len(segment_ranges)), 16, 16, 3), 0.5, dtype=torch.float32
+        )
 
     from .segment_continuity import resolve_segment_continuity_from_prev
 
@@ -526,7 +544,10 @@ def build_gen_director_plan(
             else:
                 seg_prompt = local_prompt or prompt
             # r2v/r2i + commonEnabled: merge shared global.refs; same slot → group wins.
-            local_refs = _load_refs(seg_data.get("refs") or [])
+            local_refs = _load_refs(
+                seg_data.get("refs") or [],
+                materialize_media=materialize_media,
+            )
             if seg_task_key_preview in ("r2v", "r2i") and common_enabled and global_refs:
                 seg_refs = merge_indexed_refs(global_refs, local_refs)
             else:
@@ -551,6 +572,7 @@ def build_gen_director_plan(
                 height=out_h,
                 output_mode=out_mode,
                 ref_max_size=ref_max,
+                materialize_media=materialize_media,
             )
         seg_ref_audios = []
         seg_ref_videos = []
@@ -580,7 +602,12 @@ def build_gen_director_plan(
                 if isinstance(legacy, dict) and (legacy.get("videoFile") or legacy.get("fileName")):
                     if not any(int(v.get("index", v.get("slot", -1))) == 0 for v in raw_vids if isinstance(v, dict)):
                         raw_vids = [{"index": 0, **legacy}, *list(raw_vids or [])]
-                local_videos = _load_ref_videos(raw_vids, timeline, seg_len)
+                local_videos = _load_ref_videos(
+                    raw_vids,
+                    timeline,
+                    seg_len,
+                    materialize_media=materialize_media,
+                )
                 if common_enabled:
                     common_vids = list(
                         global_block.get("refVideos") or global_block.get("ref_videos") or []
@@ -600,7 +627,12 @@ def build_gen_director_plan(
                         ):
                             common_vids = [{"index": 0, **g_legacy}, *common_vids]
                     common_videos = (
-                        _load_ref_videos(common_vids, timeline, seg_len) if common_vids else []
+                        _load_ref_videos(
+                            common_vids,
+                            timeline,
+                            seg_len,
+                            materialize_media=materialize_media,
+                        ) if common_vids else []
                     )
                     seg_ref_videos = merge_indexed_refs(common_videos, local_videos)
                 else:
@@ -612,7 +644,9 @@ def build_gen_director_plan(
                 idx + 1,
                 seg_task_key,
             )
-        if seg_task_key == "i2v":
+        if not materialize_media:
+            seg_source = None
+        elif seg_task_key == "i2v":
             if idx < len(source_clips):
                 seg_source = source_clips[idx].clone()
             else:

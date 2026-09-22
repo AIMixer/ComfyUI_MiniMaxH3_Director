@@ -538,11 +538,13 @@ def build_fl2v_director_plan(
     width: int,
     height: int,
     ref_max_size: int,
+    materialize_media: bool = True,
 ):
     from .plan import (
         DirectorPlan,
         SegmentPlan,
         SegmentRef,
+        _load_refs,
         _parse_run_selection,
         _resolve_export_mode,
     )
@@ -649,42 +651,60 @@ def build_fl2v_director_plan(
         )
 
         start_img = None
-        if start_kf is not None:
-            start_ref = {
-                "imageFile": start_kf.get("imageFile") or "",
-                "imageB64": start_kf.get("imageB64") or "",
-            }
-            start_img = _fit_image(
-                _load_image_ref(start_ref),
-                width=out_w,
-                height=out_h,
-                output_mode=out_mode,
-                ref_max_size=ref_max,
-            )
-
         end_img = None
-        if end_kf is not None:
-            end_ref = {
-                "imageFile": end_kf.get("imageFile") or "",
-                "imageB64": end_kf.get("imageB64") or "",
-            }
-            end_img = _fit_image(
-                _load_image_ref(end_ref),
-                width=out_w,
-                height=out_h,
-                output_mode=out_mode,
-                ref_max_size=ref_max,
-            )
-        start_img, end_img = _unify_fl2v_pair_canvas(start_img, end_img)
-        refs: list[SegmentRef] = []
-        if start_img is not None:
-            refs.append(SegmentRef(index=0, tensor=start_img[:1].clone()))
-        if end_img is not None:
-            refs.append(SegmentRef(index=1, tensor=end_img[:1].clone()))
+        if materialize_media:
+            if start_kf is not None:
+                start_ref = {
+                    "imageFile": start_kf.get("imageFile") or "",
+                    "imageB64": start_kf.get("imageB64") or "",
+                }
+                start_img = _fit_image(
+                    _load_image_ref(start_ref),
+                    width=out_w,
+                    height=out_h,
+                    output_mode=out_mode,
+                    ref_max_size=ref_max,
+                )
+
+            if end_kf is not None:
+                end_ref = {
+                    "imageFile": end_kf.get("imageFile") or "",
+                    "imageB64": end_kf.get("imageB64") or "",
+                }
+                end_img = _fit_image(
+                    _load_image_ref(end_ref),
+                    width=out_w,
+                    height=out_h,
+                    output_mode=out_mode,
+                    ref_max_size=ref_max,
+                )
+            start_img, end_img = _unify_fl2v_pair_canvas(start_img, end_img)
+            refs: list[SegmentRef] = []
+            if start_img is not None:
+                refs.append(SegmentRef(index=0, tensor=start_img[:1].clone()))
+            if end_img is not None:
+                refs.append(SegmentRef(index=1, tensor=end_img[:1].clone()))
+        else:
+            refs = []
+            for index, keyframe in ((0, start_kf), (1, end_kf)):
+                if isinstance(keyframe, dict):
+                    refs.extend(
+                        _load_refs(
+                            [{
+                                "index": index,
+                                "imageFile": keyframe.get("imageFile") or "",
+                                "imageB64": keyframe.get("imageB64") or "",
+                            }],
+                            materialize_media=False,
+                        )
+                    )
 
         # Last-only: no source_clip — otherwise held end would be read as first_frame.
         # Empty shot: dummy clip; ImageToVideo gets no keyframes (text-to-video).
-        if start_img is not None:
+        if not materialize_media:
+            source_clip = None
+            source_clips.append(torch.full((1, 16, 16, 3), 0.5, dtype=torch.float32))
+        elif start_img is not None:
             source_clip = _build_fl2v_endpoint_source(start_img, end_img, fc)
             source_clips.append(source_clip[:1].clone())
         elif end_img is not None:
