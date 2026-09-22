@@ -14,7 +14,8 @@ from ..lib.image_prep import MINIMAX_CANVAS_STRIDE, ensure_minimax_canvas
 MMX_DIR_REFINE = "MMX_DIR_REFINE"
 
 REFINE_MODES = ("refine", "upscale", "latent_upscale")
-SEED_MODES = ("inherit", "offset")
+SEED_MODES = ("inherit", "offset", "independent")
+INDEPENDENT_SEED_MODE = "independent"
 UPSCALE_METHODS = ("lanczos", "nvidia_rtx_vsr", "h3_latent")
 MAX_REFINE_PASSES = 9999
 # 海螺参考生视频二采：ManualSigmas 4 个数 = euler 3 步。
@@ -199,6 +200,38 @@ def infer_upscale_target(base_w: int, base_h: int) -> tuple[int, int]:
     return ensure_minimax_canvas(nw, nh)
 
 
+def canvas_from_source_megapixels(
+    source_width: int,
+    source_height: int,
+    megapixels: float,
+    multiple: int = MINIMAX_CANVAS_STRIDE,
+) -> tuple[int, int]:
+    """Same aspect as the first-pass canvas, area from megapixels, snapped ×32."""
+    sw = int(source_width or 0)
+    sh = int(source_height or 0)
+    if sw <= 0 or sh <= 0:
+        sw, sh = 864, 480
+    try:
+        mp = float(megapixels)
+    except (TypeError, ValueError):
+        mp = DEFAULT_UPSCALE_MEGAPIXELS
+    mp = min(16.0, max(0.1, mp))
+    mult = max(8, int(multiple or MINIMAX_CANVAS_STRIDE))
+    total = mp * 1024 * 1024
+    ar = sw / float(sh)
+    height = math.sqrt(total / ar)
+    width = ar * height
+    tw = int(round(width / mult) * mult)
+    th = int(round(height / mult) * mult)
+    tw, th = ensure_minimax_canvas(max(tw, mult), max(th, mult))
+    if tw < sw or th < sh:
+        scale = max(sw / float(tw), sh / float(th), 1.0)
+        tw = int(round(tw * scale / mult) * mult)
+        th = int(round(th * scale / mult) * mult)
+        tw, th = ensure_minimax_canvas(max(tw, sw, mult), max(th, sh, mult))
+    return tw, th
+
+
 def normalize_aspect_ratio(aspect_ratio: str | None) -> str:
     # Legacy workflows mapped old target_width=0 onto this combo.
     if aspect_ratio in (None, "", 0, 0.0, "0", "0.0", False):
@@ -284,6 +317,7 @@ def pack_refine(
     mode: str = "refine",
     passes: int = 1,
     seed_mode: str = "inherit",
+    seed: int = 0,
     aspect_ratio: str = FOLLOW_DIRECTOR_ASPECT,
     megapixels: float = DEFAULT_UPSCALE_MEGAPIXELS,
     width: int = 0,
@@ -309,6 +343,12 @@ def pack_refine(
     seed_mode = str(seed_mode or "inherit").strip().lower()
     if seed_mode not in SEED_MODES:
         seed_mode = "inherit"
+    try:
+        packed_seed = int(seed or 0)
+    except (TypeError, ValueError):
+        packed_seed = 0
+    if packed_seed < 0:
+        packed_seed = 0
     method = str(upscale_method or "h3_latent").strip().lower()
     if method not in UPSCALE_METHODS:
         method = "h3_latent"
@@ -317,7 +357,7 @@ def pack_refine(
     parsed = (
         parse_refine_sigmas(sigma_tensor, fallback=False) if sigma_tensor is not None else ()
     )
-    ar = normalize_aspect_ratio(aspect_ratio)
+    ar = FOLLOW_DIRECTOR_ASPECT
     tw, th = resolve_refine_target(
         aspect_ratio=ar,
         megapixels=megapixels,
@@ -332,6 +372,7 @@ def pack_refine(
         "mode": mode,
         "passes": refine_passes_for({"passes": passes}),
         "seed_mode": seed_mode,
+        "seed": packed_seed,
         "aspect_ratio": ar,
         "megapixels": float(megapixels or DEFAULT_UPSCALE_MEGAPIXELS),
         "target_width": tw,
@@ -376,20 +417,29 @@ def normalize_refine_pack(
     mode = str(raw.get("mode") or "refine").strip().lower()
     if mode not in REFINE_MODES:
         mode = "refine"
-    ar = normalize_aspect_ratio(raw.get("aspect_ratio"))
+    ar = FOLLOW_DIRECTOR_ASPECT
     tw, th = int(raw.get("target_width") or 0), int(raw.get("target_height") or 0)
-    if mode in {"upscale", "latent_upscale"} and (tw <= 0 or th <= 0):
-        if not is_follow_director_aspect(ar) and not is_custom_aspect_ratio(ar):
-            resolved = resolution_from_selector(ar, raw.get("megapixels") or DEFAULT_UPSCALE_MEGAPIXELS)
-            if resolved:
-                tw, th = resolved
-        if tw <= 0 or th <= 0:
-            tw, th = infer_upscale_target(base_width, base_height)
+    if mode in {"upscale", "latent_upscale"}:
+        bw, bh = int(base_width or 0), int(base_height or 0)
+        if bw > 0 and bh > 0:
+            tw, th = canvas_from_source_megapixels(
+                bw, bh, raw.get("megapixels") or DEFAULT_UPSCALE_MEGAPIXELS
+            )
+        elif tw <= 0 or th <= 0:
+            tw, th = infer_upscale_target(bw, bh)
+        else:
+            tw, th = ensure_minimax_canvas(tw, th)
     elif tw > 0 and th > 0:
         tw, th = ensure_minimax_canvas(tw, th)
     seed_mode = str(raw.get("seed_mode") or "inherit").strip().lower()
     if seed_mode not in SEED_MODES:
         seed_mode = "inherit"
+    try:
+        packed_seed = int(raw.get("seed") or 0)
+    except (TypeError, ValueError):
+        packed_seed = 0
+    if packed_seed < 0:
+        packed_seed = 0
     method = str(raw.get("upscale_method") or "h3_latent").strip().lower()
     if method not in UPSCALE_METHODS:
         method = "h3_latent"
@@ -424,6 +474,7 @@ def normalize_refine_pack(
         "mode": mode,
         "passes": refine_passes_for(raw),
         "seed_mode": seed_mode,
+        "seed": packed_seed,
         "aspect_ratio": ar,
         "megapixels": float(raw.get("megapixels") or DEFAULT_UPSCALE_MEGAPIXELS),
         "target_width": tw,
@@ -485,8 +536,24 @@ def refine_model_for(pack: dict[str, Any] | None, fallback):
 
 
 def refine_seed_for(pack: dict[str, Any], seed: int, pass_index: int = 0) -> int:
-    if pack.get("seed_mode") == "offset":
-        return int(seed) + 1 + int(max(0, pass_index))
+    """Resolve the second-pass noise seed.
+
+    ``inherit``: Director seed. ``offset``: Director seed + 1 + pass.
+    ``independent``: Refine.seed (+ pass). ComfyUI fixed/randomize on that
+    widget does not touch the first-pass cache seed.
+    """
+    extra = int(max(0, pass_index))
+    mode = str(pack.get("seed_mode") or "inherit").strip().lower()
+    if mode == "offset":
+        return int(seed) + 1 + extra
+    if mode == INDEPENDENT_SEED_MODE:
+        try:
+            base = int(pack.get("seed") if pack.get("seed") is not None else 0)
+        except (TypeError, ValueError):
+            base = 0
+        if base < 0:
+            base = 0
+        return base + extra
     return int(seed)
 
 
@@ -513,6 +580,11 @@ def refine_fingerprint(plan) -> dict[str, Any]:
         "refine_sample_model": bool(pack.get("has_sample_model") or pack.get("sample_model") is not None),
         "refine_skip_fl2v": bool(pack.get("skip_fl2v", True)),
     }
+    if str(pack.get("seed_mode") or "") == INDEPENDENT_SEED_MODE:
+        try:
+            payload["refine_seed"] = int(pack.get("seed") or 0)
+        except (TypeError, ValueError):
+            payload["refine_seed"] = 0
     if refine_uses_h3_latent(pack) and bool(pack.get("enable_latent_chunking")):
         payload["refine_enable_latent_chunking"] = True
     if str(pack.get("mode") or "") != "latent_upscale" and bool(pack.get("enable_tiling")):
@@ -529,7 +601,6 @@ def refine_report_line(plan) -> str | None:
     mode = pack.get("mode") or "refine"
     extra = ""
     if refine_needs_canvas(pack):
-        ar = pack.get("aspect_ratio") or FOLLOW_DIRECTOR_ASPECT
         if refine_uses_h3_latent(pack):
             how = latent_upscale_model_name(pack) or "h3_latent"
         else:
@@ -541,7 +612,7 @@ def refine_report_line(plan) -> str | None:
             else:
                 how = "lanczos"
         extra = (
-            f", {ar} → {int(pack.get('target_width') or 0)}×{int(pack.get('target_height') or 0)}"
+            f", 跟随一采 → {int(pack.get('target_width') or 0)}×{int(pack.get('target_height') or 0)}"
             f", {how}"
         )
         if refine_uses_h3_latent(pack) and pack.get("enable_latent_chunking"):
@@ -560,9 +631,16 @@ def refine_report_line(plan) -> str | None:
     else:
         how = f"sigmas {sampler}" if wired else "sigmas 未接线"
         step_note = f" {n_steps}-step" if n_steps else ""
+        seed_mode = str(pack.get("seed_mode") or "inherit")
+        if seed_mode == INDEPENDENT_SEED_MODE:
+            seed_note = f", seed={int(pack.get('seed') or 0)} (independent)"
+        elif seed_mode == "offset":
+            seed_note = ", seed offset"
+        else:
+            seed_note = ""
         line = (
             f"Refine: ON ({mode}, {how}{step_note}"
-            f"{pass_note}{model_note}{extra})"
+            f"{pass_note}{model_note}{seed_note}{extra})"
         )
         if pack.get("enable_tiling"):
             tile_count = _clamp_tile_count(pack.get("tile_count"))

@@ -15,7 +15,7 @@ from ..director.refine_pack import (
     REFINE_MODES,
     SEED_MODES,
     UPSCALE_METHODS,
-    infer_upscale_target,
+    canvas_from_source_megapixels,
     pack_refine,
 )
 
@@ -132,7 +132,13 @@ class MiniMaxH3DirectorRefine:
                     list(SEED_MODES),
                     {
                         "default": "inherit",
-                        "tooltip": "inherit = 用导演台 seed；offset = 每轮 seed+1、+2…。",
+                        "tooltip": (
+                            "二采种子从哪来。"
+                            "inherit = 跟随导演台（一采和二采用同一个 seed）。"
+                            "offset = 导演台 seed+1（二采和一采错开一号）。"
+                            "independent = 独立种子：只用下方 seed / 生成后控制，"
+                            "不改导演台 seed，确认二采仍可跳过一采。"
+                        ),
                     },
                 ),
                 "aspect_ratio": (
@@ -140,11 +146,8 @@ class MiniMaxH3DirectorRefine:
                     {
                         "default": FOLLOW_DIRECTOR_ASPECT,
                         "tooltip": (
-                            "放大目标画布，算法同导演台「输出分辨率」。"
-                            "导演台是一采分辨率（例如 0.4 MP），这里是放大后的目标"
-                            "（例如 1.0 MP）。跟随导演台：按导演台画布比例推 720P 档。"
-                            "比例预设：配合百万像素。"
-                            "自定义：直接填宽高（对齐 ×32）。"
+                            "已废弃：二采比例始终跟随导演台一采画布。"
+                            "请只用百万像素控制放大尺寸。"
                         ),
                     },
                 ),
@@ -156,8 +159,8 @@ class MiniMaxH3DirectorRefine:
                         "max": 16.0,
                         "step": 0.1,
                         "tooltip": (
-                            "百万像素，同导演台 ResolutionSelector。"
-                            "1.0 MP 在 16:9 约为 1376×768（对齐 32）。仅比例预设时生效。"
+                            "放大目标百万像素。比例始终与导演台一采画布相同。"
+                            "例如一采 864×480（16:9），1.8 MP → 1824×1024。"
                         ),
                     },
                 ),
@@ -257,6 +260,21 @@ class MiniMaxH3DirectorRefine:
                         ),
                     },
                 ),
+                "seed": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 0xFFFFFFFFFFFFFFFF,
+                        "control_after_generate": True,
+                        "tooltip": (
+                            "仅 seed_mode=independent 时生效。"
+                            "生成后控制：fixed=每次同一颗；increment=每次+1；"
+                            "decrement=每次-1；randomize=每次随机新种子。"
+                            "都不改导演台一采 seed。"
+                        ),
+                    },
+                ),
             },
         }
 
@@ -274,7 +292,7 @@ class MiniMaxH3DirectorRefine:
         "Director.images is the refined / upscaled result; "
         "Director.images_pre_refine is the first-pass video (before second sample). "
         "Second sample uses SIGMAS from BasicScheduler / ManualSigmas. "
-        "Upscale / latent_upscale canvas uses the same aspect + megapixels / custom W×H as Director. "
+        "Upscale canvas keeps the Director first-pass aspect; megapixels sets the enlarge size. "
         "Director first-pass stays at its own resolution; Refine target is the enlarge size. "
         "width / height are the resolved target canvas (×32). "
         "Does not sample by itself — no IMAGE output. "
@@ -289,6 +307,7 @@ class MiniMaxH3DirectorRefine:
         sampler="",
         passes=1,
         seed_mode="inherit",
+        seed=0,
         aspect_ratio=FOLLOW_DIRECTOR_ASPECT,
         megapixels=DEFAULT_UPSCALE_MEGAPIXELS,
         width=1280,
@@ -334,11 +353,18 @@ class MiniMaxH3DirectorRefine:
             n_passes = 1
         if n_passes < 1:
             n_passes = 1
+        try:
+            packed_seed = int(seed or 0)
+        except (TypeError, ValueError):
+            packed_seed = 0
+        if packed_seed < 0:
+            packed_seed = 0
         pack = pack_refine(
             mode=mode,
             passes=n_passes,
             seed_mode=seed_mode,
-            aspect_ratio=aspect_ratio,
+            seed=packed_seed,
+            aspect_ratio=FOLLOW_DIRECTOR_ASPECT,
             megapixels=mp,
             width=w,
             height=h,
@@ -360,5 +386,5 @@ class MiniMaxH3DirectorRefine:
         out_w = int(pack.get("target_width") or 0)
         out_h = int(pack.get("target_height") or 0)
         if out_w <= 0 or out_h <= 0:
-            out_w, out_h = infer_upscale_target(0, 0)
+            out_w, out_h = canvas_from_source_megapixels(864, 480, mp)
         return (pack, int(out_w), int(out_h))
