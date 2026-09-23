@@ -1,5 +1,17 @@
 """Disk cache for MiniMax H3 Director segment decode outputs (partial re-run + merge).
 
+Frame payloads are stored losslessly as FFV1 (``seg_XXXX.frames.mkv`` /
+``seg_XXXX.pre.frames.mkv``) via :mod:`..lib.frames_ffv1`. Payloads written by
+older versions as raw uint8 ``torch.save`` (``seg_XXXX.pt``) are still *read*,
+and are deleted as soon as that slot is written again. Nothing else about the
+layout changed (``.av.pt`` / ``.audio.pt`` / ``.handoff.json`` / ``.meta.json``).
+
+Slots are resolved through :mod:`segment_identity` rather than being the segment
+index: an external-group segment is addressed by its graph node label, so
+inserting or deleting a segment elsewhere on the timeline no longer shifts the
+remaining segments onto a neighbour's slot. Timelines without a stable identity
+keep the old index-addressed behaviour.
+
 Cache is best-effort: write failures (cloud RO mounts, same-name overwrite
 blocks, full disks) must never abort the main generation run.
 """
@@ -18,9 +30,17 @@ import torch
 
 import folder_paths
 
+from ..lib.frames_ffv1 import FRAMES_SUFFIX, decode_frames_ffv1, encode_frames_ffv1
 from .h3_latent_continue import CONTINUE_PIPELINE_ID, clamp_seam_min_mask
 from .h3_motion_context import CONTINUITY_PIPELINE_ID, trim_context_prefix, trim_export_tail
 from .plan import DirectorPlan, SegmentPlan, resolve_ref_image_size
+from .segment_identity import (
+    EXTERNAL_SEGMENT_FP_KEY,
+    resolve_slot,
+    resolve_slot_for_index,
+    strip_position,
+    valid_slots,
+)
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.cache")
 
@@ -34,7 +54,9 @@ SOURCE_VIDEO_FP_KEY = "source_video"
 # reused on its own identity, so editing group_1 leaves group_0's cache alone.
 # The chain itself lives in ``timeline_data`` (status request and execute both
 # receive it) and is never persisted.
-EXTERNAL_SEGMENT_FP_KEY = "external_group"
+#
+# ``EXTERNAL_SEGMENT_FP_KEY`` lives in :mod:`segment_identity` (the slot layer
+# needs it too) and is re-exported here for the rest of this module.
 
 # Fingerprint keys that come out of the executed group payloads (prompts,
 # durations, reference counts/slots, per-row continuity). The cache-status panel
@@ -42,6 +64,13 @@ EXTERNAL_SEGMENT_FP_KEY = "external_group"
 # compares only the remaining keys plus the wiring witness.
 GROUP_DERIVED_FP_KEYS = frozenset(
     {
+        # 位置解耦（身份槽）之后，指纹里表示段长的键是 ``frames``（= end - start），
+        # 外接组的段长由分组自己的 duration_sec 决定 —— 面板拿不到已执行载荷，必须剔除。
+        # ⚠️ index/start/end 是改名前的旧键名：留着只为兼容手写/超旧的缓存文件，
+        #    当前指纹已不再产出它们。漏掉 ``frames`` 的后果是探测段恒为 0 帧、
+        #    与缓存里的真实段长（如 243）永远不等 → 面板每段都假报不匹配
+        #    （真跑路径两边都是真实段长，不受影响 —— 2026-09-21 实测踩到过）。
+        "frames",
         "index",
         "start",
         "end",
@@ -163,6 +192,56 @@ def _ref_audio_file_stamp(audio: Any, fallback_index: int) -> str:
     return f"aud{index}:{name}:{stamp}"
 
 
+def _segment_frame_length(seg: SegmentPlan) -> int:
+    """Segment duration in frames — the position-free part of its frame range.
+
+    Absolute ``start``/``end`` move whenever an earlier segment is inserted or
+    removed; the length does not, and the length is what actually reaches the
+    sampler (the external-group path derives it from the group's own
+    ``duration_sec``).
+    """
+    try:
+        start = int(getattr(seg, "start_frame", 0) or 0)
+        end = int(getattr(seg, "end_frame", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, end - start)
+
+
+def _stored_fingerprint(raw: Any) -> Any:
+    """Upgrade an on-disk fingerprint to the current schema (read-only).
+
+    Two position-bound fields no longer take part in the identity:
+
+    * ``index`` / ``start`` / ``end`` — the absolute timeline slot, folded into
+      ``frames`` (the duration, which is what the sampler sees);
+    * the external record's ``slot`` (``groups.group_0``), an ordinal that
+      renames itself whenever the chain is reordered.
+
+    Caches written before the change are compared as if they already carried the
+    new schema, so an existing cache directory keeps matching instead of being
+    re-rendered once.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    out = dict(raw)
+    if "frames" not in out and any(key in out for key in ("index", "start", "end")):
+        try:
+            start = int(out.pop("start", 0) or 0)
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            end = int(out.pop("end", 0) or 0)
+        except (TypeError, ValueError):
+            end = 0
+        out.pop("index", None)
+        out["frames"] = max(0, end - start)
+    record = out.get(EXTERNAL_SEGMENT_FP_KEY)
+    if isinstance(record, dict):
+        out[EXTERNAL_SEGMENT_FP_KEY] = strip_position(record)
+    return out
+
+
 def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
     """Identity that affects first-pass sampling (no Refine settings)."""
     ref_files = sorted(
@@ -183,9 +262,10 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         or ""
     ).strip()
     payload = {
-        "index": seg.index,
-        "start": seg.start_frame,
-        "end": seg.end_frame,
+        # Position-free on purpose: an inserted/deleted segment moves every later
+        # frame range but no segment's own length, and only the length reaches
+        # the sampler (``duration_sec`` drives the external-group path).
+        "frames": _segment_frame_length(seg),
         "prompt": seg.prompt,
         "negative": seg.negative_prompt,
         "task_key": seg.task_key,
@@ -233,7 +313,10 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         groups = witness.get("groups")
         index = int(getattr(seg, "index", 0) or 0)
         if isinstance(groups, list) and 0 <= index < len(groups):
-            record = groups[index]
+            # This segment's own record *is* its identity — minus ``slot``, which
+            # is an ordinal (``groups.group_0``) that renames itself whenever the
+            # chain is reordered and says nothing about what the group renders.
+            record = strip_position(groups[index])
             if isinstance(record, dict):
                 payload[EXTERNAL_SEGMENT_FP_KEY] = record
     return payload
@@ -362,6 +445,58 @@ def _frames_from_disk(loaded: Any) -> torch.Tensor | None:
     return loaded.float()
 
 
+def _frames_path(root: Path, idx: int, *, first_pass: bool) -> Path:
+    """Frame payload of a slot: ``seg_0000.frames.mkv`` / ``seg_0000.pre.frames.mkv``."""
+    stem = f"seg_{idx:04d}.pre" if first_pass else f"seg_{idx:04d}"
+    return root / f"{stem}{FRAMES_SUFFIX}"
+
+
+def _legacy_frames_path(root: Path, idx: int, *, first_pass: bool) -> Path:
+    """Pre-FFV1 raw ``torch.save`` payload — read-only fallback, never written."""
+    stem = f"seg_{idx:04d}.pre" if first_pass else f"seg_{idx:04d}"
+    return root / f"{stem}.pt"
+
+
+def _frames_exist(root: Path, idx: int, *, first_pass: bool) -> bool:
+    """True when either the FFV1 payload or a legacy raw payload is on disk."""
+    return _frames_path(root, idx, first_pass=first_pass).is_file() or _legacy_frames_path(
+        root, idx, first_pass=first_pass
+    ).is_file()
+
+
+def _load_frames(root: Path, idx: int, *, first_pass: bool) -> torch.Tensor | None:
+    """Read a slot's frames as float32 [0,1] — FFV1 first, legacy raw ``.pt`` second.
+
+    Kept lossless on purpose: the continuity handoff re-uses these pixels as the
+    next segment's locked prefix, so any re-encode drift would corrupt a seam.
+    A decode failure degrades to a cache miss and never aborts the run.
+    """
+    new_path = _frames_path(root, idx, first_pass=first_pass)
+    if new_path.is_file():
+        try:
+            return _frames_from_disk(decode_frames_ffv1(new_path))
+        except Exception as exc:
+            log.warning("Failed to decode frame cache %s: %s", new_path.name, exc)
+            return None
+    legacy = _legacy_frames_path(root, idx, first_pass=first_pass)
+    if legacy.is_file():
+        try:
+            return _frames_from_disk(
+                torch.load(legacy, map_location="cpu", weights_only=True)
+            )
+        except Exception as exc:
+            log.warning("Failed to load legacy frame cache %s: %s", legacy.name, exc)
+            return None
+    return None
+
+
+def _drop_legacy_frames(root: Path, idx: int, *, first_pass: bool) -> None:
+    """Delete the raw ``.pt`` twin once FFV1 is published (one-way migration)."""
+    legacy = _legacy_frames_path(root, idx, first_pass=first_pass)
+    if legacy.is_file():
+        _safe_unlink(legacy)
+
+
 def save_segment_cache(
     node_id: str | None,
     seg: SegmentPlan,
@@ -387,15 +522,19 @@ def save_segment_cache(
     if root is None:
         return
     fp = segment_cache_fingerprint(seg, plan)
-    idx = seg.index
-    pt_path = root / f"seg_{idx:04d}.pt"
+    idx = resolve_slot(root, seg, plan)
+    frames_path = _frames_path(root, idx, first_pass=False)
     meta_path = root / f"seg_{idx:04d}.meta.json"
     latent_path = root / f"seg_{idx:04d}.av.pt"
     handoff_path = root / f"seg_{idx:04d}.handoff.json"
     audio_path = root / f"seg_{idx:04d}.audio.pt"
     try:
         payload = _frames_to_disk(tensor)
-        _write_via_temp(pt_path, lambda p: torch.save(payload, p))
+        fps = float(getattr(plan, "frame_rate", 24) or 24)
+        _write_via_temp(
+            frames_path, lambda p: encode_frames_ffv1(p, payload, fps=fps)
+        )
+        _drop_legacy_frames(root, idx, first_pass=False)
         text = json.dumps(fp, ensure_ascii=False, sort_keys=True)
         _write_via_temp(
             meta_path,
@@ -530,14 +669,14 @@ def load_segment_handoff_meta(
     root = _cache_root(node_id)
     if root is None:
         return None
-    idx = seg.index
+    idx = resolve_slot(root, seg, plan)
     meta_path = root / f"seg_{idx:04d}.meta.json"
     handoff_path = root / f"seg_{idx:04d}.handoff.json"
     if not meta_path.is_file() or not handoff_path.is_file():
         return None
     try:
         expected = segment_cache_fingerprint(seg, plan)
-        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
         if stored != expected:
             if _reject_source_stale(stored, expected, seg_index=idx, quiet=True) or not allow_stale:
                 return None
@@ -587,14 +726,14 @@ def load_first_pass_av_latent(
     root = _cache_root(node_id)
     if root is None:
         return None
-    idx = seg.index
+    idx = resolve_slot(root, seg, plan)
     meta_path = root / f"seg_{idx:04d}.pre.meta.json"
     latent_path = root / f"seg_{idx:04d}.pre.av.pt"
     if not latent_path.is_file():
         return None
     try:
         if meta_path.is_file():
-            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
             expected = first_pass_cache_fingerprint(seg, plan)
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
@@ -623,14 +762,14 @@ def load_first_pass_low_carry(
     root = _cache_root(node_id)
     if root is None:
         return None
-    idx = seg.index
+    idx = resolve_slot(root, seg, plan)
     meta_path = root / f"seg_{idx:04d}.pre.meta.json"
     low_path = root / f"seg_{idx:04d}.pre.low.pt"
     if not low_path.is_file():
         return None
     try:
         if meta_path.is_file():
-            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
             expected = first_pass_cache_fingerprint(seg, plan)
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
@@ -659,13 +798,13 @@ def load_segment_av_latent(
     root = _cache_root(node_id)
     if root is None:
         return None
-    idx = seg.index
+    idx = resolve_slot(root, seg, plan)
     meta_path = root / f"seg_{idx:04d}.meta.json"
     latent_path = root / f"seg_{idx:04d}.av.pt"
     if not meta_path.is_file() or not latent_path.is_file():
         return None
     try:
-        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
         expected = segment_cache_fingerprint(seg, plan)
         if stored != expected:
             if _reject_source_stale(stored, expected, seg_index=idx, quiet=True) or not allow_stale:
@@ -691,18 +830,18 @@ def _fingerprint_matches(
     root = _cache_root(node_id)
     if root is None:
         return False
-    meta_path = root / f"seg_{seg.index:04d}.meta.json"
-    tensor_path = root / f"seg_{seg.index:04d}.pt"
+    idx = resolve_slot(root, seg, plan)
+    meta_path = root / f"seg_{idx:04d}.meta.json"
     if not meta_path.is_file():
         return False
     try:
-        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
         expected = segment_cache_fingerprint(seg, plan)
         if stored == expected:
             return True
         if _reject_source_stale(stored, expected, seg_index=seg.index, quiet=True):
             return False
-        return bool(allow_stale and tensor_path.is_file())
+        return bool(allow_stale and _frames_exist(root, idx, first_pass=False))
     except Exception:
         return False
 
@@ -727,15 +866,14 @@ def load_segment_cache(
     root = _cache_root(node_id)
     if root is None:
         return None
-    idx = seg.index
+    idx = resolve_slot(root, seg, plan)
     meta_path = root / f"seg_{idx:04d}.meta.json"
-    tensor_path = root / f"seg_{idx:04d}.pt"
-    if not tensor_path.is_file():
+    if not _frames_exist(root, idx, first_pass=False):
         return None
     try:
         expected = segment_cache_fingerprint(seg, plan)
         if meta_path.is_file():
-            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx):
                     return None
@@ -763,9 +901,7 @@ def load_segment_cache(
                 "Segment %d: using cache without meta for export fill.",
                 idx + 1,
             )
-        return _frames_from_disk(
-            torch.load(tensor_path, map_location="cpu", weights_only=True)
-        )
+        return _load_frames(root, idx, first_pass=False)
     except Exception as exc:
         log.warning("Failed to load segment %d cache: %s", idx + 1, exc)
         return None
@@ -786,7 +922,8 @@ def load_segment_audio(
     root = _cache_root(node_id)
     if root is None:
         return None
-    audio_path = root / f"seg_{seg.index:04d}.audio.pt"
+    idx = resolve_slot(root, seg, plan)
+    audio_path = root / f"seg_{idx:04d}.audio.pt"
     if not audio_path.is_file():
         return None
     try:
@@ -822,10 +959,10 @@ def save_first_pass_cache(
     if root is None:
         return
     fp = first_pass_cache_fingerprint(seg, plan)
-    idx = seg.index
+    idx = resolve_slot(root, seg, plan)
     meta_path = root / f"seg_{idx:04d}.pre.meta.json"
     latent_path = root / f"seg_{idx:04d}.pre.av.pt"
-    frames_path = root / f"seg_{idx:04d}.pre.pt"
+    frames_path = _frames_path(root, idx, first_pass=True)
     handoff_path = root / f"seg_{idx:04d}.pre.handoff.json"
     low_path = root / f"seg_{idx:04d}.pre.low.pt"
     try:
@@ -843,7 +980,11 @@ def save_first_pass_cache(
             )
         if isinstance(frames, torch.Tensor) and frames.numel() > 0:
             payload = _frames_to_disk(frames)
-            _write_via_temp(frames_path, lambda p: torch.save(payload, p))
+            fps = float(getattr(plan, "frame_rate", 24) or 24)
+            _write_via_temp(
+                frames_path, lambda p: encode_frames_ffv1(p, payload, fps=fps)
+            )
+            _drop_legacy_frames(root, idx, first_pass=True)
         if isinstance(low_carry, dict) and "samples" in low_carry:
             cpu_low = _av_latent_to_cpu(low_carry)
             _write_via_temp(low_path, lambda p: torch.save(cpu_low, p))
@@ -898,7 +1039,7 @@ def load_first_pass_frames_stale(
     *,
     match_len: int | None = None,
 ) -> torch.Tensor | None:
-    """Load ``.pre.pt`` frames for unselected-segment pre-refine fill.
+    """Load first-pass frames (``.pre.frames.mkv``) for unselected pre-refine fill.
 
     Stale-tolerant counterpart of :func:`load_first_pass_cache`: fingerprint
     drift (different seed, sampling-knob churn) does NOT invalidate the fill,
@@ -906,7 +1047,7 @@ def load_first_pass_frames_stale(
     mixing a fresh first pass with cached refined renders. A different source
     video still rejects (same rule as the final-cache fill). Never raises.
 
-    Disk ``.pre.pt`` is written before export trim; this reapplies
+    The on-disk first-pass payload is written before export trim; this reapplies
     ``.pre.handoff.json`` (context prefix + export length) and optionally
     matches the final-cache frame count after later phase-align tail trims.
     """
@@ -915,22 +1056,18 @@ def load_first_pass_frames_stale(
     root = _cache_root(node_id)
     if root is None:
         return None
-    idx = seg.index
-    frames_path = root / f"seg_{idx:04d}.pre.pt"
+    idx = resolve_slot(root, seg, plan)
     meta_path = root / f"seg_{idx:04d}.pre.meta.json"
     handoff_path = root / f"seg_{idx:04d}.pre.handoff.json"
-    if not frames_path.is_file():
+    if not _frames_exist(root, idx, first_pass=True):
         return None
     try:
         if meta_path.is_file():
-            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
             expected = first_pass_cache_fingerprint(seg, plan)
             if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
                 return None
-        loaded = torch.load(frames_path, map_location="cpu", weights_only=True)
-        if not isinstance(loaded, torch.Tensor) or loaded.numel() <= 0:
-            return None
-        frames = _frames_from_disk(loaded)
+        frames = _load_frames(root, idx, first_pass=True)
         if frames is None:
             return None
         handoff = None
@@ -960,16 +1097,15 @@ def load_first_pass_cache(
     root = _cache_root(node_id)
     if root is None:
         return None
-    idx = seg.index
+    idx = resolve_slot(root, seg, plan)
     meta_path = root / f"seg_{idx:04d}.pre.meta.json"
     latent_path = root / f"seg_{idx:04d}.pre.av.pt"
-    frames_path = root / f"seg_{idx:04d}.pre.pt"
     handoff_path = root / f"seg_{idx:04d}.pre.handoff.json"
     low_path = root / f"seg_{idx:04d}.pre.low.pt"
     if not meta_path.is_file() or not latent_path.is_file():
         return None
     try:
-        stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
         expected = first_pass_cache_fingerprint(seg, plan)
         missing_external = (
             isinstance(stored, dict)
@@ -994,13 +1130,8 @@ def load_first_pass_cache(
         if not isinstance(payload, dict) or "samples" not in payload:
             return None
         frames = None
-        if frames_path.is_file():
-            try:
-                loaded = torch.load(frames_path, map_location="cpu", weights_only=True)
-                if isinstance(loaded, torch.Tensor) and loaded.numel() > 0:
-                    frames = _frames_from_disk(loaded)
-            except Exception as exc:
-                log.debug("Segment %d first-pass frames skipped: %s", idx + 1, exc)
+        if _frames_exist(root, idx, first_pass=True):
+            frames = _load_frames(root, idx, first_pass=True)
         handoff: dict[str, Any] = {}
         if handoff_path.is_file():
             try:
@@ -1026,11 +1157,14 @@ def load_first_pass_cache(
 _SEG_CACHE_FILE_RE = re.compile(r"^seg_(\d+)\.")
 
 
-def prune_segment_cache(node_id: str | None, valid_indices) -> None:
-    """Remove ``seg_XXXX.*`` files whose index is no longer on the timeline.
+def prune_segment_cache(node_id: str | None, plan: DirectorPlan, segments) -> None:
+    """Remove ``seg_XXXX.*`` files whose slot is no longer on the timeline.
 
-    Does not create the cache dir. Uses all current segment indices (not
-    「选择运行」), so unselected slots keep merge/export fill. Never raises.
+    Does not create the cache dir. Uses every current segment (not
+    「选择运行」), so unselected slots keep merge/export fill. Slots are the
+    identity slots from :mod:`segment_identity`, so inserting a segment no
+    longer reads as "the old slots went away" — only a segment that genuinely
+    left the timeline loses its cache. Never raises.
     """
     if not node_id:
         return
@@ -1038,7 +1172,7 @@ def prune_segment_cache(node_id: str | None, valid_indices) -> None:
         root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
         if not root.is_dir():
             return
-        valid = {int(i) for i in valid_indices}
+        valid = valid_slots(root, plan, segments)
         removed = 0
         for path in root.iterdir():
             if not path.is_file():
@@ -1105,7 +1239,8 @@ def _comparable_first_pass_fingerprint(plan: DirectorPlan) -> dict[str, Any]:
 
 
 _PRE_META_NAME_RE = re.compile(r"^seg_(\d+)\.pre\.meta\.json$")
-_FINAL_FRAMES_NAME_RE = re.compile(r"^seg_\d+\.pt$")
+# Final-render frame payload: FFV1 (current) or the legacy raw uint8 ``.pt``.
+_FINAL_FRAMES_NAME_RE = re.compile(r"^seg_\d+(?:\.frames\.mkv|\.pt)$")
 
 # Buckets of a group record's digest. Only used to *name* the change: the
 # per-group record is compared as a whole (that is what makes one group's edit
@@ -1241,14 +1376,12 @@ def _external_segment_diff(stored_record: Any, expected_record: Any) -> list[str
 
 
 def _count_final_segment_files(root: Path) -> int:
-    """Number of ``seg_XXXX.pt`` (final render) files; never raises."""
+    """Number of ``seg_XXXX`` final-render frame payloads; never raises."""
     if not root.is_dir():
         return 0
     try:
         return sum(
-            1
-            for path in root.glob("seg_*.pt")
-            if _FINAL_FRAMES_NAME_RE.match(path.name)
+            1 for path in root.iterdir() if _FINAL_FRAMES_NAME_RE.match(path.name)
         )
     except OSError:
         return 0
@@ -1336,16 +1469,22 @@ def _inspect_external_group_cache(
 
     for idx in indices:
         timing = timings[idx] if idx < len(timings) else {}
-        record = groups[idx] if idx < len(groups) else None
-        meta_path = root / f"seg_{idx:04d}.pre.meta.json"
-        latent_path = root / f"seg_{idx:04d}.pre.av.pt"
+        group = groups[idx] if idx < len(groups) else None
+        # The group's ``slot`` (``groups.group_0``) is reported but never
+        # compared: it is an ordinal that renames itself when the chain is
+        # reordered, while the payloads live under the identity slot below.
+        record = strip_position(group)
+        slot_no = resolve_slot_for_index(root, idx, plan, create=False)
+        slot_no = idx if slot_no is None else slot_no
+        meta_path = root / f"seg_{slot_no:04d}.pre.meta.json"
+        latent_path = root / f"seg_{slot_no:04d}.pre.av.pt"
         meta_exists = meta_path.is_file()
         cache_exists = meta_exists and latent_path.is_file()
         stored: Any = None
         read_error = ""
         if meta_exists:
             try:
-                stored = json.loads(meta_path.read_text(encoding="utf-8"))
+                stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
             except Exception as exc:
                 read_error = str(exc)
 
@@ -1383,26 +1522,17 @@ def _inspect_external_group_cache(
             # keeps one group's cache independent of the others.
             if isinstance(record, dict) and stored_record != record:
                 diff.extend(_external_segment_diff(stored_record, record))
-            expected_end = timing.get("end")
-            stored_end = stored.get("end")
-            if expected_end is not None and stored_end is not None:
+            # A group's own duration already rides in its record. What used to
+            # be checked here as well was an absolute frame-range shift caused by
+            # an *earlier* group changing length; slots are identity based now,
+            # so such a shift invalidates nothing and is no longer reported.
+            expected_frames = timing.get("frames")
+            if expected_frames is not None:
                 try:
-                    if int(stored_end) != int(expected_end):
-                        # This segment's own duration is unchanged but its frame
-                        # range moved: an earlier group got longer/shorter. Segments
-                        # are laid out back to back and each one is conditioned on
-                        # the previous clip's tail, so the range has to shift and
-                        # the segment must be re-sampled — but it is NOT this
-                        # group's duration that changed, so it gets its own label
-                        # instead of blaming「外接组时长」on an untouched group.
-                        own_dur_moved = (
-                            isinstance(stored_record, dict)
-                            and isinstance(record, dict)
-                            and stored_record.get("dur") != record.get("dur")
-                        )
-                        key = "external_length" if own_dur_moved else "external_shift"
-                        if key not in diff:
-                            diff.insert(0, key)
+                    stored_frames = stored.get("frames")
+                    if stored_frames is not None and int(stored_frames) != int(expected_frames):
+                        if "external_length" not in diff:
+                            diff.insert(0, "external_length")
                 except (TypeError, ValueError):
                     pass
             matches = bool(cache_exists and not diff)
@@ -1413,13 +1543,13 @@ def _inspect_external_group_cache(
             {
                 "segment": idx + 1,
                 "index": idx,
-                "slot": str(record.get("slot") or "") if isinstance(record, dict) else "",
-                "node": str(record.get("node") or "") if isinstance(record, dict) else "",
+                "cache_slot": slot_no,
+                "slot": str(group.get("slot") or "") if isinstance(group, dict) else "",
+                "node": str(group.get("node") or "") if isinstance(group, dict) else "",
                 "duration": timing.get("duration"),
                 "frames": timing.get("frames"),
                 "start": timing.get("start"),
                 "end": timing.get("end"),
-                "stored_end": stored.get("end") if isinstance(stored, dict) else None,
                 "exists": cache_exists,
                 "matches": matches,
                 "status": status,
@@ -1517,7 +1647,9 @@ def inspect_first_pass_cache(
     stale_external = 0
     for seg in all_segments:
         is_selected = selected_set is None or int(seg.index) in selected_set
-        idx = int(seg.index)
+        # Read-only lookup: the status panel must never allocate slots, and a
+        # segment with no identity mapping yet simply has no cache to report.
+        idx = resolve_slot(root, seg, plan, create=False)
         meta_path = root / f"seg_{idx:04d}.pre.meta.json"
         latent_path = root / f"seg_{idx:04d}.pre.av.pt"
         meta_exists = meta_path.is_file()
@@ -1527,7 +1659,7 @@ def inspect_first_pass_cache(
         read_error = ""
         if meta_exists:
             try:
-                stored = json.loads(meta_path.read_text(encoding="utf-8"))
+                stored = _stored_fingerprint(json.loads(meta_path.read_text(encoding="utf-8")))
             except Exception as exc:
                 read_error = str(exc)
 
@@ -1549,14 +1681,15 @@ def inspect_first_pass_cache(
             matches = False
         else:
             diff = fp_diff
-        final_path = root / f"seg_{idx:04d}.pt"
         final_meta_path = root / f"seg_{idx:04d}.meta.json"
-        final_exists = final_path.is_file()
+        final_exists = _frames_exist(root, idx, first_pass=False)
         final_match = False
         final_diff: list[str] = []
         if final_exists and final_meta_path.is_file():
             try:
-                stored_final = json.loads(final_meta_path.read_text(encoding="utf-8"))
+                stored_final = _stored_fingerprint(
+                    json.loads(final_meta_path.read_text(encoding="utf-8"))
+                )
             except Exception:
                 stored_final = None
             expected_final = segment_cache_fingerprint(seg, plan)
@@ -1585,8 +1718,12 @@ def inspect_first_pass_cache(
             final_cached += 1
         rows.append(
             {
-                "segment": idx + 1,
-                "index": idx,
+                # ``segment``/``index`` stay the timeline position (what the
+                # card shows); ``cache_slot`` is where the payloads actually
+                # live — they differ once a segment was inserted mid-timeline.
+                "segment": int(seg.index) + 1,
+                "index": int(seg.index),
+                "cache_slot": idx,
                 "exists": cache_exists,
                 "matches": matches,
                 "status": status,
