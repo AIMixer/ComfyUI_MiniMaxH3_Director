@@ -11,7 +11,7 @@ import torch
 
 from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge, limit_ref_image_dict
 from ..lib.task_modes import SUPPORTED_TASK_KEYS
-from ..nodes.conditioning import run_minimax_conditioning
+from ..nodes.conditioning import apply_minimax_timed_guides, run_minimax_conditioning
 from .core_sampling import ShiftedModelCache, sample_single_stage
 from .selflift.pack import (
     selflift_enabled,
@@ -209,7 +209,7 @@ def _build_minimax_inputs(
     ref_audios = None
     ref_video_audios = None
 
-    if task_key == "fl2v":
+    if task_key in {"fl2v", "addguide"}:
         # Prefer explicit shot refs (index 0=start, 1=end). Official FL2VA allows
         # end-only — never invent a first_frame from the placeholder gen source_video
         # (1×16×16 gray) or a held clip when refs only carry image1.
@@ -306,6 +306,13 @@ def _release_segment_file_ref_audios(plan: DirectorPlan, seg) -> None:
     for item in getattr(seg, "ref_audios", None) or []:
         if id(item) in shared_ids:
             continue
+        path = str(getattr(item, "audio_path", "") or "").strip()
+        if not path:
+            continue
+        item.audio = None
+        if isinstance(cache, dict):
+            cache.pop(path, None)
+    for item in getattr(seg, "timed_audio_guides", None) or []:
         path = str(getattr(item, "audio_path", "") or "").strip()
         if not path:
             continue
@@ -552,12 +559,16 @@ def execute_director_plan_core(
         pinned = [
             seg.index + 1
             for seg in all_segments
-            if seg.index > 0 and getattr(seg, "continuity_from_prev", True)
+            if seg.index > 0
+            and seg.task_key != "addguide"
+            and getattr(seg, "continuity_from_prev", True)
         ]
         skipped_pin = [
             seg.index + 1
             for seg in all_segments
-            if seg.index > 0 and not getattr(seg, "continuity_from_prev", True)
+            if seg.index > 0
+            and seg.task_key != "addguide"
+            and not getattr(seg, "continuity_from_prev", True)
         ]
         mode_label = "guide+redraw" if is_continue_mode(plan) else "guide"
         redraw_note = (
@@ -874,13 +885,32 @@ def execute_director_plan_core(
             ref_audios=ref_audios,
             ref_image_size=official_ref_image_size(resolve_ref_image_size(seg, plan)),
         )
-        cond_s = time.perf_counter() - t_cond
-
         from .semantic_bridge import apply_semantic_bridge
 
         positive, sb_note = apply_semantic_bridge(positive, plan, task_key=seg.task_key)
         if sb_note:
             log.info("MiniMax H3 Director: %s", sb_note)
+
+        # Share Semantic Bridge conditioning with refine before adding timed guides.
+        # Timed guides constrain the first pass only; the generated result then
+        # flows through the existing refine pipeline as its source.
+        refine_positive = positive
+        if seg.task_key == "addguide":
+            positive = apply_minimax_timed_guides(
+                positive,
+                latent,
+                vae=vae,
+                timed_guides=seg.timed_guides,
+                audio_vae=audio_vae,
+                timed_audio_guides=seg.timed_audio_guides,
+                frame_count=seg.frame_count,
+                audio_cache=getattr(plan, "audio_decode_cache", None),
+            )
+            task_hint = (
+                f"{task_hint} + {len(seg.timed_guides)} picture guide(s)"
+                f" + {len(seg.timed_audio_guides)} audio guide(s)"
+            )
+        cond_s = time.perf_counter() - t_cond
 
         trim_frames = 0
         after_shift = None
@@ -1377,7 +1407,9 @@ def execute_director_plan_core(
                 model=model,
                 vae=vae,
                 audio_vae=audio_vae,
-                positive=positive,
+                # Only AddGuide excludes its first-pass guides. Other tasks keep
+                # upstream's final conditioning, including motion-context pins.
+                positive=refine_positive if seg.task_key == "addguide" else positive,
                 negative=negative,
                 seed=seed,
                 cfg=cfg,

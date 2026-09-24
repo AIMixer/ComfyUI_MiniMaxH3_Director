@@ -32,9 +32,45 @@ function normalizePreparedAudio(data, fallbackName = "") {
         fileName: data?.fileName || data?.name || fallbackName || relPath,
         subfolder,
         type: data?.type || "input",
+        durationSec: Math.max(0, Number(data?.durationSec) || 0),
         reused: !!data?.reused,
         sourceKind: data?.sourceKind || "",
     };
+}
+
+export async function probePreparedAudioDuration(ref) {
+    const knownDuration = Math.max(0, Number(ref?.durationSec) || 0);
+    if (knownDuration > 0) return knownDuration;
+
+    const path = String(ref?.relPath || ref?.audioFile || "").replace(/\\/g, "/");
+    if (!path) return 0;
+    const slash = path.lastIndexOf("/");
+    const filename = slash >= 0 ? path.slice(slash + 1) : path;
+    const subfolder = slash >= 0 ? path.slice(0, slash) : String(ref?.subfolder || "");
+    const params = new URLSearchParams({ filename, type: ref?.type || "input" });
+    if (subfolder) params.set("subfolder", subfolder);
+    const url = api.apiURL(`/view?${params.toString()}`);
+
+    return await new Promise((resolve) => {
+        const audio = document.createElement("audio");
+        let settled = false;
+        let timeoutId = 0;
+        const finish = (duration = 0) => {
+            if (settled) return;
+            settled = true;
+            if (timeoutId) clearTimeout(timeoutId);
+            audio.onloadedmetadata = null;
+            audio.onerror = null;
+            audio.removeAttribute("src");
+            resolve(Math.max(0, Number(duration) || 0));
+        };
+        audio.preload = "metadata";
+        audio.onloadedmetadata = () => finish(Number.isFinite(audio.duration) ? audio.duration : 0);
+        audio.onerror = () => finish(0);
+        timeoutId = setTimeout(() => finish(0), 10000);
+        audio.src = url;
+        audio.load?.();
+    });
 }
 
 export async function prepareLocalReferenceAudio(file, onProgress) {
