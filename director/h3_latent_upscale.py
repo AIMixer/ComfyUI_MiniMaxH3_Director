@@ -43,9 +43,6 @@ LATENTS_STD = [
     3.276226282119751, 3.1627357006073, 2.2816812992095947, 2.6127843856811523,
 ]
 
-_MODEL_CACHE: dict[str, nn.Module] = {}
-
-
 def ensure_latent_upscale_folder() -> str | None:
     try:
         import folder_paths
@@ -359,10 +356,6 @@ def _resolve_model_path(name: str) -> str:
 
 
 def load_h3_latent_upscaler(name: str, device: torch.device, dtype: torch.dtype) -> nn.Module:
-    cache_key = f"{name}::{dtype}"
-    cached = _MODEL_CACHE.get(cache_key)
-    if cached is not None:
-        return cached.to(device=device, dtype=dtype)
     path = _resolve_model_path(name)
     raw = _load_raw_sd(path)
     sd = _extract_upscaler_sd(raw)
@@ -374,8 +367,8 @@ def load_h3_latent_upscaler(name: str, device: torch.device, dtype: torch.dtype)
     cfg = _detect_arch(sd)
     model = LatentResizer3D(**cfg)
     model.load_state_dict(sd, strict=True)
+    del raw, sd
     model = model.to(device="cpu", dtype=dtype).eval()
-    _MODEL_CACHE[cache_key] = model
     log.info(
         "H3 latent upscaler loaded: %s (params=%s, C=%d)",
         name,
@@ -522,6 +515,7 @@ def upscale_h3_video_latent(
     # Official 3D node defaults to fp32; bf16 GroupNorm on this net can collapse
     # to NaN/mud and decode as a brown static frame.
     dtype = torch.float32
+    owns_model = model is None
     if model is not None:
         net = model.model if hasattr(model, "model") and not hasattr(model, "conv_in") else model
         model = net.to(device=device, dtype=dtype).eval()
@@ -554,9 +548,11 @@ def upscale_h3_video_latent(
         out = out * std + mean
         out = out.to(device="cpu", dtype=orig_dtype).contiguous()
     finally:
-        # Keep the 3D net off the GPU so MiniMaxH3 does not re-stage ~20GB.
-        model.to("cpu")
-        del x
+        if owns_model:
+            del model
+        else:
+            model.to("cpu")
+        del mean, std, x
         if device.type == "cuda":
             torch.cuda.empty_cache()
     if squeezed == "batch" and out.shape[0] == 1:
