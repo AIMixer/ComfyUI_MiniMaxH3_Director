@@ -543,6 +543,9 @@ async def minimax_first_pass_cache_status(request):
             width=int(body.get("width") or 864),
             height=int(body.get("height") or 480),
             ref_max_size=int(body.get("ref_max_size") or 864),
+            # Cache status only needs identity fields.  Avoid decoding source
+            # and reference media on the ComfyUI request loop.
+            materialize_media=False,
         )
         plan.sample_seed = int(body.get("seed") or 0)
         plan.sample_cfg = float(body.get("cfg") or 1.0)
