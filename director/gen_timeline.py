@@ -11,6 +11,8 @@ from ..lib.image_prep import (
     cat_frames_variable_size,
     fit_canvas,
     fit_video_long_edge,
+    is_keep_aspect,
+    keep_aspect_output,
     resolve_output_dimensions,
 )
 from ..lib.task_prompts import resolve_task_key
@@ -278,6 +280,41 @@ def _resolve_gen_image_source_dims(
     return 0, 0
 
 
+def _keep_aspect_source_dims(
+    segment_ranges: list[tuple[int, int, dict]],
+    *,
+    edit_mode: str,
+    global_block: dict,
+) -> tuple[int, int]:
+    """Size of the first picture the run uses — start image, first-frame image or
+    first reference — for 跟随图片 / Keep aspect ratio. Sizes stored by the UI are
+    used when present; otherwise the file is read (runs queued by other tools only
+    carry the file name). (0, 0) when the run has no picture (t2v)."""
+    from .plan import load_reference_tensor
+
+    candidates: list = []
+    for _start, _end, seg_data in segment_ranges:
+        candidates.append(_resolve_gen_image_ref(seg_data, edit_mode=edit_mode, global_block=global_block))
+        candidates.append(seg_data.get("startImage"))
+        candidates.extend(seg_data.get("refs") or [])
+    candidates.append(global_block.get("genImage"))
+    candidates.extend(global_block.get("refs") or [])
+    for ref in candidates:
+        if not isinstance(ref, dict) or not (ref.get("imageFile") or ref.get("imageB64")):
+            continue
+        w, h = int(ref.get("width") or 0), int(ref.get("height") or 0)
+        if w > 0 and h > 0:
+            return w, h
+        try:
+            tensor = load_reference_tensor(ref)
+        except Exception as exc:
+            log.warning("Keep aspect ratio: could not read %s (%s)", ref.get("imageFile"), exc)
+            tensor = None
+        if tensor is not None and tensor.dim() >= 3:
+            return int(tensor.shape[-2]), int(tensor.shape[-3])
+    return 0, 0
+
+
 def _build_gen_source_clips(
     ranges: list[tuple[int, int, dict]],
     *,
@@ -428,7 +465,17 @@ def build_gen_director_plan(
         frame_rate=fps,
     )
 
-    if submode == "gen_blank":
+    keep_dims = None
+    if is_keep_aspect(output_block):
+        kw, kh = _keep_aspect_source_dims(segment_ranges, edit_mode=edit_mode, global_block=global_block)
+        keep_dims = keep_aspect_output(output_block, kw, kh)
+        if keep_dims:
+            log.info("Keep aspect ratio: picture %dx%d -> canvas %dx%d", kw, kh, keep_dims[0], keep_dims[1])
+    if keep_dims:
+        out_mode = "fixed"
+        out_w, out_h = keep_dims
+        ref_max = max(out_w, out_h)
+    elif submode == "gen_blank":
         out_mode = "fixed"
         fw = int(output_block.get("width") or timeline.get("width") or width or 0)
         fh = int(output_block.get("height") or timeline.get("height") or height or 0)
