@@ -20,6 +20,10 @@ export const RESOLUTION_ASPECTS = [
 export const DEFAULT_ASPECT_RATIO = "16:9 (宽屏)";
 /** Manual width × height (not in official ResolutionSelector). */
 export const CUSTOM_ASPECT_RATIO = "自定义";
+/** Canvas follows the first picture's shape at the megapixel budget (backend: lib/image_prep.keep_aspect_*). */
+export const KEEP_ASPECT_RATIO = "跟随图片";
+/** The Director's width/height widgets stop here. */
+export const MAX_MINIMAX_CANVAS = 8192;
 /** Official MiniMax template default: 0.4 MP → 864×480 at 16:9 (multiple=32) */
 export const DEFAULT_MEGAPIXELS = 0.4;
 export const MIN_MEGAPIXELS = 0.1;
@@ -67,6 +71,7 @@ const ASPECT_RATIO_ALIASES = {
 export function normalizeAspectRatioLabel(aspectRatio) {
     const v = String(aspectRatio || "").trim();
     if (!v) return DEFAULT_ASPECT_RATIO;
+    if (isKeepAspectRatio(v)) return KEEP_ASPECT_RATIO;
     if (ASPECT_RATIO_ALIASES[v]) return ASPECT_RATIO_ALIASES[v];
     if (RESOLUTION_ASPECTS.some(([label]) => label === v)) return v;
     if (isCustomAspectRatio(v)) return CUSTOM_ASPECT_RATIO;
@@ -74,6 +79,30 @@ export function normalizeAspectRatioLabel(aspectRatio) {
     const prefix = v.split(" ")[0];
     const byPrefix = RESOLUTION_ASPECTS.find(([label]) => label.startsWith(`${prefix} `) || label === prefix);
     return byPrefix ? byPrefix[0] : DEFAULT_ASPECT_RATIO;
+}
+
+export function isKeepAspectRatio(aspectRatio) {
+    const v = String(aspectRatio || "").trim();
+    return v.startsWith(KEEP_ASPECT_RATIO) || v.toLowerCase().startsWith("keep");
+}
+
+/** Keep aspect ratio: picture W×H scaled to ~megapixels (same math as the presets), snapped to the grid. */
+export function keepAspectResolution(srcW, srcH, megapixels, multiple = MINIMAX_CANVAS_MULTIPLE) {
+    const w0 = Number(srcW) || 0;
+    const h0 = Number(srcH) || 0;
+    if (w0 <= 0 || h0 <= 0) return null;
+    const mp = clampMegapixels(megapixels);
+    const mult = Math.max(8, parseInt(multiple, 10) || MINIMAX_CANVAS_MULTIPLE);
+    const scale = Math.sqrt((mp * 1024 * 1024) / (w0 * h0));
+    const snap = v => Math.max(mult, Math.round(v / mult) * mult);
+    let width = snap(w0 * scale);
+    let height = snap(h0 * scale);
+    if (Math.max(width, height) > MAX_MINIMAX_CANVAS) {          // the widgets stop at 8192
+        const shrink = MAX_MINIMAX_CANVAS / Math.max(width, height);
+        width = snap(width * shrink);
+        height = snap(height * shrink);
+    }
+    return { width, height, megapixels: mp, aspectRatio: KEEP_ASPECT_RATIO, multiple: mult };
 }
 
 export function isCustomAspectRatio(aspectRatio) {
@@ -148,7 +177,7 @@ export function snapResolutionDim(v, multiple = MINIMAX_CANVAS_MULTIPLE) {
 
 /** ResolutionSelector math: aspect_ratio + megapixels + multiple → width/height. */
 export function resolutionFromSelector(aspectRatio, megapixels, multiple = MINIMAX_CANVAS_MULTIPLE) {
-    if (isCustomAspectRatio(aspectRatio)) {
+    if (isCustomAspectRatio(aspectRatio) || isKeepAspectRatio(aspectRatio)) {
         return null;
     }
     const label = normalizeAspectRatioLabel(aspectRatio);

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 from comfy.utils import common_upscale
 
@@ -13,6 +15,59 @@ MINIMAX_CANVAS_STRIDE = 32
 def snap_dimension(value: int, stride: int = MINIMAX_CANVAS_STRIDE) -> int:
     """Round *value* to the nearest multiple of *stride*, keeping at least *stride*."""
     return max(stride, round(value / stride) * stride)
+
+
+# Output panel aspect choice "跟随图片" (Keep aspect ratio): the canvas takes the first
+# picture's shape at the panel's megapixel budget, so pictures of any shape can be
+# sent without switching the aspect preset each time.
+KEEP_ASPECT_RATIO = "跟随图片"
+DEFAULT_KEEP_MEGAPIXELS = 0.4
+# The Director's width/height widgets stop at 8192; a very long panorama at a high
+# megapixel value would go past that, so the canvas is shrunk back to it.
+MAX_MINIMAX_CANVAS = 8192
+
+
+def is_keep_aspect(output_block: dict | None) -> bool:
+    """True when the output panel's aspect ratio is 跟随图片 / Keep aspect ratio."""
+    v = str((output_block or {}).get("aspectRatio") or "").strip()
+    return v.startswith(KEEP_ASPECT_RATIO) or v.lower().startswith("keep")
+
+
+def keep_aspect_dimensions(
+    src_w: int,
+    src_h: int,
+    megapixels: float | None = None,
+    stride: int = MINIMAX_CANVAS_STRIDE,
+) -> tuple[int, int] | None:
+    """(width, height) with the source's aspect ratio and ~``megapixels`` MP.
+
+    Same math as the ResolutionSelector presets (1 MP = 1024×1024, rounded to the
+    32 px grid), so a 3:4 picture at 1.0 MP gives 896×1184 like the 3:4 preset.
+    """
+    src_w, src_h = int(src_w or 0), int(src_h or 0)
+    if src_w <= 0 or src_h <= 0:
+        return None
+    try:
+        mp = float(megapixels)
+    except (TypeError, ValueError):
+        mp = DEFAULT_KEEP_MEGAPIXELS
+    if not mp > 0:
+        mp = DEFAULT_KEEP_MEGAPIXELS
+    mp = min(16.0, max(0.1, mp))
+    scale = math.sqrt(mp * 1024 * 1024 / (src_w * src_h))
+    snap = lambda v: max(stride, int(math.floor(v / stride + 0.5)) * stride)
+    w, h = snap(src_w * scale), snap(src_h * scale)
+    if max(w, h) > MAX_MINIMAX_CANVAS:
+        shrink = MAX_MINIMAX_CANVAS / max(w, h)
+        w, h = snap(w * shrink), snap(h * shrink)
+    return w, h
+
+
+def keep_aspect_output(output_block: dict | None, src_w: int, src_h: int) -> tuple[int, int] | None:
+    """Canvas for Keep aspect ratio, or None (not chosen / no picture size known)."""
+    if not is_keep_aspect(output_block):
+        return None
+    return keep_aspect_dimensions(src_w, src_h, (output_block or {}).get("megapixels"))
 
 
 def ensure_minimax_canvas(width: int, height: int) -> tuple[int, int]:
