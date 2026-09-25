@@ -309,20 +309,32 @@ class MemoryPeakMonitor:
         self._last_action = 0.0
 
     def start(self) -> None:
+        """Start — or reuse — the sampler for one Director execute run.
+
+        A re-run (「选择运行」/ a second execute) begins while the previous
+        sampler thread is still alive, so the counters and the current window
+        must be reset even when the thread is reused. Otherwise the first segment
+        of the new run inherits the previous run's measured peak instead of
+        starting from 0, and the closing summary mixes two runs together.
+        """
         with self._lock:
             self._last_seen = time.monotonic()
-            if self._thread is not None and self._thread.is_alive():
-                return
-            self._stop.clear()
             self._reset_counters()
-            thread = threading.Thread(
-                target=self._run, name="h3-mem-monitor", daemon=True
-            )
-            self._thread = thread
-        thread.start()
+            reused = self._thread is not None and self._thread.is_alive()
+            if reused:
+                thread = None
+            else:
+                self._stop.clear()
+                thread = threading.Thread(
+                    target=self._run, name="h3-mem-monitor", daemon=True
+                )
+                self._thread = thread
+        if thread is not None:
+            thread.start()
         log.info(
-            "MiniMax H3 Director: memory monitor started (sampling every %.1fs, "
+            "MiniMax H3 Director: memory monitor %s (sampling every %.1fs, "
             "hard floor %.0f%% free → gc only, never unload mid-phase)",
+            "reused, counters reset for the new run" if reused else "started",
             self._interval_s, MEMORY_GUARD_HARD_FLOOR_FRACTION * 100.0,
         )
 
