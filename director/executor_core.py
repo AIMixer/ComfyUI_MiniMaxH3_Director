@@ -78,6 +78,7 @@ from .segment_cache import (
     load_segment_av_latent,
     load_segment_cache,
     load_segment_handoff_meta,
+    log_cache_run_summary,
     prune_segment_cache,
     save_first_pass_cache,
     save_segment_cache,
@@ -88,6 +89,8 @@ from .segment_mp4_export import (
     maybe_export_segment_mp4s,
     mp4_export_kind,
     new_segment_mp4_run_dir,
+    segment_mp4_export_enabled,
+    segment_mp4_path,
 )
 from .segment_continuity import (
     concat_continuous_chunks,
@@ -96,7 +99,13 @@ from .segment_continuity import (
     match_export_opening_grade,
     resolve_prev_segment_output,
 )
+from .vram_cleanup import auto_memory_guard as run_memory_guard
+from .vram_cleanup import begin_run_monitor
 from .vram_cleanup import cleanup_segment_vram
+from .vram_cleanup import end_run_monitor
+from .vram_cleanup import monitor_reset_window
+from .vram_cleanup import predicted_peak_from_monitor
+from .vram_cleanup import release_after_segment_failure
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.core")
 
@@ -405,6 +414,61 @@ def _ref_video_audios_to_dict(items) -> dict | None:
     return out or None
 
 
+def _run_deferred_merge(
+    plan: DirectorPlan,
+    export_segments,
+    mp4_run_dir,
+    held_for_confirmation: bool,
+) -> str:
+    """「延迟合并」收尾：把逐段落盘的 mp4 从磁盘合成一条，返回报告文案。
+
+    全程只在 ffmpeg 里解码 24 帧接缝窗口，不再把整条时间轴读回内存，
+    因此段间的显存/内存释放不受影响。失败不抛异常 —— 分段 mp4 仍在磁盘上。
+    """
+    if held_for_confirmation:
+        return (
+            "延迟合并：本轮仅确认一采（尚未生成成片），暂不合并；"
+            "再次 Queue 完成二采后会自动合并。"
+        )
+    if mp4_run_dir is None:
+        return "延迟合并：没有分段 mp4 目录，已跳过合并。"
+    seg_mp4s = [segment_mp4_path(mp4_run_dir, seg) for seg in export_segments]
+    missing = [
+        int(getattr(seg, "index", 0)) + 1
+        for seg, path in zip(export_segments, seg_mp4s)
+        if not path.is_file()
+    ]
+    if missing:
+        return (
+            f"延迟合并：段 {missing} 没有落盘 mp4，已跳过合并；"
+            f"分段文件在 {mp4_run_dir}。"
+        )
+    try:
+        from .deferred_merge import deferred_merge_with_seam_reencode
+
+        result = deferred_merge_with_seam_reencode(
+            segment_mp4_paths=seg_mp4s,
+            fps=float(plan.frame_rate or 24.0),
+            seam_blending_enabled=True,
+            continuity_enabled=bool(plan.continuity_enabled),
+            release_vram_fn=lambda: cleanup_segment_vram(enabled=True),
+            # The merged mp4 on disk is the deliverable; do not hold a preview
+            # batch in RAM (50×1080p float32 ≈ 1.2 GB).
+            preview_only_frames=1,
+        )
+        log.info("MiniMax H3 Director deferred merge: %s", result.merged_video_path)
+        return (
+            f"延迟合并：已写出 {result.merged_video_path} "
+            f"({int(result.total_frames)} 帧 @ {float(result.fps):.2f} fps)。"
+        )
+    except Exception as exc:
+        log.warning("deferred merge failed: %s", exc, exc_info=True)
+        return (
+            f"延迟合并失败：{type(exc).__name__}: {exc}；"
+            f"分段 mp4 仍在 {mp4_run_dir}，可手动拼接。"
+        )
+
+
 def execute_director_plan_core(
     plan: DirectorPlan,
     *,
@@ -422,6 +486,9 @@ def execute_director_plan_core(
     shift_video: float = 12.0,
     shift_audio: float = 3.0,
     clear_vram_between_segments: bool = True,
+    auto_memory_guard: bool = True,
+    memory_guard_low_percent: int = 25,
+    memory_guard_critical_percent: int = 15,
     clear_vram_before_refine: bool = False,
     clear_vram_before_face_refine: bool = False,
     export_pre_face_refine: bool = False,
@@ -519,8 +586,8 @@ def execute_director_plan_core(
         reports.append("VRAM: 脸修前清理显存已开启（解码后、FaceRefine 开始前卸载模型）。")
     if export_pre_face_refine:
         extra = (
-            "；分段导出另存 seg_XXXX_facepre.mp4"
-            if getattr(plan, "export_mode", "all") == "segments"
+            "；分段导出/延迟合并另存 seg_XXXX_facepre.mp4"
+            if segment_mp4_export_enabled(plan)
             else ""
         )
         reports.append(
@@ -600,7 +667,8 @@ def execute_director_plan_core(
     # True export lengths (post continuity trim). Kept after「分段导出」
     # replaces older IMAGE slots with 1-frame posters.
     segment_export_lengths: dict[int, int] = {}
-    export_segments_mode = plan.export_mode == "segments"
+    export_segments_mode = segment_mp4_export_enabled(plan)
+    deferred_merge_mode = plan.export_mode == "deferred"
 
     def _run_one_segment(
         seg, *, progress_index: int
@@ -626,6 +694,11 @@ def execute_director_plan_core(
         skip_first_sample = pre_cache is not None
         hold_after_first = confirm_first and will_refine and not skip_first_sample
         held_for_confirmation = held_for_confirmation or hold_after_first
+        log.info(
+            "Segment %d cache decision: confirm_first=%s will_refine=%s "
+            "face_refine=%s -> skip_first_sample=%s",
+            seg.index + 1, confirm_first, will_refine, run_face_refine, skip_first_sample,
+        )
         meta = {
             "frames_label": frames_label(seg),
             "task_key": seg.task_key,
@@ -1302,6 +1375,19 @@ def execute_director_plan_core(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: "
                 "VRAM cleanup between first pass and refine"
             )
+        # In-segment water-level guard right before refine upscale/sample, so the
+        # auto guard also covers the midpoint of the segment (first pass → refine),
+        # not just the segment boundary.
+        if run_refine:
+            _in_segment_guard_note = run_memory_guard(
+                enabled=auto_memory_guard,
+                label=f"Segment {seg.index + 1} pre-refine:",
+                low_fraction=float(memory_guard_low_percent) / 100.0,
+                critical_fraction=float(memory_guard_critical_percent) / 100.0,
+                predicted_peak_bytes=predicted_peak_from_monitor(),
+            )
+            if _in_segment_guard_note:
+                reports.append(_in_segment_guard_note)
         export_len = continuity_export_len(
             trim_frames=trim_frames,
             sample_len=sample_len,
@@ -1485,6 +1571,17 @@ def execute_director_plan_core(
                     f"Segment {ui_idx + 1}/{timeline_seg_total}: "
                     "VRAM cleanup before face refine"
                 )
+            # In-segment water-level guard right before face refine, so the auto
+            # guard also covers the tail phase of the segment (refine → face).
+            _face_guard_note = run_memory_guard(
+                enabled=auto_memory_guard,
+                label=f"Segment {seg.index + 1} pre-face:",
+                low_fraction=float(memory_guard_low_percent) / 100.0,
+                critical_fraction=float(memory_guard_critical_percent) / 100.0,
+                predicted_peak_bytes=predicted_peak_from_monitor(),
+            )
+            if _face_guard_note:
+                reports.append(_face_guard_note)
             from .face_refine.runtime import apply_segment_face_refine
             from .face_refine.track import FACE_REFINE_SKIP_NO_FACE
 
@@ -1645,6 +1742,14 @@ def execute_director_plan_core(
         )
         return chunk, audio_dict, pre_chunk, pre_face_chunk
 
+    log_cache_run_summary(node_id, plan, all_segments, run_indices)
+
+    # Background sampler: measures each phase's real RAM footprint so the
+    # boundaries below can act on a measured prediction instead of a hand-tuned
+    # percent. Tier behaviour is unchanged when the prediction is 0 (first
+    # segment, or monitoring off).
+    begin_run_monitor(enabled=auto_memory_guard)
+
     for seg in all_segments:
         # AV latent and decoded refine-pass clips are a rolling continuity
         # working set, not final outputs. At the start of segment N, only N-1
@@ -1677,10 +1782,30 @@ def execute_director_plan_core(
         if seg.index in run_indices:
             if clear_vram_between_segments and segment_outputs:
                 cleanup_segment_vram(enabled=True)
+            # The window has not been reset yet, so the prediction is exactly the
+            # previous segment's measured peak (× margin).
+            guard_note = run_memory_guard(
+                enabled=auto_memory_guard,
+                label=f"Segment {seg.index + 1}:",
+                low_fraction=float(memory_guard_low_percent) / 100.0,
+                critical_fraction=float(memory_guard_critical_percent) / 100.0,
+                predicted_peak_bytes=predicted_peak_from_monitor(),
+            )
+            if guard_note:
+                reports.append(guard_note)
+            # New window starts after the boundary cleanup, so memory the guard
+            # just freed is not mistaken for headroom this segment will keep.
+            monitor_reset_window()
             try:
                 chunk, audio_dict, pre_chunk, pre_face_chunk = _run_one_segment(
                     seg, progress_index=progress_pos[seg.index]
                 )
+            except Exception:
+                # Always (independent of the water-level switch): a failed or
+                # cancelled segment can leave partial latents and a half-staged
+                # model behind, and a retry must not inherit that wreckage.
+                release_after_segment_failure(label=f"Segment {seg.index + 1}:")
+                raise
             finally:
                 _release_segment_file_ref_audios(plan, seg)
             segment_outputs.append(chunk)
@@ -1810,6 +1935,11 @@ def execute_director_plan_core(
     if not output_chunks and not segment_outputs:
         raise ValueError("Director plan produced no segments.")
 
+    # Generation is over: stop the sampler and report what it measured, so the
+    # run log carries the real peak / pagefile peak (the disk-wear signal).
+    _monitor_note = end_run_monitor()
+    if _monitor_note:
+        reports.append(_monitor_note)
     report_director_finish(node_id, seg_total)
     export_chunks = output_chunks if output_chunks else segment_outputs
     export_pre_chunks = output_pre_chunks if output_pre_chunks else segment_pre_refine
@@ -1843,7 +1973,7 @@ def execute_director_plan_core(
         else:
             export_audios.append({})
             missing_audio.append(seg.index + 1)
-    if missing_audio and plan.export_mode == "all":
+    if missing_audio and plan.export_mode in ("all", "deferred"):
         reports.append(
             "Audio cache missing for segment(s) "
             f"{missing_audio} — those slots are silent in the merge. "
@@ -1888,6 +2018,8 @@ def execute_director_plan_core(
             "Export mode: segments — released prior-segment pixels after mp4 "
             "and continuity pin (no full-timeline concat)."
         )
+        if deferred_merge_mode:
+            reports.append(_run_deferred_merge(plan, export_segments, mp4_run_dir, held_for_confirmation))
     else:
         combined = concat_continuous_chunks(export_chunks, export_segments, plan)
         pre_source = export_pre_chunks if export_pre_chunks else segment_pre_refine

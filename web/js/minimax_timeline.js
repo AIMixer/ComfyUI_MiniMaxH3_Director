@@ -113,6 +113,7 @@ import {
     toggleLocale,
 } from "./minimax_i18n.js";
 import { bindPackActions } from "./minimax_pack.js";
+import { bindMergeActions } from "./minimax_merge.js";
 import {
     attachExternalGroupsWitness,
     injectExternalGroupsWitness,
@@ -194,6 +195,17 @@ function normalizeAudioMode(value) {
     if (raw === "source" || raw === "original" || raw === "passthrough") return "source";
     if (raw === "mute" || raw === "silent" || raw === "silence") return "mute";
     return "generate";
+}
+
+function normalizeExportMode(value) {
+    const raw = String(value || "all").trim().toLowerCase();
+    if (raw === "deferred" || raw === "defer" || raw === "deferred_merge" || raw === "deferred-merge") {
+        return "deferred";
+    }
+    if (raw === "segments" || raw === "segment" || raw === "per_segment" || raw === "by_segment") {
+        return "segments";
+    }
+    return "all";
 }
 
 const CONTINUITY_FRAME_CHOICES = [5, 22, 39, 56];
@@ -499,6 +511,9 @@ const HIDDEN_WIDGETS = [
 const DIRECTOR_WIDGET_LABEL_KEYS = {
     seed: "widget.seed",
     clear_vram_between_segments: "widget.clearVram",
+    auto_memory_guard: "widget.autoMemoryGuard",
+    memory_guard_low_percent: "widget.memoryGuardLowPercent",
+    memory_guard_critical_percent: "widget.memoryGuardCriticalPercent",
     clear_vram_before_refine: "widget.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.clearVramBeforeFaceRefine",
     cache_frames_codec: "widget.cacheFramesCodec",
@@ -510,6 +525,9 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
 
 const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
+    auto_memory_guard: "widget.tooltip.autoMemoryGuard",
+    memory_guard_low_percent: "widget.tooltip.memoryGuardLowPercent",
+    memory_guard_critical_percent: "widget.tooltip.memoryGuardCriticalPercent",
     clear_vram_before_refine: "widget.tooltip.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.tooltip.clearVramBeforeFaceRefine",
     cache_frames_codec: "widget.tooltip.cacheFramesCodec",
@@ -1115,6 +1133,11 @@ const STYLES = `
 .bd-mode button{border:none;background:#222;color:#aaa;padding:6px 12px;font-size:11px;cursor:pointer}
 .bd-mode button.active{background:#333;color:#fff}
 .bd-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-shrink:0}
+/* Merge controls live on their own row: adding them to .bd-right re-wrapped the
+   main toolbar row. The select keeps a fixed width so the empty placeholder
+   renders as a normal control instead of a collapsed sliver. */
+.bd-merge-bar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;width:100%}
+.bd-merge-bar .bd-select{width:220px;min-width:220px;max-width:220px;flex-shrink:0}
 .bd-tl-zoom{display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
 .bd-tl-zoom.hidden{display:none!important}
 .bd-btn.bd-btn-zoom.active{background:#1a3a2a;color:#4fff8f;border-color:#4fff8f;box-shadow:0 0 0 1px rgba(79,255,143,.35)}
@@ -1657,6 +1680,9 @@ const PERF_WIDGET_ORDER = [
     "clear_vram_before_refine",
     "clear_vram_before_face_refine",
     "cache_frames_codec",
+    "auto_memory_guard",
+    "memory_guard_low_percent",
+    "memory_guard_critical_percent",
 ];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {
@@ -2835,6 +2861,10 @@ class MiniMaxH3DirectorEditor {
                     <div class="bd-timecode" data-r="timecode">0.00s</div>
                 </div>
             </div>
+            <div class="bd-merge-bar" data-r="merge-bar">
+                <select class="bd-select" data-r="merge-run-select" data-i18n-title="tooltip.mergeRunSelect"></select>
+                <button type="button" class="bd-btn" data-a="merge-segments" data-i18n="toolbar.mergeSegments" data-i18n-title="tooltip.mergeSegments">合并成片</button>
+            </div>
             <div class="bd-smart-split-msg hidden" data-r="smart-split-msg" role="status"></div>
             <div class="bd-external-groups-msg hidden" data-r="external-groups-msg" role="status"></div>`;
         this.root.appendChild(toolbarWrap);
@@ -2953,6 +2983,7 @@ class MiniMaxH3DirectorEditor {
             <select class="bd-select" data-r="out-export-mode" data-i18n-title="tooltip.exportMode">
                 <option value="all" data-i18n="output.exportMode.all">全部导出</option>
                 <option value="segments" data-i18n="output.exportMode.segments">分段导出</option>
+                <option value="deferred" data-i18n="output.exportMode.deferred">延迟合并</option>
             </select>
             <span class="hidden" data-r="out-max-frames-wrap" hidden aria-hidden="true">
                 <label data-i18n="output.maxFrames">最大帧数</label>
@@ -3352,6 +3383,7 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="lang-toggle"]', () => toggleLocale());
         bind('[data-a="zoom-toggle"]', () => this.toggleTimelineZoom());
         bindPackActions(this);
+        bindMergeActions(this);
         bind('[data-a="play"]', () => this.togglePlay());
         bind('[data-a="loop"]', () => this.toggleLoop());
         bind('[data-a="live-tae-preview"]', () => this.toggleLiveTaePreview());
@@ -6249,7 +6281,7 @@ class MiniMaxH3DirectorEditor {
         if (this.outW) this.outW.value = String(out.width ?? 864);
         if (this.outH) this.outH.value = String(out.height ?? 480);
         if (this.outMaxFrames) this.outMaxFrames.value = String(out.maxExportFrames ?? 0);
-        if (this.outExportMode) this.outExportMode.value = out.exportMode === "segments" ? "segments" : "all";
+        if (this.outExportMode) this.outExportMode.value = normalizeExportMode(out.exportMode);
         if (this.outAudioMode) {
             const am = normalizeAudioMode(out.audioMode);
             this.outAudioMode.value = am;
@@ -6640,7 +6672,7 @@ class MiniMaxH3DirectorEditor {
             const n = parseInt(value, 10);
             this.timeline.output.maxExportFrames = Number.isFinite(n) && n > 0 ? n : 0;
         } else if (key === "exportMode") {
-            this.timeline.output.exportMode = value === "segments" ? "segments" : "all";
+            this.timeline.output.exportMode = normalizeExportMode(value);
         } else if (key === "audioMode") {
             this.timeline.output.audioMode = normalizeAudioMode(value);
         } else if (key === "continuityEnabled") {

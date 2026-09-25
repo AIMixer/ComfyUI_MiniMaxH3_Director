@@ -276,7 +276,7 @@ class DirectorPlan:
     raw: dict
     source_total_frames: int = 0
     export_max_frames: int = 0
-    export_mode: str = "all"  # "all" | "segments"
+    export_mode: str = "all"  # "all" | "segments" | "deferred"
     # Pixel-frame cache codec. "raw" = uint8 .pt; "ffv1" = lossless mkv.
     cache_frames_codec: str = "raw"
     run_indices: frozenset[int] | None = None  # None = run all segments
@@ -666,6 +666,8 @@ def _resolve_export_total(timeline: dict, source_total: int) -> int:
 
 def _resolve_export_mode(output_block: dict) -> str:
     mode = str(output_block.get("exportMode") or output_block.get("export_mode") or "all").lower()
+    if mode in ("deferred", "defer", "deferred_merge", "deferred-merge"):
+        return "deferred"
     if mode in ("segments", "segment", "per_segment", "by_segment"):
         return "segments"
     return "all"
@@ -1166,7 +1168,10 @@ def plan_summary(plan: DirectorPlan) -> str:
             f"Export cap: {plan.total_frames}/{plan.source_total_frames} frames "
             f"(max {plan.export_max_frames})"
         )
-    export_label = "分段导出" if plan.export_mode == "segments" else "全部导出"
+    export_label = {
+        "segments": "分段导出",
+        "deferred": "延迟合并",
+    }.get(plan.export_mode, "全部导出")
     lines.append(f"Export mode: {export_label}")
     if plan.continuity_enabled:
         pinned = [

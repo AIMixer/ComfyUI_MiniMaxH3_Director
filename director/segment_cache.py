@@ -540,6 +540,88 @@ def _fingerprint_diff_keys(stored: Any, expected: dict[str, Any]) -> list[str]:
     return [k for k in keys if stored.get(k) != expected.get(k)]
 
 
+def _fmt_fp_value(value: Any, *, limit: int = 160) -> str:
+    """Compact, log-safe rendering of one fingerprint value."""
+    try:
+        text = repr(value)
+    except Exception:
+        text = "<unrepr>"
+    text = text.replace("\n", "\\n")
+    if len(text) > limit:
+        text = text[: limit - 3] + "..."
+    return text
+
+
+def _fingerprint_diff_detail(
+    stored: Any,
+    expected: dict[str, Any],
+    *,
+    limit: int = 12,
+) -> list[str]:
+    """``key: stored -> expected`` for every mismatching key (values included).
+
+    Used only for diagnostics: lets the user see exactly which value drifted
+    instead of guessing from key names alone.
+    """
+    if not isinstance(stored, dict):
+        return ["<invalid-meta>"]
+    keys = sorted(set(stored) | set(expected))
+    out: list[str] = []
+    for k in keys:
+        sv = stored.get(k)
+        ev = expected.get(k)
+        if sv == ev:
+            continue
+        out.append(f"{k}: {_fmt_fp_value(sv)} -> {_fmt_fp_value(ev)}")
+        if len(out) >= limit:
+            out.append(f"... (+{len(keys) - len(out)} more keys)")
+            break
+    return out
+
+
+def log_cache_run_summary(
+    node_id: str | None,
+    plan: DirectorPlan,
+    segments,
+    run_indices=None,
+) -> None:
+    """One-shot diagnostic dump: what this run expects to hit vs what is on disk.
+
+    Never raises — diagnostics must not be able to abort a render.
+    """
+    try:
+        root = _cache_root(node_id) if node_id else None
+    except Exception:
+        root = None
+    seg_list = list(segments or [])
+    selected = "ALL" if run_indices is None else sorted(int(i) for i in run_indices)
+    log.info(
+        "Segment cache diagnostics: node_id=%s export_mode=%s segments=%d run=%s root=%s",
+        node_id,
+        getattr(plan, "export_mode", "?"),
+        len(seg_list),
+        selected,
+        root,
+    )
+    if root is None:
+        log.info("Segment cache diagnostics: cache disabled (no node_id or dir unavailable).")
+        return
+    for seg in seg_list:
+        try:
+            idx = int(getattr(seg, "index", 0))
+            log.info(
+                "Segment cache diagnostics: seg %d on disk pre(meta=%s, av=%s) "
+                "film(meta=%s, frames=%s)",
+                idx + 1,
+                (root / f"seg_{idx:04d}.pre.meta.json").is_file(),
+                (root / f"seg_{idx:04d}.pre.av.pt").is_file(),
+                (root / f"seg_{idx:04d}.meta.json").is_file(),
+                _frames_exist(root, idx, first_pass=False),
+            )
+        except Exception as exc:
+            log.debug("Segment cache diagnostics: seg row skipped (%s)", exc)
+
+
 def _inspect_drop_keys(plan, *, first_pass: bool = True) -> set[str]:
     """Keys the status panel cannot reconstruct (linked SIGMAS tensors)."""
     drop: set[str] = set()
@@ -832,6 +914,11 @@ def load_segment_cache(
                 if _reject_source_stale(stored, expected, seg_index=idx):
                     return None
                 diff = _fingerprint_diff_keys(stored, expected)
+                log.info(
+                    "Segment %d cache diff detail (stored -> expected): %s",
+                    idx + 1,
+                    _fingerprint_diff_detail(stored, expected),
+                )
                 if not allow_stale:
                     log.info(
                         "Segment %d cache stale (diff=%s); re-run this segment to refresh.",
@@ -1051,6 +1138,14 @@ def load_first_pass_cache(
     handoff_path = root / f"seg_{idx:04d}.pre.handoff.json"
     low_path = root / f"seg_{idx:04d}.pre.low.pt"
     if not meta_path.is_file() or not latent_path.is_file():
+        log.info(
+            "Segment %d first-pass cache: no cache files under %s "
+            "(meta=%s, latent=%s); will sample first pass.",
+            idx + 1,
+            root,
+            meta_path.is_file(),
+            latent_path.is_file(),
+        )
         return None
     try:
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -1064,6 +1159,10 @@ def load_first_pass_cache(
             if isinstance(stored, dict) and _reject_source_stale(
                 stored, expected, seg_index=idx, quiet=True,
             ):
+                log.info(
+                    "Segment %d first-pass cache miss: source video changed; will sample first pass.",
+                    idx + 1,
+                )
                 return None
             diff = _fingerprint_diff_keys(stored, expected) if isinstance(stored, dict) else ["<invalid-meta>"]
             if missing_external and "<unverified-external>" not in diff:
@@ -1072,6 +1171,11 @@ def load_first_pass_cache(
                 "Segment %d first-pass cache miss (diff=%s); will sample first pass.",
                 idx + 1,
                 diff[:8],
+            )
+            log.info(
+                "Segment %d first-pass cache miss detail (stored -> expected): %s",
+                idx + 1,
+                _fingerprint_diff_detail(stored, expected),
             )
             return None
         payload = torch.load(latent_path, map_location="cpu", weights_only=False)

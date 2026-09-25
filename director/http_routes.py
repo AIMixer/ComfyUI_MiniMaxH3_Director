@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import uuid
+from pathlib import Path
 
 import folder_paths
 from aiohttp import web
@@ -604,6 +605,139 @@ async def minimax_clear_segment_cache(request):
         return web.Response(status=500, text=str(exc))
 
 
+_SEG_FILE_RE = re.compile(r"^seg_\d{4}\.mp4$", re.I)
+
+
+def _seg_export_root() -> str:
+    """Directory holding per-run segment exports (``<output>/minimax_seg_export``)."""
+    return os.path.join(folder_paths.get_output_directory(), "minimax_seg_export")
+
+
+def _list_segment_runs() -> list[dict]:
+    """Enumerate segment-export run folders, newest first.
+
+    Only folders that actually contain ``seg_XXXX.mp4`` files are returned, so the
+    list matches what a manual merge can consume.
+    """
+    root = _seg_export_root()
+    runs: list[dict] = []
+    if not os.path.isdir(root):
+        return runs
+    for name in os.listdir(root):
+        run_dir = os.path.join(root, name)
+        if not os.path.isdir(run_dir):
+            continue
+        # Final (suffix-free ``seg_XXXX.mp4``) segments only; ``_pre`` /
+        # ``_facepre`` / ``_pN`` are intermediates and must not be merged.
+        segs = [
+            f
+            for f in os.listdir(run_dir)
+            if _SEG_FILE_RE.match(f)
+        ]
+        if not segs:
+            continue
+        segs.sort()
+        runs.append({
+            "dir": name,
+            "count": len(segs),
+            "first": segs[0],
+            "last": segs[-1],
+            "mtime": os.path.getmtime(run_dir),
+        })
+    runs.sort(key=lambda item: item["mtime"], reverse=True)
+    return runs
+
+
+async def minimax_list_segment_runs(request):
+    """List segment-export run folders available for a manual merge."""
+    try:
+        runs = _list_segment_runs()
+    except Exception as exc:
+        log.warning("MiniMax H3 Director list segment runs failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+    return web.json_response({"runs": runs})
+
+
+async def minimax_merge_segments(request):
+    """Manually merge one segment-export run folder into a single MP4.
+
+    Mirrors the deferred-merge path used by the node itself: probes each
+    ``seg_XXXX.mp4`` and delegates to ``deferred_merge_with_seam_reencode``.
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return web.Response(status=400, text=f"Invalid JSON: {exc}")
+
+    run_name = str(body.get("run") or "").strip()
+    root = _seg_export_root()
+    if run_name:
+        if "/" in run_name or "\\" in run_name or ".." in run_name:
+            return web.Response(status=400, text="Invalid run name.")
+        run_dir = os.path.join(root, run_name)
+    else:
+        runs = _list_segment_runs()
+        if not runs:
+            return web.Response(status=404, text="没有找到分段导出的目录。")
+        run_dir = os.path.join(root, runs[0]["dir"])
+        run_name = runs[0]["dir"]
+
+    if not os.path.isdir(run_dir):
+        return web.Response(status=404, text=f"分段导出目录不存在：{run_name}")
+
+    mp4_paths = sorted(
+        os.path.join(run_dir, f)
+        for f in os.listdir(run_dir)
+        if _SEG_FILE_RE.match(f)
+    )
+    if not mp4_paths:
+        return web.Response(status=404, text=f"目录中没有分段文件：{run_name}")
+
+    try:
+        fps = float(body.get("fps") or 24.0)
+    except (TypeError, ValueError):
+        fps = 24.0
+    if fps <= 0:
+        fps = 24.0
+    seam_blending = body.get("seam_blending") is not False
+    continuity = body.get("continuity") is not False
+
+    from .deferred_merge import deferred_merge_with_seam_reencode
+
+    try:
+        result = await asyncio.to_thread(
+            deferred_merge_with_seam_reencode,
+            segment_mp4_paths=[Path(p) for p in mp4_paths],
+            fps=fps,
+            seam_blending_enabled=seam_blending,
+            continuity_enabled=continuity,
+            preview_only_frames=1,
+        )
+    except Exception as exc:
+        log.warning("MiniMax H3 Director manual merge failed: %s", exc)
+        return web.Response(status=500, text=str(exc)[-1200:])
+
+    merged_path = Path(result.merged_video_path)
+    if not merged_path.exists():
+        return web.Response(status=500, text="合并完成但没有生成输出文件。")
+
+    out_fps = float(result.fps or fps)
+    total_frames = int(result.total_frames or 0)
+    return web.json_response({
+        "ok": True,
+        "run": run_name,
+        "segments": len(mp4_paths),
+        "name": merged_path.name,
+        "subfolder": merged_path.parent.name,
+        "path": str(merged_path),
+        "mtime": os.path.getmtime(merged_path),
+        "total_frames": total_frames,
+        "duration_s": (total_frames / out_fps) if out_fps > 0 else 0.0,
+        "fps": out_fps,
+        "sample_rate": int(result.sample_rate or 0),
+    })
+
+
 def _register_route(routes, method: str, path: str, handler) -> None:
     if hasattr(routes, "add_route"):
         routes.add_route(method, path, handler)
@@ -655,6 +789,18 @@ def register_routes() -> bool:
         "POST",
         "/minimax/director/clear_segment_cache",
         minimax_clear_segment_cache,
+    )
+    _register_route(
+        routes,
+        "GET",
+        "/minimax/director/list_segment_runs",
+        minimax_list_segment_runs,
+    )
+    _register_route(
+        routes,
+        "POST",
+        "/minimax/director/merge_segments",
+        minimax_merge_segments,
     )
     from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
 

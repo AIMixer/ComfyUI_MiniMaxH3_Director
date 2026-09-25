@@ -29,13 +29,21 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.mp4_export")
 
 VIDEO_EXPORT_TASKS = frozenset({"t2v", "i2v", "r2v", "fl2v", "v2v", "rv2v"})
 
+#「分段导出」和「延迟合并」都要逐段落盘 mp4；后者跑完再从磁盘合并成一条。
+SEGMENT_MP4_EXPORT_MODES = frozenset({"segments", "deferred"})
+
+
+def segment_mp4_export_enabled(plan: DirectorPlan) -> bool:
+    """True when this run writes per-segment mp4 files as it goes."""
+    return getattr(plan, "export_mode", "all") in SEGMENT_MP4_EXPORT_MODES
+
 
 def new_segment_mp4_run_dir(plan: DirectorPlan) -> Path | None:
     """Create ``minimax_seg_export/<YYYYMMDD_HHMMSS>/`` for one Director execute.
 
-    Returns None when not in segments mode or the output dir is unavailable.
+    Returns None when not in segments/deferred mode or the output dir is unavailable.
     """
-    if getattr(plan, "export_mode", "all") != "segments":
+    if not segment_mp4_export_enabled(plan):
         return None
     try:
         base = Path(folder_paths.get_output_directory()) / "minimax_seg_export"
@@ -114,7 +122,7 @@ def maybe_export_segment_mp4(
 
     Returns the absolute path string on success, otherwise None.
     """
-    if run_dir is None or getattr(plan, "export_mode", "all") != "segments":
+    if run_dir is None or not segment_mp4_export_enabled(plan):
         return None
     task = str(getattr(seg, "task_key", "") or getattr(plan, "global_task_key", "") or "")
     if task not in VIDEO_EXPORT_TASKS:
@@ -196,7 +204,7 @@ def copy_segment_mp4_suffix(
     dest_suffix: str,
 ) -> str | None:
     """Copy ``seg_XXXX.mp4`` to ``seg_XXXX_<suffix>.mp4``. Never raises."""
-    if run_dir is None or getattr(plan, "export_mode", "all") != "segments":
+    if run_dir is None or not segment_mp4_export_enabled(plan):
         return None
     tag = _safe_mp4_suffix(dest_suffix)
     if not tag:
