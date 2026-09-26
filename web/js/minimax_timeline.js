@@ -113,6 +113,18 @@ import {
     toggleLocale,
 } from "./minimax_i18n.js";
 import { bindPackActions } from "./minimax_pack.js";
+import { bindMergeActions, refreshMergeRuns } from "./minimax_merge.js";
+import {
+    addMMH3Project,
+    createMMH3ProjectStore,
+    deleteMMH3Project,
+    duplicateMMH3Project,
+    getMMH3Project,
+    newMMH3ProjectId,
+    renameMMH3Project,
+    saveMMH3Project,
+} from "./minimax_projects.js";
+import { refreshCacheStatusForDirector } from "./minimax_refine.js";
 import {
     attachExternalGroupsWitness,
     injectExternalGroupsWitness,
@@ -194,6 +206,17 @@ function normalizeAudioMode(value) {
     if (raw === "source" || raw === "original" || raw === "passthrough") return "source";
     if (raw === "mute" || raw === "silent" || raw === "silence") return "mute";
     return "generate";
+}
+
+function normalizeExportMode(value) {
+    const raw = String(value || "all").trim().toLowerCase();
+    if (raw === "deferred" || raw === "defer" || raw === "deferred_merge" || raw === "deferred-merge") {
+        return "deferred";
+    }
+    if (raw === "segments" || raw === "segment" || raw === "per_segment" || raw === "by_segment") {
+        return "segments";
+    }
+    return "all";
 }
 
 const CONTINUITY_FRAME_CHOICES = [5, 22, 39, 56];
@@ -499,6 +522,9 @@ const HIDDEN_WIDGETS = [
 const DIRECTOR_WIDGET_LABEL_KEYS = {
     seed: "widget.seed",
     clear_vram_between_segments: "widget.clearVram",
+    auto_memory_guard: "widget.autoMemoryGuard",
+    memory_guard_low_percent: "widget.memoryGuardLowPercent",
+    memory_guard_critical_percent: "widget.memoryGuardCriticalPercent",
     clear_vram_before_refine: "widget.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.clearVramBeforeFaceRefine",
     cache_frames_codec: "widget.cacheFramesCodec",
@@ -510,6 +536,9 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
 
 const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
+    auto_memory_guard: "widget.tooltip.autoMemoryGuard",
+    memory_guard_low_percent: "widget.tooltip.memoryGuardLowPercent",
+    memory_guard_critical_percent: "widget.tooltip.memoryGuardCriticalPercent",
     clear_vram_before_refine: "widget.tooltip.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.tooltip.clearVramBeforeFaceRefine",
     cache_frames_codec: "widget.tooltip.cacheFramesCodec",
@@ -955,6 +984,19 @@ const STYLES = `
   height:100%;min-height:0;max-height:100%;overflow:hidden;align-self:stretch
 }
 .bd-modal-overlay{position:absolute;inset:0;z-index:200;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:10px;box-sizing:border-box;border-radius:6px}
+.bd-modal-overlay.bd-pick-overlay{position:fixed;align-items:flex-start;padding-top:12vh;padding-bottom:5vh;overflow-y:auto;overscroll-behavior:contain;z-index:300}
+.bd-pick-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-shrink:0}
+.bd-pick-count{color:#cfcfe8;font-size:11px;font-weight:600}
+.bd-pick-toolbar-actions{display:flex;gap:8px}
+.bd-pick-toolbar-actions .bd-btn{background:#262626;border:1px solid #3a3a3a;color:#ddd;font-size:11px;padding:4px 10px;border-radius:5px;cursor:pointer}
+.bd-pick-toolbar-actions .bd-btn:hover{border-color:#6a5cd6;color:#fff}
+.bd-modal-overlay.bd-progress-overlay{position:fixed;z-index:320;align-items:center}
+.bd-progress-panel{max-width:460px;width:90%;display:flex;flex-direction:column;gap:12px}
+.bd-progress-track{width:100%;height:10px;background:#232323;border:1px solid #3a3a3a;border-radius:6px;overflow:hidden}
+.bd-progress-fill{height:100%;width:0%;background:linear-gradient(90deg,#6a5cd6,#9a8cff);border-radius:6px;transition:width .25s ease}
+.bd-progress-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11px;color:#cfcfe8}
+.bd-progress-msg{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd-progress-pct{font-variant-numeric:tabular-nums;font-weight:600}
 .bd-modal{background:#1e1e1e;border:1px solid #333;border-radius:6px;padding:12px;width:100%;max-width:460px;max-height:calc(100% - 8px);display:flex;flex-direction:column;gap:10px;box-shadow:0 10px 28px rgba(0,0,0,.5)}
 .bd-modal-title{color:#e0e0e0;font-size:12px;font-weight:600;line-height:1.35}
 .bd-modal-body{color:#aaa;font-size:11px;line-height:1.5;white-space:pre-wrap}
@@ -965,6 +1007,16 @@ const STYLES = `
 .bd-modal-item:hover{background:#252525;color:#eee}
 .bd-modal-item.selected{background:#2a2a2a;border-color:#4fff8f;color:#fff}
 .bd-modal-actions{display:flex;gap:8px;justify-content:flex-end;flex-shrink:0}
+.bd-pick-grid{flex:1;min-height:0;max-height:min(62vh,560px);overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:10px;padding:6px;background:#181818;border:1px solid #333;border-radius:8px;box-sizing:border-box}
+.bd-pick-seg-label{grid-column:1/-1;color:#e0e0e0;font-size:11px;font-weight:650;letter-spacing:.02em;padding-top:6px;border-top:1px solid #2a2a2a}
+.bd-pick-card{background:#141414;border:1px solid #333;border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.bd-pick-card:hover{border-color:#6a5cd6}
+.bd-pick-card.checked{border-color:#4fff8f;box-shadow:0 0 0 1px rgba(79,255,143,.35)}
+.bd-pick-card video{width:100%;aspect-ratio:16/9;background:#000;border-radius:4px;object-fit:contain;display:block}
+.bd-pick-card-label{display:flex;align-items:center;gap:6px;min-width:0;flex:1;cursor:pointer}
+.bd-pick-card-label input{flex-shrink:0;accent-color:#4fff8f}
+.bd-pick-card-name{flex:1;min-width:0;font-size:10px;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bd-pick-card-meta{font-size:9px;color:#888;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bd-media-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .bd-media-head .bd-modal-title{flex:1;min-width:0;padding-top:4px}
 .bd-media-head-actions{display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end}
@@ -1009,6 +1061,21 @@ const STYLES = `
 .bd-media-card-has-video::after{content:"▶";position:absolute;right:8px;bottom:22px;width:18px;height:18px;border-radius:9px;background:rgba(0,0,0,.55);color:#fff;font-size:9px;line-height:18px;text-align:center;pointer-events:none}
 .bd-media-card-name{display:block;padding:5px 2px 1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:1.35}
 .bd-toolbar-wrap{display:flex;flex-direction:column;gap:4px;width:100%}
+/* 项目管理：独立 div 块，紫罗兰色系，与输入区拉开层次 */
+.bd-project-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;box-sizing:border-box;padding:6px 10px;background:linear-gradient(180deg,rgba(122,96,232,.20),rgba(122,96,232,.08));border:1px solid #6c56d6;border-radius:8px}
+.bd-project-bar.hidden{display:none!important}
+.bd-project-title{font-weight:700;font-size:12px;letter-spacing:.5px;color:#cfc4ff;white-space:nowrap;flex-shrink:0}
+.bd-project-bar .bd-select{width:220px;min-width:160px;max-width:280px;flex-shrink:0;background:#1c1836;border-color:#5b4bb8}
+.bd-project-bar .bd-select.bd-merge-mode{width:120px;min-width:120px;max-width:160px}
+.bd-project-bar [data-r="merge-run-select"]{width:200px}
+.bd-merge-sep{width:1px;height:22px;background:#4d3f96;flex-shrink:0;margin:0 2px}
+.bd-merge-mode-label{font-size:11px;color:#cfc4ff;white-space:nowrap;flex-shrink:0}
+.bd-project-bar .bd-project-name{width:180px;min-width:130px;flex-shrink:0;box-sizing:border-box;padding:4px 6px;font-size:11px;color:#eee;background:#1c1836;border:1px solid #5b4bb8;border-radius:4px}
+.bd-project-bar .bd-project-name:focus{border-color:#9d8bff;outline:none}
+.bd-project-bar .bd-btn{border-color:#5b4bb8;background:#2a2350}
+.bd-project-bar .bd-btn:hover{border-color:#9d8bff}
+.bd-project-bar .bd-btn.bd-btn-danger{background:#3a2038;border-color:#8a4f7a}
+.bd-project-info{font-size:11px;color:#a99fe0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .bd-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
 .bd-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0}
 .bd-smart-split-msg{width:100%;box-sizing:border-box;font-size:11px;line-height:1.4;color:#f66;padding:0 2px;min-height:0}
@@ -1115,6 +1182,12 @@ const STYLES = `
 .bd-mode button{border:none;background:#222;color:#aaa;padding:6px 12px;font-size:11px;cursor:pointer}
 .bd-mode button.active{background:#333;color:#fff}
 .bd-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-shrink:0}
+/* Merge controls live on their own row: adding them to .bd-right re-wrapped the
+   main toolbar row. The select keeps a fixed width so the empty placeholder
+   renders as a normal control instead of a collapsed sliver. */
+.bd-merge-bar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;width:100%}
+.bd-merge-bar .bd-select{width:220px;min-width:220px;max-width:220px;flex-shrink:0}
+.bd-merge-bar .bd-select.bd-merge-mode{width:150px;min-width:150px;max-width:150px}
 .bd-tl-zoom{display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
 .bd-tl-zoom.hidden{display:none!important}
 .bd-btn.bd-btn-zoom.active{background:#1a3a2a;color:#4fff8f;border-color:#4fff8f;box-shadow:0 0 0 1px rgba(79,255,143,.35)}
@@ -1657,6 +1730,9 @@ const PERF_WIDGET_ORDER = [
     "clear_vram_before_refine",
     "clear_vram_before_face_refine",
     "cache_frames_codec",
+    "auto_memory_guard",
+    "memory_guard_low_percent",
+    "memory_guard_critical_percent",
 ];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {
@@ -2197,6 +2273,7 @@ class MiniMaxH3DirectorEditor {
         this.syncFromWidgets();
         this.updateModeUI();
         this.updateSelectionUI();
+        this.initProjects();
         this.commit(true, { syncTimeline: false });
         this._observeViewportResize();
         this.syncExternalGroupsTimeline();
@@ -2571,6 +2648,240 @@ class MiniMaxH3DirectorEditor {
     }
 
     buildTimelinePayload() {
+        return this._projectSnapshot(this.activeProjectId);
+    }
+
+    /**
+     * 当前时间轴快照，并把顶层 projectId 钉到指定项目。
+     * 顶层 projectId 决定后端分段缓存目录（minimax_seg_cache/<projectId>/）；
+     * 旧工作流没有该字段时后端回退 node_id，行为不变。当前项目始终是权威值，
+     * 避免导入导演包等来源带来的旧 projectId 串到别的项目缓存。
+     */
+    _projectSnapshot(projectId) {
+        const payload = this._buildTimelinePayload();
+        if (payload && projectId) payload.projectId = projectId;
+        return payload;
+    }
+
+    /* ---------- 项目管理：新建 / 复制 / 重命名 / 删除 / 切换 ---------- */
+
+    /**
+     * 从节点 properties 读取项目 store；缺失时用当前 timeline 兜底建一个项目。
+     * 首次接管老工作流（还没有 store）时，用节点 id 作为首个项目的 id，
+     * 这样 timeline 顶层 projectId 就等于原来的缓存键，minimax_seg_cache/<节点id>/
+     * 里已有的分段缓存可以继续命中，不会因为换键而全部作废。
+     */
+    initProjects() {
+        const previousActive = String(this.activeProjectId || "");
+        const raw = this.node?.properties?.mmh3_projects_v1;
+        const isFirstRun = !raw || !Array.isArray(raw.projects) || raw.projects.length === 0;
+        const requested = String(this.node?.properties?.mmh3_active_project_id || "")
+            || previousActive
+            || (isFirstRun ? String(this.node?.id ?? "") : "");
+        this.projectStore = createMMH3ProjectStore(
+            raw,
+            requested,
+            this._buildTimelinePayload(),
+            newMMH3ProjectId,
+        );
+        this.activeProjectId = String(this.projectStore.activeId || "");
+        this.persistProjectStore();
+        this.renderProjectBar();
+    }
+
+    persistProjectStore() {
+        if (!this.node) return;
+        this.node.properties = this.node.properties || {};
+        this.node.properties.mmh3_projects_v1 = this.projectStore;
+        this.node.properties.mmh3_active_project_id = this.activeProjectId || "";
+    }
+
+    /** 把当前时间轴快照写回当前项目（不切换）。 */
+    saveActiveProject(notify = false) {
+        if (!this.projectStore || !this.activeProjectId) return false;
+        saveMMH3Project(this.projectStore, this.activeProjectId, this._projectSnapshot(this.activeProjectId));
+        this.persistProjectStore();
+        this.renderProjectBar();
+        if (notify) {
+            this.node.setDirtyCanvas(true, false);
+            this.showStatus(t("project.saved"));
+        }
+        return true;
+    }
+
+    showStatus(message) {
+        if (!message) return;
+        const el = this.smartSplitMsgEl;
+        if (!el) return;
+        el.textContent = message;
+        el.classList.remove("hidden", "ok");
+        clearTimeout(this._projectStatusTimer);
+        this._projectStatusTimer = setTimeout(() => {
+            el.textContent = "";
+            el.classList.add("hidden");
+        }, 2600);
+    }
+
+    formatProjectTime(value) {
+        const date = new Date(Number(value) || Date.now());
+        const two = (n) => String(n).padStart(2, "0");
+        return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} `
+            + `${two(date.getHours())}:${two(date.getMinutes())}`;
+    }
+
+    /** 重绘下拉选项、名称框与信息行。 */
+    renderProjectBar() {
+        if (!this.projectSelectEl) return;
+        const projects = this.projectStore?.projects || [];
+        this.projectSelectEl.innerHTML = "";
+        for (const project of projects) {
+            const option = document.createElement("option");
+            option.value = project.id;
+            const segments = Array.isArray(project.payload?.segments) ? project.payload.segments.length : 0;
+            option.textContent = t("project.option", {
+                name: project.name,
+                segments,
+                time: this.formatProjectTime(project.updated_at),
+            });
+            this.projectSelectEl.appendChild(option);
+        }
+        this.projectSelectEl.value = this.activeProjectId || "";
+        const active = getMMH3Project(this.projectStore, this.activeProjectId);
+        if (this.projectNameEl && document.activeElement !== this.projectNameEl) {
+            this.projectNameEl.value = active?.name || "";
+        }
+        if (this.projectInfoEl) {
+            const segments = Array.isArray(active?.payload?.segments) ? active.payload.segments.length : 0;
+            this.projectInfoEl.textContent = active
+                ? t("project.info", { segments, time: this.formatProjectTime(active.updated_at) })
+                : t("project.infoEmpty");
+        }
+        const disabled = !active;
+        for (const el of this.root.querySelectorAll('[data-a^="project-"]')) {
+            el.disabled = el === this.projectDeleteBtn
+                ? (disabled || projects.length <= 1)
+                : disabled;
+        }
+        this.resetProjectDeleteArmed();
+    }
+
+    resetProjectDeleteArmed() {
+        if (!this.projectDeleteBtn) return;
+        this.projectDeleteBtn.dataset.armed = "";
+        this.projectDeleteBtn.textContent = t("project.delete");
+    }
+
+    /**
+     * 切换项目：先落盘当前项目，再把目标项目的 timeline 载入编辑器。
+     * 载入后 commit(true) 会把新 projectId 写进 timeline_data，并刷新二采缓存状态。
+     */
+    switchProject(id) {
+        if (!this.projectStore) return false;
+        const target = getMMH3Project(this.projectStore, id);
+        if (!target) return false;
+        if (target.id === this.activeProjectId) return true;
+        saveMMH3Project(this.projectStore, this.activeProjectId, this._projectSnapshot(this.activeProjectId));
+        return this._activateProject(target);
+    }
+
+    _activateProject(target) {
+        this.activeProjectId = target.id;
+        this.node.properties.mmh3_active_project_id = target.id;
+        this.persistProjectStore();
+        this.loadProjectPayload(target.payload);
+        this.commit(true);
+        this.syncExternalGroupsTimeline?.();
+        this.scheduleSettleRender?.();
+        this.refreshProjectCacheStatus();
+        this.renderProjectBar();
+        void refreshMergeRuns(this, this.activeProjectId);
+        this.showStatus(t("project.switched", { name: target.name }));
+        return true;
+    }
+
+    /** 把项目快照回填进编辑器（与 onConfigure 的恢复流程保持一致）。 */
+    loadProjectPayload(payload) {
+        const body = payload && typeof payload === "object" ? payload : {};
+        if (this.timelineWidget) this.timelineWidget.value = JSON.stringify(body);
+        const initTotal = Math.max(0, parseInt(this.totalFramesWidget?.value || 124, 10));
+        const initFps = coerceTimelineFps(this.frameRateWidget?.value || 24);
+        this.timeline = parseTimeline(JSON.stringify(body), initTotal, initFps);
+        this.syncFrameRateUI?.(this.timeline.frameRate);
+        this._directorMode = this.getDirectorMode();
+        if (this._directorMode === "video") {
+            this.restoreVideoFromTimeline();
+        } else if (this._directorMode === "prompt_batch" || this._directorMode === "image_batch") {
+            ensureImageBatchTimeline(this);
+        } else {
+            this.ensureGenTimeline();
+        }
+        this.applyTaskLayout(this._directorMode);
+        this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value);
+        this.setEditMode(this.timeline.editMode || "global");
+        this.selectedIndex = 0;
+        this.updateSelectionUI();
+    }
+
+    /** 切换项目后刷新二采/成片缓存状态，避免显示上一个项目的缓存。 */
+    refreshProjectCacheStatus() {
+        try {
+            // refreshCacheStatusForDirector 接收的是「导演台节点」，不是编辑器实例。
+            refreshCacheStatusForDirector(this.node);
+        } catch (err) {
+            console.warn("MiniMax H3: refresh cache status after project switch failed", err);
+        }
+    }
+
+    addProject() {
+        if (!this.projectStore) return;
+        this.saveActiveProject();
+        const added = addMMH3Project(this.projectStore, "", {}, newMMH3ProjectId);
+        this.persistProjectStore();
+        this._activateProject(added.project);
+        this.showStatus(t("project.created"));
+    }
+
+    copyProject() {
+        if (!this.projectStore || !this.activeProjectId) return;
+        const copied = duplicateMMH3Project(this.projectStore, this.activeProjectId, newMMH3ProjectId);
+        if (!copied.project) return;
+        this.persistProjectStore();
+        this._activateProject(copied.project);
+        this.showStatus(t("project.copied"));
+    }
+
+    renameProject() {
+        if (!this.projectStore || !this.activeProjectId) return;
+        const name = this.projectNameEl?.value || "";
+        renameMMH3Project(this.projectStore, this.activeProjectId, name);
+        this.persistProjectStore();
+        this.renderProjectBar();
+        this.showStatus(t("project.renamed"));
+    }
+
+    deleteProject() {
+        if (!this.projectStore || !this.activeProjectId) return;
+        if (this.projectDeleteBtn?.dataset.armed !== "1") {
+            if (this.projectDeleteBtn) {
+                this.projectDeleteBtn.dataset.armed = "1";
+                this.projectDeleteBtn.textContent = t("project.deleteArmed");
+            }
+            this.showStatus(t("project.deleteTitle"));
+            return;
+        }
+        const result = deleteMMH3Project(this.projectStore, this.activeProjectId);
+        if (!result.deleted) {
+            this.resetProjectDeleteArmed();
+            this.showStatus(t("project.deleteLast"));
+            return;
+        }
+        this.persistProjectStore();
+        const next = getMMH3Project(this.projectStore, result.activeId);
+        if (next) this._activateProject(next);
+        this.showStatus(t("project.deleteDone"));
+    }
+
+    _buildTimelinePayload() {
         if (this.isFl2vMode()) {
             const fl = buildFl2vPayloadFields(this);
             const outMode = this.timeline.output?.mode || "long_edge";
@@ -2799,6 +3110,26 @@ class MiniMaxH3DirectorEditor {
         const toolbarWrap = document.createElement("div");
         toolbarWrap.className = "bd-toolbar-wrap";
         toolbarWrap.innerHTML = `
+            <div class="bd-project-bar" data-r="project-bar">
+                <span class="bd-project-title" data-i18n="project.title">项目管理</span>
+                <select class="bd-select" data-r="project-select" data-i18n-title="project.selectTitle"></select>
+                <input type="text" class="bd-project-name" data-r="project-name" data-i18n-placeholder="project.namePlaceholder" data-i18n-title="project.renameTitle">
+                <button type="button" class="bd-btn" data-a="project-save" data-i18n="project.save" data-i18n-title="project.saveTitle">保存当前</button>
+                <button type="button" class="bd-btn" data-a="project-new" data-i18n="project.new" data-i18n-title="project.newTitle">新建</button>
+                <button type="button" class="bd-btn" data-a="project-copy" data-i18n="project.copy" data-i18n-title="project.copyTitle">复制</button>
+                <button type="button" class="bd-btn" data-a="project-rename" data-i18n="project.rename" data-i18n-title="project.renameTitle">重命名</button>
+                <button type="button" class="bd-btn bd-btn-danger" data-a="project-delete" data-i18n="project.delete" data-i18n-title="project.deleteTitle">删除</button>
+                <span class="bd-project-info" data-r="project-info"></span>
+                <span class="bd-merge-sep" aria-hidden="true"></span>
+                <span class="bd-merge-mode-label" data-r="merge-mode-label" data-i18n="merge.modeLabel">合并模式</span>
+                <select class="bd-select bd-merge-mode" data-r="merge-mode-select" data-i18n-title="tooltip.mergeMode">
+                    <option value="project" data-i18n="merge.modeProject">本项目最新</option>
+                    <option value="single" data-i18n="merge.modeSingle">仅所选段</option>
+                </select>
+                <select class="bd-select bd-run-select hidden" data-r="merge-run-select" data-i18n-title="tooltip.mergeRunSelect"></select>
+                <button type="button" class="bd-btn bd-pick-btn hidden" data-a="merge-pick" data-i18n="toolbar.mergePick" data-i18n-title="tooltip.mergePick">挑段…</button>
+                <button type="button" class="bd-btn" data-a="merge-segments" data-i18n="toolbar.mergeSegments" data-i18n-title="tooltip.mergeSegments">合并成片</button>
+            </div>
             <div class="bd-toolbar">
                 <div class="bd-actions">
                     <button type="button" class="bd-btn bd-btn-primary hidden" data-a="r2v-add-group" data-i18n="toolbar.addRefGroup" data-i18n-title="tooltip.addRefGroup">添加素材组</button>
@@ -2841,6 +3172,11 @@ class MiniMaxH3DirectorEditor {
         this.smartSplitMsgEl = toolbarWrap.querySelector('[data-r="smart-split-msg"]');
         this.externalGroupsMsgEl = toolbarWrap.querySelector('[data-r="external-groups-msg"]');
         this.langToggleBtn = toolbarWrap.querySelector('[data-a="lang-toggle"]');
+        this.projectBarEl = toolbarWrap.querySelector('[data-r="project-bar"]');
+        this.projectSelectEl = toolbarWrap.querySelector('[data-r="project-select"]');
+        this.projectNameEl = toolbarWrap.querySelector('[data-r="project-name"]');
+        this.projectInfoEl = toolbarWrap.querySelector('[data-r="project-info"]');
+        this.projectDeleteBtn = toolbarWrap.querySelector('[data-a="project-delete"]');
 
         this.mainBody = document.createElement("div");
         this.mainBody.className = "bd-main";
@@ -2953,6 +3289,7 @@ class MiniMaxH3DirectorEditor {
             <select class="bd-select" data-r="out-export-mode" data-i18n-title="tooltip.exportMode">
                 <option value="all" data-i18n="output.exportMode.all">全部导出</option>
                 <option value="segments" data-i18n="output.exportMode.segments">分段导出</option>
+                <option value="deferred" data-i18n="output.exportMode.deferred">延迟合并</option>
             </select>
             <span class="hidden" data-r="out-max-frames-wrap" hidden aria-hidden="true">
                 <label data-i18n="output.maxFrames">最大帧数</label>
@@ -3352,6 +3689,19 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="lang-toggle"]', () => toggleLocale());
         bind('[data-a="zoom-toggle"]', () => this.toggleTimelineZoom());
         bindPackActions(this);
+        bindMergeActions(this);
+        bind('[data-a="project-save"]', () => this.saveActiveProject(true));
+        bind('[data-a="project-new"]', () => this.addProject());
+        bind('[data-a="project-copy"]', () => this.copyProject());
+        bind('[data-a="project-rename"]', () => this.renameProject());
+        bind('[data-a="project-delete"]', () => this.deleteProject());
+        if (this.projectSelectEl) {
+            this.projectSelectEl.addEventListener("change", () => {
+                if (!this.switchProject(this.projectSelectEl.value)) {
+                    this.projectSelectEl.value = this.activeProjectId || "";
+                }
+            });
+        }
         bind('[data-a="play"]', () => this.togglePlay());
         bind('[data-a="loop"]', () => this.toggleLoop());
         bind('[data-a="live-tae-preview"]', () => this.toggleLiveTaePreview());
@@ -6122,6 +6472,7 @@ class MiniMaxH3DirectorEditor {
         applyDirectorWidgetLabels(this.node);
         this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value || this.globalTask?.value);
         this.refreshAspectSelectLabels();
+        this.renderProjectBar?.();
         // Re-apply dynamic UI strings that overwrite data-i18n nodes.
         this.updateVideoNameLabel?.();
         this.updateRunSelectUI?.();
@@ -6249,7 +6600,7 @@ class MiniMaxH3DirectorEditor {
         if (this.outW) this.outW.value = String(out.width ?? 864);
         if (this.outH) this.outH.value = String(out.height ?? 480);
         if (this.outMaxFrames) this.outMaxFrames.value = String(out.maxExportFrames ?? 0);
-        if (this.outExportMode) this.outExportMode.value = out.exportMode === "segments" ? "segments" : "all";
+        if (this.outExportMode) this.outExportMode.value = normalizeExportMode(out.exportMode);
         if (this.outAudioMode) {
             const am = normalizeAudioMode(out.audioMode);
             this.outAudioMode.value = am;
@@ -6640,7 +6991,7 @@ class MiniMaxH3DirectorEditor {
             const n = parseInt(value, 10);
             this.timeline.output.maxExportFrames = Number.isFinite(n) && n > 0 ? n : 0;
         } else if (key === "exportMode") {
-            this.timeline.output.exportMode = value === "segments" ? "segments" : "all";
+            this.timeline.output.exportMode = normalizeExportMode(value);
         } else if (key === "audioMode") {
             this.timeline.output.audioMode = normalizeAudioMode(value);
         } else if (key === "continuityEnabled") {
@@ -13149,6 +13500,14 @@ app.registerExtension({
                 ed.setEditMode(ed.timeline.editMode || "global");
                 ed.selectedIndex = 0;
                 ed.updateSelectionUI();
+                // 打开的工作流没带项目 store（老工作流）时，清掉内存里上一次
+                // 加载残留的 store，避免把别的项目的 projectId 带进来串了缓存。
+                const loadedProps = this._mmxSavedConfigureData?.properties;
+                if (loadedProps && !loadedProps.mmh3_projects_v1) {
+                    delete this.properties?.mmh3_projects_v1;
+                    delete this.properties?.mmh3_active_project_id;
+                }
+                ed.initProjects();
                 ed.commit(true, { syncTimeline: false });
                 ed._externalGroupsSyncSig = null;
                 ed.syncExternalGroupsTimeline?.();

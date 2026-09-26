@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import comfy.samplers
 
 from ..director.executor_core import execute_director_plan_core
@@ -236,10 +238,20 @@ class MiniMaxH3Director:
         # Do not return NaN: that would re-run every Director queue even when
         # confirm_first_pass is off. Linked Refine is None here, so fingerprint
         # the .pre cache files that only the confirmation hold writes.
-        del kwargs
-        from ..director.segment_cache import first_pass_cache_disk_signature
+        from ..director.segment_cache import (
+            first_pass_cache_disk_signature,
+            resolve_project_id,
+        )
 
-        return first_pass_cache_disk_signature(unique_id)
+        # Same key the run writes to: timeline projectId when present, else node_id.
+        timeline = kwargs.get("timeline_data")
+        if isinstance(timeline, str) and timeline.strip():
+            try:
+                timeline = json.loads(timeline)
+            except Exception:
+                timeline = None
+        cache_key = resolve_project_id(timeline, unique_id)
+        return first_pass_cache_disk_signature(cache_key)
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "INT", "IMAGE", "STRING", "IMAGE", "IMAGE")
     RETURN_NAMES = (
@@ -301,6 +313,9 @@ class MiniMaxH3Director:
         shift_video=12.0,
         shift_audio=3.0,
         clear_vram_between_segments=True,
+        auto_memory_guard=True,
+        memory_guard_low_percent=25,
+        memory_guard_critical_percent=15,
         clear_vram_before_refine=False,
         clear_vram_before_face_refine=False,
         cache_frames_codec="raw",
@@ -348,6 +363,9 @@ class MiniMaxH3Director:
                     shift_video=shift_video,
                     shift_audio=shift_audio,
                     clear_vram_between_segments=clear_vram_between_segments,
+                    auto_memory_guard=auto_memory_guard,
+                    memory_guard_low_percent=memory_guard_low_percent,
+                    memory_guard_critical_percent=memory_guard_critical_percent,
                     clear_vram_before_refine=clear_vram_before_refine,
                     clear_vram_before_face_refine=clear_vram_before_face_refine,
                     export_pre_face_refine=export_pre_face_refine,
