@@ -130,6 +130,7 @@ function genJobId() {
 /** Translate a backend phase token (e.g. "video 2/3") into a localized line. */
 function progressMsg(code) {
     const c = String(code || "");
+    if (c.startsWith("mixres")) return t("merge.progressMixRes", { detail: c.slice(7).trim() });
     if (c.startsWith("probe")) return t("merge.progressProbe", { detail: c });
     if (c.startsWith("decode")) return t("merge.progressDecode", { detail: c });
     if (c.startsWith("video")) return t("merge.progressVideo", { detail: c });

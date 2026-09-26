@@ -635,6 +635,30 @@ def deferred_merge_with_seam_reencode(
     ph = max((int(m["height"] or 0) for m in probes), default=0)
     if pw <= 0 or ph <= 0:
         pw, ph = 864, 480
+    # Normalize every segment onto one even-padded canvas (max W×H) so mixed-resolution
+    # picks (e.g. segments taken across runs produced at different sizes) merge cleanly.
+    # Without this, precise → torch.cat shape mismatch; stream → ffmpeg rawvideo pipe
+    # gets frames of the wrong size and exits early (Broken pipe).
+    target_w = pw + (pw % 2)
+    target_h = ph + (ph % 2)
+    native_sizes = [(int(m["width"] or 0), int(m["height"] or 0)) for m in probes]
+    if len(set(native_sizes)) > 1:
+        _detail = ", ".join(
+            f"seg{i + 1}={sw}x{sh}" for i, (sw, sh) in enumerate(native_sizes)
+        )
+        log.warning(
+            "deferred_merge: 分段分辨率不一致（%s），已统一缩放到 %dx%d 后再合并。",
+            _detail, target_w, target_h,
+        )
+        _rep(4.0, f"mixres {target_w}x{target_h}")
+    _fps_set = sorted({round(float(m["fps"] or 0), 3) for m in probes})
+    _sr_set = sorted({int(m["sample_rate"] or 0) for m in probes})
+    if len(_fps_set) > 1 or len(_sr_set) > 1:
+        log.warning(
+            "deferred_merge: 分段帧率/采样率不一致 fps=%s sr=%s；按 fps=%.3f sr=%d 合成，"
+            "时长可能有偏差（如需精确请统一分段设置）。",
+            _fps_set, _sr_set, fps, int(probes[0]["sample_rate"] or 0),
+        )
     total_bytes = total_frames_sum * pw * ph * 3
     if total_bytes <= PRECISE_MERGE_MAX_BYTES:
         log.info(
@@ -647,6 +671,8 @@ def deferred_merge_with_seam_reencode(
             continuity_enabled=continuity_enabled,
             preview_only_frames=preview_only_frames,
             progress_reporter=progress_reporter,
+            target_w=target_w,
+            target_h=target_h,
         )
     log.info(
         "deferred_merge: 总帧数 %d (%.2f GB uint8) 超上限，走 流式精确拼接 模式（逐段解码→pipe，内存峰值≈1段+24帧）",
@@ -658,6 +684,8 @@ def deferred_merge_with_seam_reencode(
         continuity_enabled=continuity_enabled,
         preview_only_frames=preview_only_frames,
         progress_reporter=progress_reporter,
+        target_w=target_w,
+        target_h=target_h,
     )
 
     # --- Legacy slice + concat path below (kept as dead code for reference) ---
@@ -949,6 +977,33 @@ def _write_merged_mp4_uint8(path: Path, frames_u8: torch.Tensor, audio_wav: torc
         pass
 
 
+def _resize_frames_u8(
+    frames_u8: torch.Tensor,
+    target_h: int,
+    target_w: int,
+    chunk: int = 48,
+) -> torch.Tensor:
+    """Bilinear-resize uint8 ``[F, H, W, 3]`` to ``(target_h, target_w)``.
+
+    Normalizes segments produced at different resolutions (e.g. segments picked
+    across runs) onto one canvas so they can be concatenated / piped. Returns the
+    input unchanged when it already matches. Chunked to bound peak RAM (one
+    float32 chunk of ``chunk`` frames at a time).
+    """
+    f, h, w, c = frames_u8.shape
+    if h == target_h and w == target_w:
+        return frames_u8
+    out = torch.empty((f, target_h, target_w, c), dtype=torch.uint8)
+    for s in range(0, f, chunk):
+        e = min(s + chunk, f)
+        x = frames_u8[s:e].permute(0, 3, 1, 2).float()          # [n,3,H,W]
+        x = torch.nn.functional.interpolate(
+            x, size=(target_h, target_w), mode="bilinear", align_corners=False
+        )
+        out[s:e] = x.clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1)
+    return out
+
+
 def _scheme_a_precise_merge(
     mp4s: list[Path],
     probes: list[dict],
@@ -958,6 +1013,8 @@ def _scheme_a_precise_merge(
     continuity_enabled: bool = False,
     preview_only_frames: int = 50,
     progress_reporter: Any | None = None,
+    target_w: int | None = None,
+    target_h: int | None = None,
 ) -> DeferredMergeResult:
     """Exact per-frame concat + seam_blending on CPU tensors → one .mp4 encode.
 
@@ -1016,6 +1073,8 @@ def _scheme_a_precise_merge(
             import numpy as _np
             buf = _np.stack(frames, axis=0)  # [F, H, W, 3] uint8
             t = torch.from_numpy(buf).to(torch.uint8)
+            if target_w and target_h:
+                t = _resize_frames_u8(t, target_h, target_w)
             fc = t.shape[0]
             seg_frames.append(t)
             fcs.append(fc)
@@ -1030,6 +1089,8 @@ def _scheme_a_precise_merge(
         t = _decode_frame_range(path, 0, fc, fps)   # returns float32 [F, H, W, 3] [0,1]
         seg = (t * 255).clamp(0, 255).to(torch.uint8)    # → uint8, 4x less RAM
         del t
+        if target_w and target_h:
+            seg = _resize_frames_u8(seg, target_h, target_w)
         seg_frames.append(seg)
         fcs.append(fc)
         audio_n = fc * spf
@@ -1181,6 +1242,8 @@ def _scheme_a_stream_merge(
     continuity_enabled: bool = False,
     preview_only_frames: int = 50,
     progress_reporter: Any | None = None,
+    target_w: int | None = None,
+    target_h: int | None = None,
 ) -> DeferredMergeResult:
     """Stream-exact merge: decode segment-by-segment, write to ffmpeg pipe."""
     def _rep(pct: float, msg: str) -> None:
@@ -1263,8 +1326,8 @@ def _scheme_a_stream_merge(
     _rep(0.1, "audio")
 
     # --- Phase 2: Write audio wav + open ffmpeg pipe ---
-    w = int(probes[0]["width"] or 0)
-    h = int(probes[0]["height"] or 0)
+    w = int(target_w or probes[0]["width"] or 0)
+    h = int(target_h or probes[0]["height"] or 0)
     if w <= 0 or h <= 0:
         w, h = 854, 480
     eh = h + (h % 2)
@@ -1352,6 +1415,8 @@ def _scheme_a_stream_merge(
         t = _decode_frame_range(mp4s[i], decode_start, decode_n, fps)
         seg = (t * 255).clamp(0, 255).to(torch.uint8)
         del t
+        if target_w and target_h:
+            seg = _resize_frames_u8(seg, target_h, target_w)
 
         if not is_last and blend_right and fc > half and fcs[i + 1] >= half:
             body = seg[:-half].contiguous()
@@ -1361,6 +1426,8 @@ def _scheme_a_stream_merge(
             nt = _decode_frame_range(mp4s[j], 0, half, fps)
             right_head_u8 = (nt * 255).clamp(0, 255).to(torch.uint8)
             del nt
+            if target_w and target_h:
+                right_head_u8 = _resize_frames_u8(right_head_u8, target_h, target_w)
             left_tail = left_tail_u8.float() / 255.0
             right_head = right_head_u8.float() / 255.0
             del left_tail_u8, right_head_u8
