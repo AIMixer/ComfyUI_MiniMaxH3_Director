@@ -722,7 +722,7 @@ function scheduleCacheStatusRefresh(node, delay = 120) {
     node._mmxCacheStatusTimer = setTimeout(() => refreshFirstPassCacheStatus(node), delay);
 }
 
-function refreshCacheStatusForDirector(director, delay = 120) {
+export function refreshCacheStatusForDirector(director, delay = 120) {
     for (const node of graphNodes()) {
         if (
             isRefineNode(node)
@@ -798,10 +798,21 @@ async function clearSegmentCache(node) {
     }
     renderCacheStatus(node, "正在清空缓存…", "muted");
     try {
+        // Flush the director's timeline_data first so the backend can resolve the
+        // current projectId (cache lives in minimax_seg_cache/<projectId>/).
+        try {
+            director?._minimaxEditor?._writeTimelineWidget?.();
+        } catch {
+            /* best effort */
+        }
         const response = await api.fetchApi("/minimax/director/clear_segment_cache", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ node_id: String(director.id), kind: "all" }),
+            body: JSON.stringify({
+                node_id: String(director.id),
+                kind: "all",
+                timeline_data: String(directorValue(director, "timeline_data", "")),
+            }),
         });
         const data = await response.json();
         if (!response.ok || data?.error) {

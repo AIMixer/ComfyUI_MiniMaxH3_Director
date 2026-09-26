@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import comfy.samplers
 
 from ..director.executor_core import execute_director_plan_core
@@ -236,10 +238,20 @@ class MiniMaxH3Director:
         # Do not return NaN: that would re-run every Director queue even when
         # confirm_first_pass is off. Linked Refine is None here, so fingerprint
         # the .pre cache files that only the confirmation hold writes.
-        del kwargs
-        from ..director.segment_cache import first_pass_cache_disk_signature
+        from ..director.segment_cache import (
+            first_pass_cache_disk_signature,
+            resolve_project_id,
+        )
 
-        return first_pass_cache_disk_signature(unique_id)
+        # Same key the run writes to: timeline projectId when present, else node_id.
+        timeline = kwargs.get("timeline_data")
+        if isinstance(timeline, str) and timeline.strip():
+            try:
+                timeline = json.loads(timeline)
+            except Exception:
+                timeline = None
+        cache_key = resolve_project_id(timeline, unique_id)
+        return first_pass_cache_disk_signature(cache_key)
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "INT", "IMAGE", "STRING", "IMAGE", "IMAGE")
     RETURN_NAMES = (

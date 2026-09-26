@@ -538,6 +538,7 @@ def deferred_merge_with_seam_reencode(
     continuity_enabled: bool,
     release_vram_fn: Any | None = None,
     preview_only_frames: int = 50,
+    progress_reporter: Any | None = None,
 ) -> DeferredMergeResult:
     """Scheme A deferred merge entry point.
 
@@ -559,6 +560,10 @@ def deferred_merge_with_seam_reencode(
         Number of frames returned on ``preview_frames``. The full merged MP4 lives on
         disk at ``merged_video_path``; we never return the whole movie as a tensor
         (that would blow up RAM again).
+    progress_reporter:
+        Optional ``callable(percent: float, message: str)`` invoked at various
+        phases of the merge so the UI can render a progress bar while the heavy
+        work runs in a worker thread.
     """
     if release_vram_fn is not None:
         try:
@@ -570,9 +575,19 @@ def deferred_merge_with_seam_reencode(
     mp4s = [Path(p) for p in segment_mp4_paths if Path(p).exists()]
     if not mp4s:
         raise ValueError("deferred_merge: no segment MP4 paths provided (all missing on disk)")
+
+    def _rep(pct: float, msg: str) -> None:
+        if progress_reporter is not None:
+            try:
+                progress_reporter(pct, msg)
+            except Exception:
+                pass
+
     if len(mp4s) == 1:
         # Nothing to merge; just probe and return the single segment.
+        _rep(10.0, "probe 1/1")
         meta = _probe_mp4(mp4s[0])
+        _rep(40.0, "decode")
         frames_read = min(int(meta["frames"] or 0), max(1, int(preview_only_frames)))
         if frames_read <= 0:
             frames_read = 1
@@ -584,6 +599,7 @@ def deferred_merge_with_seam_reencode(
             nsamples = int(round(total_fr * sr / float(fps or meta["fps"] or 24.0)))
             if nsamples > 0:
                 merged_audio = _decode_audio_range(mp4s[0], 0, nsamples, sr)
+        _rep(100.0, "done")
         return DeferredMergeResult(
             preview_frames=preview.cpu().float(),
             merged_audio=merged_audio,
@@ -597,9 +613,11 @@ def deferred_merge_with_seam_reencode(
 
     # Probe every segment once.
     probes: list[dict[str, Any]] = []
-    for p in mp4s:
+    n_total = len(mp4s)
+    for _pi, p in enumerate(mp4s):
         meta = _probe_mp4(p)
         probes.append(meta)
+        _rep(1.0 + 4.0 * ((_pi + 1) / n_total), f"probe {_pi + 1}/{n_total}")
 
     fps = float(probes[0]["fps"] or 24.0) if probes else 24.0
     for _i, (_p, _m) in enumerate(zip(mp4s, probes)):
@@ -628,6 +646,7 @@ def deferred_merge_with_seam_reencode(
             seam_blending_enabled=seam_blending_enabled,
             continuity_enabled=continuity_enabled,
             preview_only_frames=preview_only_frames,
+            progress_reporter=progress_reporter,
         )
     log.info(
         "deferred_merge: 总帧数 %d (%.2f GB uint8) 超上限，走 流式精确拼接 模式（逐段解码→pipe，内存峰值≈1段+24帧）",
@@ -638,6 +657,7 @@ def deferred_merge_with_seam_reencode(
         seam_blending_enabled=seam_blending_enabled,
         continuity_enabled=continuity_enabled,
         preview_only_frames=preview_only_frames,
+        progress_reporter=progress_reporter,
     )
 
     # --- Legacy slice + concat path below (kept as dead code for reference) ---
@@ -937,6 +957,7 @@ def _scheme_a_precise_merge(
     seam_blending_enabled: bool = True,
     continuity_enabled: bool = False,
     preview_only_frames: int = 50,
+    progress_reporter: Any | None = None,
 ) -> DeferredMergeResult:
     """Exact per-frame concat + seam_blending on CPU tensors → one .mp4 encode.
 
@@ -944,6 +965,13 @@ def _scheme_a_precise_merge(
       - ±1 frame rounding from -ss / -t timestamps.
       - PTS / keyframe discontinuities across independently encoded pieces.
     """
+    def _rep(pct: float, msg: str) -> None:
+        if progress_reporter is not None:
+            try:
+                progress_reporter(5.0 + 55.0 * max(0.0, min(1.0, pct)), msg)
+            except Exception:
+                pass
+
     n_seg = len(mp4s)
     half = SEAM_HALF_WINDOW_FRAMES
     sr = max((int(m["sample_rate"] or 0) for m in probes), default=0)
@@ -1017,6 +1045,7 @@ def _scheme_a_precise_merge(
         seg_audios.append(a)
         log.info("deferred_merge-precise: seg %d decoded: %d frames, audio %d samples @ %dHz",
                  i, fc, a.numel(), sr)
+        _rep((i + 1) / n_seg, f"decode {i + 1}/{n_seg}")
 
     # 2. Assemble pieces on CPU, blending seam (i, i+1) if enabled.
     video_parts: list[torch.Tensor] = []
@@ -1107,6 +1136,7 @@ def _scheme_a_precise_merge(
              actual_frames, merged_audio.numel(), total_expected_frames, actual_frames - total_expected_frames)
 
     # 3. Single encode of the final .mp4 via uint8 streaming (zero float32 spike).
+    _rep(60.0, "encode")
     out_dir = _deferred_output_dir()
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = out_dir / f"deferred_merged_a_precise_{ts}.mp4"
@@ -1117,6 +1147,7 @@ def _scheme_a_precise_merge(
         fps=float(fps or 24.0),
         sr=int(sr),
     )
+    _rep(95.0, "finalize")
     log.info("deferred_merge-precise: ✅ Wrote final file: %s (%d frames, seam_blending=%s, single-encode zero PTS jump)",
              out_path, actual_frames, seam_blending_enabled)
 
@@ -1149,8 +1180,16 @@ def _scheme_a_stream_merge(
     seam_blending_enabled: bool = True,
     continuity_enabled: bool = False,
     preview_only_frames: int = 50,
+    progress_reporter: Any | None = None,
 ) -> DeferredMergeResult:
     """Stream-exact merge: decode segment-by-segment, write to ffmpeg pipe."""
+    def _rep(pct: float, msg: str) -> None:
+        if progress_reporter is not None:
+            try:
+                progress_reporter(5.0 + 90.0 * max(0.0, min(1.0, pct)), msg)
+            except Exception:
+                pass
+
     import gc as _gc
     n_seg = len(mp4s)
     half = SEAM_HALF_WINDOW_FRAMES
@@ -1221,6 +1260,7 @@ def _scheme_a_stream_merge(
     elif merged_audio.numel() > expected_audio_n:
         merged_audio = merged_audio[:expected_audio_n]
     log.info("deferred_merge-stream: audio pre-assembled: %d samples", merged_audio.numel())
+    _rep(0.1, "audio")
 
     # --- Phase 2: Write audio wav + open ffmpeg pipe ---
     w = int(probes[0]["width"] or 0)
@@ -1282,7 +1322,20 @@ def _scheme_a_stream_merge(
                     chunk_u8 = torch.cat([chunk_u8, chunk_u8[:, -1:, :1].expand(-1, eh - h, ew, -1)], dim=1)
                 if ew != w:
                     chunk_u8 = torch.cat([chunk_u8, chunk_u8[:, :, -1:].expand(-1, eh, ew - w, -1)], dim=2)
-            proc.stdin.write(chunk_u8.numpy().tobytes())
+            try:
+                proc.stdin.write(chunk_u8.numpy().tobytes())
+            except BrokenPipeError:
+                proc.stdin.close()
+                try:
+                    proc.wait(timeout=30)
+                except Exception:
+                    proc.kill()
+                err = (proc.stderr or b"").decode("utf-8", "ignore")[-800:]
+                rc = proc.returncode
+                raise RuntimeError(
+                    f"[stream] ffmpeg 提前退出 (code={rc})，写管失败 Broken pipe，"
+                    f"请检查分段分辨率/采样率是否一致。stderr:\n{err}"
+                ) from None
         actual_frames += n
 
     # --- Phase 3: Stream video segment-by-segment ---
@@ -1329,12 +1382,14 @@ def _scheme_a_stream_merge(
             log.info("deferred_merge-stream: seg %d (last): %d frames", i, seg.shape[0])
             del seg
         _gc.collect()
+        _rep(0.1 + 0.75 * ((i + 1) / n_seg), f"video {i + 1}/{n_seg}")
 
     try:
         proc.stdin.close()
     except BrokenPipeError:
         pass
     proc.wait()
+    _rep(0.9, "encode")
     if proc.returncode != 0:
         err = (proc.stderr or b"").decode("utf-8", "ignore")[-800:]
         raise RuntimeError(f"[stream] ffmpeg failed (code={proc.returncode}): {err}")
@@ -1350,6 +1405,7 @@ def _scheme_a_stream_merge(
     preview = _decode_frame_range(out_path, 0, prev_n, fps)
     result_audio = merged_audio.clone() if merged_audio.numel() > 0 else None
     del merged_audio; _gc.collect()
+    _rep(1.0, "finalize")
     return DeferredMergeResult(
         preview_frames=preview,
         merged_audio=result_audio,

@@ -139,14 +139,44 @@ def _reject_source_stale(
     return True
 
 
-def _cache_root(node_id: str) -> Path | None:
-    try:
-        root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
-        root.mkdir(parents=True, exist_ok=True)
-        return root
-    except OSError as exc:
-        log.warning("Segment cache dir unavailable (%s); cache disabled for this run.", exc)
+def resolve_project_id(timeline, node_id) -> str:
+    """缓存键：优先 timeline 顶层 projectId（清洗后），否则回退 node_id。"""
+    raw = None
+    if isinstance(timeline, dict):
+        raw = timeline.get("projectId")
+        if raw is None:
+            raw = timeline.get("project_id")
+    if raw is not None:
+        cleaned = re.sub(r"[^0-9A-Za-z_-]+", "_", str(raw).strip())
+        cleaned = cleaned[:80].strip("_")
+        if cleaned:
+            return cleaned
+    return str(node_id or "")
+
+
+def _cache_dir(key: str | None, *, create: bool = False) -> Path | None:
+    """Segment-cache dir for a resolved key. Empty key → None.
+
+    ``create=False`` (default) never touches the filesystem: callers that only
+    read / clean keep their ``is_dir()`` guard. ``create=True`` mkdirs and
+    degrades to None (with a warning) when the output dir is unavailable.
+    """
+    if not key:
         return None
+    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(key)
+    if create:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.warning(
+                "Segment cache dir unavailable (%s); cache disabled for this run.", exc
+            )
+            return None
+    return root
+
+
+def _cache_root(node_id: str) -> Path | None:
+    return _cache_dir(node_id, create=True)
 
 
 def _ref_audio_file_stamp(audio: Any, fallback_index: int) -> str:
@@ -1217,8 +1247,10 @@ def prune_segment_cache(node_id: str | None, valid_indices) -> None:
     """
     if not node_id:
         return
+    root = _cache_dir(node_id)
+    if root is None:
+        return
     try:
-        root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
         if not root.is_dir():
             return
         valid = {int(i) for i in valid_indices}
@@ -1248,8 +1280,8 @@ def first_pass_cache_disk_signature(node_id: str | None) -> str:
     """
     if not node_id:
         return ""
-    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
-    if not root.is_dir():
+    root = _cache_dir(node_id)
+    if root is None or not root.is_dir():
         return ""
     parts: list[str] = []
     try:
@@ -1478,7 +1510,9 @@ def _inspect_external_group_cache(
     if not node_id:
         return result
 
-    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    root = _cache_dir(node_id)
+    if root is None:
+        return result
     result["final_cached_count"] = _count_final_segment_files(root)
 
     # Plan-level knobs only. The group-derived keys cannot be rebuilt without the
@@ -1685,7 +1719,9 @@ def inspect_first_pass_cache(
     if not node_id:
         return result
 
-    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
+    root = _cache_dir(node_id)
+    if root is None:
+        return result
     all_segments = list(getattr(plan, "segments", None) or [])
     run_indices = getattr(plan, "run_indices", None)
     selected_set = frozenset(run_indices) if run_indices is not None else None
@@ -1822,8 +1858,8 @@ def clear_segment_cache(node_id: str | None, kind: str = "final") -> int:
         return 0
     if kind not in {"first_pass", "final", "all"}:
         raise ValueError("kind must be first_pass, final or all")
-    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(node_id)
-    if not root.is_dir():
+    root = _cache_dir(node_id)
+    if root is None or not root.is_dir():
         return 0
     try:
         entries = list(root.iterdir())

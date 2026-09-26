@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -80,6 +81,7 @@ from .segment_cache import (
     load_segment_handoff_meta,
     log_cache_run_summary,
     prune_segment_cache,
+    resolve_project_id,
     save_first_pass_cache,
     save_segment_cache,
 )
@@ -414,13 +416,47 @@ def _ref_video_audios_to_dict(items) -> dict | None:
     return out or None
 
 
+def _latest_project_seg_mp4s(project_id: str) -> list[Path] | None:
+    """该项目全部历史 run 中，每个段号取最新版本（run 最新 + 段内最优）。
+
+    Returns absolute paths sorted in segment order, or ``None`` when the project
+    has no run / reading failed. Matches「本项目最新」manual merge semantics.
+    """
+    try:
+        from .http_routes import _collect_runs, _select_latest
+        all_runs = _collect_runs()
+    except Exception as exc:
+        log.warning("deferred merge: collect runs failed: %s", exc)
+        return None
+    proj_runs = [r for r in all_runs if str(r.get("projectId") or "") == project_id]
+    if not proj_runs:
+        return None
+    try:
+        selected = _select_latest(proj_runs)
+    except Exception as exc:
+        log.warning("deferred merge: project latest pick failed: %s", exc)
+        return None
+    if not selected:
+        return None
+    paths = [Path(c["path"]) for c in selected]
+    existing = [p for p in paths if p.is_file()]
+    if len(existing) != len(paths):
+        missing = sorted(c["seg"] + 1 for c, p in zip(selected, paths) if not p.is_file())
+        log.warning(
+            "deferred merge: project 取最新 有 %d 段缺文件 (%s)，已排除；"
+            "存在悬空引用可能是手动删除",
+            len(paths) - len(existing), missing,
+        )
+    return existing
+
+
 def _run_deferred_merge(
     plan: DirectorPlan,
     export_segments,
     mp4_run_dir,
     held_for_confirmation: bool,
 ) -> str:
-    """「延迟合并」收尾：把逐段落盘的 mp4 从磁盘合成一条，返回报告文案。
+    """「延迟合并」收尾：把分段 mp4 从磁盘合成一条，返回报告文案。
 
     全程只在 ffmpeg 里解码 24 帧接缝窗口，不再把整条时间轴读回内存，
     因此段间的显存/内存释放不受影响。失败不抛异常 —— 分段 mp4 仍在磁盘上。
@@ -430,19 +466,33 @@ def _run_deferred_merge(
             "延迟合并：本轮仅确认一采（尚未生成成片），暂不合并；"
             "再次 Queue 完成二采后会自动合并。"
         )
-    if mp4_run_dir is None:
-        return "延迟合并：没有分段 mp4 目录，已跳过合并。"
-    seg_mp4s = [segment_mp4_path(mp4_run_dir, seg) for seg in export_segments]
-    missing = [
-        int(getattr(seg, "index", 0)) + 1
-        for seg, path in zip(export_segments, seg_mp4s)
-        if not path.is_file()
-    ]
-    if missing:
-        return (
-            f"延迟合并：段 {missing} 没有落盘 mp4，已跳过合并；"
-            f"分段文件在 {mp4_run_dir}。"
-        )
+    project_id = str(getattr(plan, "project_id", "") or "").strip()
+    if project_id:
+        # 有项目：跨本项目全部历史 run，逐段取最新合成（含之前已跑的 1-5 段），
+        # 与「本项目最新」手动合并一致；无历史则以本轮落盘的段为准。
+        seg_mp4s = _latest_project_seg_mp4s(project_id) or []
+        if not seg_mp4s:
+            return (
+                "延迟合并：未能为本项目取到分段 mp4（缺少历史或读取失败），"
+                f"分段文件在 {mp4_run_dir}。"
+            )
+    else:
+        # 无项目（legacy）：只合并本轮生成的分段 mp4。
+        if mp4_run_dir is None:
+            return "延迟合并：没有分段 mp4 目录，已跳过合并。"
+        seg_mp4s = [segment_mp4_path(mp4_run_dir, seg) for seg in export_segments]
+        missing = [
+            int(getattr(seg, "index", 0)) + 1
+            for seg, path in zip(export_segments, seg_mp4s)
+            if not path.is_file()
+        ]
+        if missing:
+            return (
+                f"延迟合并：段 {missing} 没有落盘 mp4，已跳过合并；"
+                f"分段文件在 {mp4_run_dir}。"
+            )
+    if not seg_mp4s:
+        return "延迟合并：没有可合并的分段 mp4，已跳过合并。"
     try:
         from .deferred_merge import deferred_merge_with_seam_reencode
 
@@ -505,6 +555,12 @@ def execute_director_plan_core(
     list[torch.Tensor],
 ]:
     """Process every segment with MiniMax H3 conditioning + single-stage sampling."""
+    # Disk-cache key: timeline projectId (cleaned) when present, else node_id, so
+    # different projects never share segment cache. Progress/report still uses node_id.
+    cache_key = resolve_project_id(getattr(plan, "raw", None), node_id)
+    # Stamp the project id so the segment-export run folder can record its owner
+    # (used by「合并成片」to keep runs from different projects apart).
+    plan.project_id = cache_key
     plan.sample_seed = int(seed)
     plan.sample_cfg = float(cfg)
     plan.sample_steps = int(steps)
@@ -525,7 +581,7 @@ def execute_director_plan_core(
     all_segments = plan.segments
     # Drop caches for deleted/shortened timelines. Use every segment index (not
     # run_indices): unselected「选择运行」slots still fill merge/export from disk.
-    prune_segment_cache(node_id, [seg.index for seg in all_segments])
+    prune_segment_cache(cache_key, [seg.index for seg in all_segments])
     # Strictly honor「选择运行」— never force-sample unselected segments.
     run_indices = plan.run_indices if plan.run_indices is not None else frozenset(range(len(all_segments)))
 
@@ -687,7 +743,7 @@ def execute_director_plan_core(
 
         run_face_refine = _face_refine_on(plan)
         pre_cache = (
-            load_first_pass_cache(node_id, seg, plan)
+            load_first_pass_cache(cache_key, seg, plan)
             if (confirm_first and will_refine) or run_face_refine
             else None
         )
@@ -782,35 +838,35 @@ def execute_director_plan_core(
             prev_av = completed_av_latents.get(prev_idx)
             if prev_av is None and prev_seg is not None:
                 prev_av = load_segment_av_latent(
-                    node_id, prev_seg, plan, allow_stale=True
+                    cache_key, prev_seg, plan, allow_stale=True
                 )
                 if prev_av is not None:
                     completed_av_latents[prev_idx] = prev_av
             prev_first_pass_av = completed_first_pass_av.get(prev_idx)
             if prev_first_pass_av is None and prev_seg is not None:
                 prev_first_pass_av = load_first_pass_av_latent(
-                    node_id, prev_seg, plan, allow_stale=True
+                    cache_key, prev_seg, plan, allow_stale=True
                 )
                 if prev_first_pass_av is not None:
                     completed_first_pass_av[prev_idx] = prev_first_pass_av
             prev_low_carry = completed_low_carry.get(prev_idx)
             if prev_low_carry is None and prev_seg is not None and selflift_enabled(plan):
                 prev_low_carry = load_first_pass_low_carry(
-                    node_id, prev_seg, plan, allow_stale=True
+                    cache_key, prev_seg, plan, allow_stale=True
                 )
                 if prev_low_carry is not None:
                     completed_low_carry[prev_idx] = prev_low_carry
             prev_handoff = completed_av_handoff.get(prev_idx)
             if prev_handoff is None and prev_seg is not None:
                 prev_handoff = load_segment_handoff_meta(
-                    node_id, prev_seg, plan, allow_stale=True
+                    cache_key, prev_seg, plan, allow_stale=True
                 )
                 if prev_handoff is not None:
                     completed_av_handoff[prev_idx] = prev_handoff
             prev_audio = completed_audios.get(prev_idx)
             if prev_audio is None and prev_seg is not None:
                 prev_audio = load_segment_audio(
-                    node_id, prev_seg, plan, allow_stale=True
+                    cache_key, prev_seg, plan, allow_stale=True
                 )
                 if prev_audio is not None:
                     completed_audios[prev_idx] = prev_audio
@@ -1017,13 +1073,13 @@ def execute_director_plan_core(
                     )
                     if prev_seg_lazy is not None:
                         prev_chunk = load_segment_cache(
-                            node_id, prev_seg_lazy, plan, allow_stale=True
+                            cache_key, prev_seg_lazy, plan, allow_stale=True
                         )
                         if prev_chunk is not None:
                             completed_outputs[prev_idx] = prev_chunk
                             if prev_idx not in completed_audios:
                                 lazy_aud = load_segment_audio(
-                                    node_id, prev_seg_lazy, plan, allow_stale=True
+                                    cache_key, prev_seg_lazy, plan, allow_stale=True
                                 )
                                 if lazy_aud is not None:
                                     completed_audios[prev_idx] = lazy_aud
@@ -1096,7 +1152,7 @@ def execute_director_plan_core(
                         prev_handoff["phase_align_trim"] = int(prev_export_trim)
                         completed_av_handoff[prev_idx] = prev_handoff
                         save_segment_cache(
-                            node_id,
+                            cache_key,
                             prev_seg,
                             plan,
                             prev_chunk,
@@ -1397,7 +1453,7 @@ def execute_director_plan_core(
         )
         if (will_refine or continuity_active or run_face_refine or selflift_enabled(plan)) and not skip_first_sample:
             save_first_pass_cache(
-                node_id,
+                cache_key,
                 seg,
                 plan,
                 av_latent=first_pass_samples,
@@ -1669,7 +1725,7 @@ def execute_director_plan_core(
         t_cache = time.perf_counter()
         if write_cache:
             save_segment_cache(
-                node_id,
+                cache_key,
                 seg,
                 plan,
                 chunk,
@@ -1742,7 +1798,7 @@ def execute_director_plan_core(
         )
         return chunk, audio_dict, pre_chunk, pre_face_chunk
 
-    log_cache_run_summary(node_id, plan, all_segments, run_indices)
+    log_cache_run_summary(cache_key, plan, all_segments, run_indices)
 
     # Background sampler: measures each phase's real RAM footprint so the
     # boundaries below can act on a measured prediction instead of a hand-tuned
@@ -1839,10 +1895,10 @@ def execute_director_plan_core(
 
         # Prefer exact cache; pipeline-stale disk render is ok. A different
         # source video is rejected so v2v/rv2v can passthrough the new clip.
-        cached = load_segment_cache(node_id, seg, plan)
+        cached = load_segment_cache(cache_key, seg, plan)
         used_stale = False
         if cached is None:
-            cached = load_segment_cache(node_id, seg, plan, allow_stale=True)
+            cached = load_segment_cache(cache_key, seg, plan, allow_stale=True)
             used_stale = cached is not None
         if cached is not None:
             cached = cached.float()
@@ -1852,35 +1908,35 @@ def execute_director_plan_core(
             # mixing fresh 一采 with cached 二采. Falls back to the final render
             # when no first-pass cache exists (e.g. refine was never connected).
             pre_fill = load_first_pass_frames_stale(
-                node_id, seg, plan, match_len=int(cached.shape[0])
+                cache_key, seg, plan, match_len=int(cached.shape[0])
             )
             completed_pre_refine[seg.index] = (
                 pre_fill if pre_fill is not None else cached
             )
             completed_pre_face[seg.index] = cached
             cached_audio = load_segment_audio(
-                node_id, seg, plan, allow_stale=used_stale
+                cache_key, seg, plan, allow_stale=used_stale
             )
             if cached_audio is not None:
                 completed_audios[seg.index] = cached_audio
             # Continuity for later sampled segments may need AV latent / handoff.
             cached_av = load_segment_av_latent(
-                node_id, seg, plan, allow_stale=used_stale
+                cache_key, seg, plan, allow_stale=used_stale
             )
             if cached_av is not None:
                 completed_av_latents[seg.index] = cached_av
             cached_first = load_first_pass_av_latent(
-                node_id, seg, plan, allow_stale=True
+                cache_key, seg, plan, allow_stale=True
             )
             if cached_first is not None:
                 completed_first_pass_av[seg.index] = cached_first
             cached_low = load_first_pass_low_carry(
-                node_id, seg, plan, allow_stale=True
+                cache_key, seg, plan, allow_stale=True
             )
             if cached_low is not None:
                 completed_low_carry[seg.index] = cached_low
             cached_handoff = load_segment_handoff_meta(
-                node_id, seg, plan, allow_stale=used_stale
+                cache_key, seg, plan, allow_stale=used_stale
             )
             if cached_handoff is not None:
                 completed_av_handoff[seg.index] = cached_handoff

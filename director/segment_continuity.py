@@ -25,7 +25,7 @@ from .h3_motion_context import (
     snap_context_frames,
 )
 from .plan import DirectorPlan, SegmentPlan, wan_align_frame_count
-from .segment_cache import load_segment_cache
+from .segment_cache import load_segment_cache, resolve_project_id
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.continuity")
 
@@ -391,7 +391,12 @@ def resolve_prev_segment_output(
     prev_seg = all_segments[prev_idx]
     # Pipeline-stale is ok; a different source video is not (load_segment_cache
     # refuses source-stale even with allow_stale=True).
-    cached = load_segment_cache(node_id, prev_seg, plan, allow_stale=True)
+    cached = load_segment_cache(
+        resolve_project_id(getattr(plan, "raw", None), node_id),
+        prev_seg,
+        plan,
+        allow_stale=True,
+    )
     if cached is not None:
         return cached
     if not plan.continuity_enabled:

@@ -312,6 +312,9 @@ class DirectorPlan:
     external_groups_witness: dict | None = None
     # Set during execute when export_mode=segments (minimax_seg_export folder).
     segment_mp4_run_dir: str | None = None
+    # Cache key / project id this run belongs to (timeline projectId, else node_id).
+    # Stamped into the run's `_run_meta.json` so「合并成片」can scope runs to a project.
+    project_id: str = ""
 
     @property
     def segment_count(self) -> int:
