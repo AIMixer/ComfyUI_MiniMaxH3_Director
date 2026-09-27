@@ -14,6 +14,48 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.core_sampling")
 
 PhaseCallback = Callable[[str, float], None]
 StepPreviewCallback = Callable[[int, int, Any], None]
+StepStateCallback = Callable[[int, int, Any, Any], None]
+
+
+class _FixedNoise:
+    """Resume helper: return a precomputed NestedTensor / tensor as sampler noise."""
+
+    def __init__(self, noise, seed: int = 0) -> None:
+        self.seed = int(seed or 0)
+        self._noise = noise
+
+    def generate_noise(self, input_latent):
+        del input_latent
+        return self._noise
+
+
+class _ZeroNoise:
+    """Resume helper: SamplerCustomAdvanced still calls generate_noise()."""
+
+    def __init__(self) -> None:
+        self.seed = 0
+
+    def generate_noise(self, input_latent):
+        import torch
+
+        samples = input_latent["samples"] if isinstance(input_latent, dict) else input_latent
+        # torch.Tensor.unbind splits the batch axis — only NestedTensor is AV streams.
+        if torch.is_tensor(samples):
+            return torch.zeros_like(samples)
+        if getattr(samples, "is_nested", False) and hasattr(samples, "unbind"):
+            parts = tuple(torch.zeros_like(p) for p in samples.unbind())
+            try:
+                import comfy.nested_tensor
+
+                return comfy.nested_tensor.NestedTensor(parts)
+            except Exception:
+                try:
+                    return type(samples)(parts)
+                except Exception:
+                    return parts
+        if isinstance(samples, (tuple, list)):
+            return type(samples)(torch.zeros_like(p) for p in samples)
+        raise TypeError(f"Cannot build zero noise for {type(samples)!r}")
 
 
 def _unpack_node_output(out):
@@ -89,6 +131,9 @@ def sample_single_stage(
     tile_count: int = 2,
     tile_overlap: int = 128,
     shift_cache: ShiftedModelCache | None = None,
+    on_step_state: StepStateCallback | None = None,
+    zero_noise: bool = False,
+    noise_override=None,
 ):
     import torch
     from comfy_extras.nodes_custom_sampler import (
@@ -132,7 +177,12 @@ def sample_single_stage(
             model_use = remasked
 
     sampler_obj = _unpack_node_output(KSamplerSelect.execute(str(sampler_name)))[0]
-    noise_obj = _unpack_node_output(RandomNoise.execute(int(seed)))[0]
+    if noise_override is not None:
+        noise_obj = _FixedNoise(noise_override, seed=int(seed or 0))
+    elif zero_noise:
+        noise_obj = _ZeroNoise()
+    else:
+        noise_obj = _unpack_node_output(RandomNoise.execute(int(seed)))[0]
     restore_tiles = None
     if enable_tiling:
         from .spatial_tiled_sampling import wrap_sampler_spatial_tiles
@@ -157,7 +207,9 @@ def sample_single_stage(
         )
         return _unpack_node_output(sampled)[0]
 
-    orig_sample = guider.sample if on_step_preview is not None else None
+    orig_sample = (
+        guider.sample if (on_step_preview is not None or on_step_state is not None) else None
+    )
     if orig_sample is not None:
         every = max(1, int(preview_every))
 
@@ -165,14 +217,20 @@ def sample_single_stage(
             inner_cb = kwargs.get("callback")
 
             def callback(step, x0, x, total_steps):
+                if on_step_state is not None:
+                    try:
+                        on_step_state(int(step), int(total_steps), x0, x)
+                    except Exception as exc:
+                        log.debug("Step state callback skipped: %s", exc)
                 try:
-                    last = max(0, int(total_steps) - 1)
-                    if int(preview_every) < 0:
-                        show = step >= last
-                    else:
-                        show = step % every == 0 or step >= last
-                    if show:
-                        on_step_preview(int(step), int(total_steps), x0)
+                    if on_step_preview is not None:
+                        last = max(0, int(total_steps) - 1)
+                        if int(preview_every) < 0:
+                            show = step >= last
+                        else:
+                            show = step % every == 0 or step >= last
+                        if show:
+                            on_step_preview(int(step), int(total_steps), x0)
                 except Exception as exc:
                     log.debug("Step preview callback skipped: %s", exc)
                 if inner_cb is not None:

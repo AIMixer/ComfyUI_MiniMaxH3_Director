@@ -419,6 +419,62 @@ def _as_bcthw(samples: torch.Tensor) -> tuple[torch.Tensor, str]:
     raise ValueError(f"H3 latent upscale expected 4D/5D video latent, got {tuple(samples.shape)}")
 
 
+def _continuation_halo(model) -> int:
+    fn = getattr(model, "_temporal_kernel", None)
+    kernel = int(fn()) if callable(fn) else 5
+    return max(2, kernel // 2)
+
+
+def _forward_continuation_split(
+    model, x, *, scale: float, target_hw: tuple[int, int], split: int, enable_chunking: bool
+):
+    """Lift prefix and suffix apart so the 3D net does not smear the seam.
+
+    The suffix keeps the real low-res prefix as left context. Repeating the
+    suffix's first token as a halo makes the net treat it as a new clip opening
+    and leaves a brightness pulse after overlap trim.
+    """
+    dst_h, dst_w = int(target_hw[0]), int(target_hw[1])
+    halo = _continuation_halo(model)
+    split = int(split)
+    prefix = x[:, :, :split]
+    suffix = x[:, :, split:]
+    prefix_len = int(prefix.shape[2])
+    suffix_len = int(suffix.shape[2])
+
+    padded_prefix = F.pad(prefix, (0, 0, 0, 0, halo, halo), mode="replicate")
+    lifted_prefix = _forward_upscaler(
+        model,
+        padded_prefix,
+        scale=scale,
+        target_size=(prefix_len + 2 * halo, dst_h, dst_w),
+        enable_chunking=bool(enable_chunking),
+    )[:, :, halo : halo + prefix_len]
+
+    left = x[:, :, max(0, split - halo) : split]
+    if int(left.shape[2]) < halo:
+        left = F.pad(
+            left,
+            (0, 0, 0, 0, halo - int(left.shape[2]), 0),
+            mode="replicate",
+        )
+    right = suffix[:, :, -1:].expand(-1, -1, halo, -1, -1)
+    padded_suffix = torch.cat((left, suffix, right), dim=2)
+    lifted_suffix = _forward_upscaler(
+        model,
+        padded_suffix,
+        scale=scale,
+        target_size=(suffix_len + 2 * halo, dst_h, dst_w),
+        enable_chunking=bool(enable_chunking),
+    )[:, :, halo : halo + suffix_len]
+    log.info(
+        "H3 latent upscale: continuation split at token %d, left-context halo=%d",
+        split,
+        halo,
+    )
+    return torch.cat((lifted_prefix, lifted_suffix), dim=2)
+
+
 def upscale_h3_video_latent(
     video_latent: dict,
     *,
@@ -429,6 +485,7 @@ def upscale_h3_video_latent(
     model_name: str = "",
     model=None,
     enable_latent_chunking: bool = False,
+    temporal_split: int = 0,
 ) -> dict:
     """Spatially upscale MiniMax H3 video latent to a pixel canvas (×16 VAE)."""
     if model is None and (not model_name or str(model_name).startswith("(")):
@@ -474,15 +531,26 @@ def upscale_h3_video_latent(
     mean, std = _norm_tensors(device, dtype)
     x = work.to(device=device, dtype=dtype)
     x = (x - mean) / std
+    split = int(temporal_split or 0)
     try:
         with torch.no_grad():
-            out = _forward_upscaler(
-                model,
-                x,
-                scale=scale,
-                target_size=(t_size, dst_h, dst_w),
-                enable_chunking=bool(enable_latent_chunking),
-            )
+            if 0 < split < t_size:
+                out = _forward_continuation_split(
+                    model,
+                    x,
+                    scale=scale,
+                    target_hw=(dst_h, dst_w),
+                    split=split,
+                    enable_chunking=bool(enable_latent_chunking),
+                )
+            else:
+                out = _forward_upscaler(
+                    model,
+                    x,
+                    scale=scale,
+                    target_size=(t_size, dst_h, dst_w),
+                    enable_chunking=bool(enable_latent_chunking),
+                )
         out = out * std + mean
         out = out.to(device="cpu", dtype=orig_dtype).contiguous()
     finally:

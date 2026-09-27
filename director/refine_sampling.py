@@ -10,6 +10,8 @@ import torch
 from ..lib.image_prep import ensure_minimax_canvas
 from .core_sampling import sample_single_stage
 from .refine_pack import (
+    DEFAULT_UPSCALE_MEGAPIXELS,
+    canvas_from_source_megapixels,
     latent_upscale_model_name,
     refine_model_for,
     refine_needs_canvas,
@@ -299,6 +301,299 @@ def upscale_image_batch(
     return work
 
 
+def _latent_hw_of(stream) -> tuple[int, int] | None:
+    """Best-effort latent (H, W) of a video stream; None when unreadable."""
+    samples = stream.get("samples") if isinstance(stream, dict) else stream
+    try:
+        if torch.is_tensor(samples) and samples.ndim >= 2:
+            return int(samples.shape[-2]), int(samples.shape[-1])
+    except Exception:
+        pass
+    return None
+
+
+def _resize_positive_to_canvas(
+    refine_positive,
+    src_hw: tuple[int, int] | None,
+    dst_hw: tuple[int, int] | None,
+    notes: list[str],
+):
+    """Re-pin keyframes / cond latents to the refine canvas.
+
+    The upscaled latent and the positive's MiniMax payload (i2v source keyframe,
+    Guide keyframes, prebuilt layout) must agree, or model forward crashes with
+    a patchify row mismatch ([N_src, 96] vs [N_dst, 96]). SelfLift applies the
+    same rewrite via selflift/cond.py resize_positive_spatial.
+    """
+    from .selflift.cond import resize_positive_spatial
+
+    if src_hw is None or dst_hw is None:
+        return refine_positive
+    if tuple(src_hw) == tuple(dst_hw):
+        return refine_positive
+    try:
+        resized = resize_positive_spatial(
+            refine_positive,
+            int(src_hw[0]),
+            int(src_hw[1]),
+            int(dst_hw[0]),
+            int(dst_hw[1]),
+        )
+    except Exception as exc:
+        log.warning(
+            "Refine cond resize to latent %dx%d failed (%s); "
+            "keeping first-pass conditioning.",
+            int(dst_hw[0]),
+            int(dst_hw[1]),
+            exc,
+        )
+        return refine_positive
+    notes.append("cond resize")
+    return resized
+
+
+def _as_video5d(tensor) -> torch.Tensor:
+    if not torch.is_tensor(tensor):
+        raise TypeError("expected a latent tensor")
+    work = tensor
+    if work.ndim == 4:
+        work = work.unsqueeze(2)
+    if work.ndim != 5:
+        raise ValueError(f"expected [B,C,T,H,W] latent, got {tuple(tensor.shape)}")
+    return work.contiguous()
+
+
+def _encode_lock_frame(vae, image: torch.Tensor, width: int, height: int) -> torch.Tensor:
+    """Lanczos to the refine canvas, then VAE-encode one RGB frame."""
+    pix = image
+    if pix.ndim == 3:
+        pix = pix.unsqueeze(0)
+    pix = _scale_images(pix[:1, ..., :3], width, height)
+    enc = vae.encode(pix)
+    if isinstance(enc, dict):
+        enc = enc.get("samples", enc)
+    return _as_video5d(enc)
+
+
+def _match_lock_latent(template, encoded: torch.Tensor) -> torch.Tensor:
+    out = encoded
+    if torch.is_tensor(template) and template.ndim == 4 and out.ndim == 5:
+        out = out.squeeze(2)
+    if torch.is_tensor(template):
+        out = out.to(device=template.device, dtype=template.dtype)
+    return out
+
+
+def _lock_images_for_refine(seg, first_pass_images: torch.Tensor | None):
+    """Official i2v/fl2v stills, plus i2v first-pass tail when no last_frame."""
+    first = None
+    last = None
+    for ref in getattr(seg, "refs", None) or []:
+        try:
+            idx = int(getattr(ref, "index", -1))
+        except (TypeError, ValueError):
+            continue
+        tensor = getattr(ref, "tensor", None)
+        if tensor is None or getattr(tensor, "ndim", 0) < 3 or int(tensor.shape[0]) < 1:
+            continue
+        frame = tensor[:1]
+        if idx == 0:
+            first = frame
+        elif idx == 1:
+            last = frame
+    clip = getattr(seg, "source_clip", None)
+    if first is None and clip is not None and getattr(clip, "ndim", 0) >= 3 and int(clip.shape[0]) > 0:
+        first = clip[:1]
+    task = str(getattr(seg, "task_key", "") or "")
+    if (
+        last is None
+        and task == "i2v"
+        and first_pass_images is not None
+        and getattr(first_pass_images, "ndim", 0) >= 3
+        and int(first_pass_images.shape[0]) > 0
+    ):
+        last = first_pass_images[-1:]
+    return first, last
+
+
+def _overwrite_endpoint_keyframes(positive, first_lat, last_lat, last_pixel: int):
+    """Replace stock first/last keyframe latents; do not touch continuity pins."""
+    import copy
+
+    from .h3_context_patches import CTX_FRAME_KEY
+
+    if first_lat is None and last_lat is None:
+        return positive
+    cloned = []
+    for item in positive or []:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            cloned.append(item)
+            continue
+        tensor, meta = item[0], item[1]
+        if not isinstance(meta, dict):
+            cloned.append(item)
+            continue
+        new_meta = dict(meta)
+        kfs = meta.get("minimax_keyframes")
+        if isinstance(kfs, list) and kfs:
+            stock_rfis = [
+                int(kf.get("resolved_frame_index", -1))
+                for kf in kfs
+                if isinstance(kf, dict) and CTX_FRAME_KEY not in kf
+            ]
+            max_rfi = max(stock_rfis) if stock_rfis else -1
+            has_stock_last = max_rfi > 0
+            new_kfs = []
+            for kf in kfs:
+                if not isinstance(kf, dict):
+                    new_kfs.append(kf)
+                    continue
+                copied = dict(kf)
+                if CTX_FRAME_KEY in kf:
+                    new_kfs.append(copied)
+                    continue
+                rfi = int(kf.get("resolved_frame_index", -1))
+                if first_lat is not None and rfi == 0:
+                    copied["latent"] = _match_lock_latent(kf.get("latent"), first_lat)
+                elif last_lat is not None and has_stock_last and rfi == max_rfi:
+                    copied["latent"] = _match_lock_latent(kf.get("latent"), last_lat)
+                new_kfs.append(copied)
+            if last_lat is not None and not has_stock_last and int(last_pixel) >= 0:
+                new_kfs.append(
+                    {
+                        "resolved_frame_index": int(last_pixel),
+                        "latent": _as_video5d(last_lat),
+                    }
+                )
+            new_meta["minimax_keyframes"] = new_kfs
+        mconds = meta.get("model_conds")
+        if isinstance(mconds, dict):
+            new_mconds = dict(mconds)
+            for key, cond in mconds.items():
+                payload = getattr(cond, "cond", None)
+                if not isinstance(payload, dict):
+                    continue
+                payload_kfs = payload.get("keyframes")
+                if not isinstance(payload_kfs, list) or not payload_kfs:
+                    continue
+                cloned_cond = copy.copy(cond)
+                new_payload = dict(payload)
+                stock = [
+                    kf
+                    for kf in payload_kfs
+                    if isinstance(kf, dict) and CTX_FRAME_KEY not in kf
+                ]
+                max_rfi = max(
+                    (int(kf.get("resolved_frame_index", -1)) for kf in stock),
+                    default=-1,
+                )
+                rebuilt = []
+                for kf in payload_kfs:
+                    if not isinstance(kf, dict):
+                        rebuilt.append(kf)
+                        continue
+                    copied = dict(kf)
+                    if CTX_FRAME_KEY in kf:
+                        rebuilt.append(copied)
+                        continue
+                    rfi = int(kf.get("resolved_frame_index", -1))
+                    if first_lat is not None and (rfi == 0 or (rfi < 0 and kf is payload_kfs[0])):
+                        copied["latent"] = _match_lock_latent(kf.get("latent"), first_lat)
+                    elif last_lat is not None and (
+                        (max_rfi > 0 and rfi == max_rfi)
+                        or (max_rfi <= 0 and rfi < 0 and kf is payload_kfs[-1] and len(payload_kfs) > 1)
+                    ):
+                        copied["latent"] = _match_lock_latent(kf.get("latent"), last_lat)
+                    rebuilt.append(copied)
+                if last_lat is not None and max_rfi <= 0 and int(last_pixel) >= 0:
+                    rebuilt.append(
+                        {
+                            "resolved_frame_index": int(last_pixel),
+                            "latent": _as_video5d(last_lat),
+                        }
+                    )
+                new_payload["keyframes"] = rebuilt
+                new_payload["cond_video_latents"] = [
+                    kf["latent"] for kf in rebuilt if isinstance(kf, dict) and kf.get("latent") is not None
+                ]
+                cloned_cond.cond = new_payload
+                new_mconds[key] = cloned_cond
+            new_meta["model_conds"] = new_mconds
+        cloned.append([tensor, new_meta])
+    return cloned
+
+
+def _paste_endpoint_latents(work: dict, first_lat, last_lat) -> dict:
+    video_latent, audio_latent = _split_av(work)
+    samples = video_latent.get("samples") if isinstance(video_latent, dict) else video_latent
+    if not torch.is_tensor(samples):
+        return work
+    video = samples.unsqueeze(0) if samples.ndim == 4 else samples
+    if video.ndim != 5:
+        return work
+    video = video.clone()
+    if first_lat is not None:
+        block = _as_video5d(first_lat)[:, :, :1]
+        if block.shape[-2:] == video.shape[-2:] and block.shape[1] == video.shape[1]:
+            video[:, :, :1] = block.to(device=video.device, dtype=video.dtype)
+    if last_lat is not None:
+        block = _as_video5d(last_lat)[:, :, -1:]
+        if block.shape[-2:] == video.shape[-2:] and block.shape[1] == video.shape[1]:
+            video[:, :, -1:] = block.to(device=video.device, dtype=video.dtype)
+    if samples.ndim == 4:
+        video = video.squeeze(0)
+    encoded = dict(video_latent) if isinstance(video_latent, dict) else {"samples": video}
+    encoded["samples"] = video
+    return _join_av(encoded, audio_latent, work)
+
+
+def _refresh_refine_endpoints(
+    refine_positive,
+    work: dict,
+    *,
+    vae,
+    seg,
+    first_pass_images: torch.Tensor | None,
+    tw: int,
+    th: int,
+):
+    """Re-encode official first/last stills at the refine canvas.
+
+    #211 bilinear-resizes first-pass keyframe latents so shapes match, but that
+    lock is soft. Refine then samples at denoise=1.0 and the decoded ends look
+    smeared. Official ImageToVideo locks via a VAE-encoded still — do the same
+    at the new canvas. i2v has no last_frame, so the first-pass tail is
+    lanczos-scaled and re-encoded to keep the ending sharp after 3D upscale.
+    """
+    first_img, last_img = _lock_images_for_refine(seg, first_pass_images)
+    if first_img is None and last_img is None:
+        return refine_positive, work, ""
+    first_lat = _encode_lock_frame(vae, first_img, tw, th) if first_img is not None else None
+    last_lat = _encode_lock_frame(vae, last_img, tw, th) if last_img is not None else None
+    last_pixel = -1
+    try:
+        from .h3_motion_context import pixel_frames_for_latent_t
+
+        video_latent, _audio = _split_av(work)
+        samples = video_latent.get("samples") if isinstance(video_latent, dict) else video_latent
+        if torch.is_tensor(samples) and samples.ndim >= 3:
+            last_pixel = max(0, pixel_frames_for_latent_t(int(samples.shape[-3])) - 1)
+    except Exception:
+        last_pixel = -1
+    refine_positive = _overwrite_endpoint_keyframes(
+        refine_positive, first_lat, last_lat, last_pixel
+    )
+    work = _paste_endpoint_latents(work, first_lat, last_lat)
+    bits = []
+    if first_lat is not None:
+        bits.append("first")
+    if last_lat is not None:
+        bits.append("last")
+    note = "endpoint re-encode " + "+".join(bits)
+    log.info("Director refine: %s at %d×%d", note, tw, th)
+    return refine_positive, work, note
+
+
 def _source_canvas(plan, first_pass_images: torch.Tensor | None) -> tuple[int, int]:
     if first_pass_images is not None and getattr(first_pass_images, "ndim", 0) >= 3:
         return int(first_pass_images.shape[2]), int(first_pass_images.shape[1])
@@ -309,13 +604,12 @@ def _source_canvas(plan, first_pass_images: torch.Tensor | None) -> tuple[int, i
 
 
 def _resolve_refine_canvas(plan, pack: dict) -> tuple[int, int]:
-    tw = int(pack.get("target_width") or 0)
-    th = int(pack.get("target_height") or 0)
-    if tw > 0 and th > 0:
-        return ensure_minimax_canvas(tw, th)
-    return ensure_minimax_canvas(
-        max(int(getattr(plan, "width", 1280) or 1280), 32),
-        max(int(getattr(plan, "height", 720) or 720), 32),
+    src_w = max(int(getattr(plan, "width", 0) or 0), 32)
+    src_h = max(int(getattr(plan, "height", 0) or 0), 32)
+    return canvas_from_source_megapixels(
+        src_w,
+        src_h,
+        pack.get("megapixels") or DEFAULT_UPSCALE_MEGAPIXELS,
     )
 
 
@@ -368,6 +662,11 @@ def _apply_h3_latent_upscale(
         audio_latent.pop("noise_mask", None)
     work = _join_av(encoded, audio_latent, work)
     notes = [f"{tw}×{th}", "h3_latent"]
+    from .selflift.grid import pixel_to_latent_hw
+
+    src_hw = _latent_hw_of(video_latent) or pixel_to_latent_hw(src_w, src_h)
+    dst_hw = _latent_hw_of(encoded) or pixel_to_latent_hw(tw, th)
+    refine_positive = _resize_positive_to_canvas(refine_positive, src_hw, dst_hw, notes)
     if pin_frames > 0:
         try:
             prefix = None
@@ -676,6 +975,14 @@ def apply_segment_refine(
                 )
                 encoded = _encode_video(vae, frames)
                 work = _join_av(encoded, audio_latent, work)
+                from .selflift.grid import pixel_to_latent_hw
+
+                _src_w, _src_h = _source_canvas(plan, first_pass_images)
+                src_hw = _latent_hw_of(video_latent) or pixel_to_latent_hw(_src_w, _src_h)
+                dst_hw = _latent_hw_of(encoded) or pixel_to_latent_hw(tw, th)
+                refine_positive = _resize_positive_to_canvas(
+                    refine_positive, src_hw, dst_hw, note_parts
+                )
                 if guide_pin > 0:
                     try:
                         refine_positive, pinned, work = _repin_after_upscale(
@@ -702,6 +1009,27 @@ def apply_segment_refine(
                 if on_phase:
                     on_phase("upscale", 1)
                 last_ok = work
+            if task_key in {"i2v", "fl2v"}:
+                try:
+                    refine_positive, work, ep_note = _refresh_refine_endpoints(
+                        refine_positive,
+                        work,
+                        vae=vae,
+                        seg=seg,
+                        first_pass_images=first_pass_images,
+                        tw=tw,
+                        th=th,
+                    )
+                    if ep_note:
+                        note_parts.append(ep_note)
+                        last_ok = work
+                except Exception as exc:
+                    log.warning(
+                        "Segment %s refine endpoint re-encode failed (%s); "
+                        "second sample keeps the resized first-pass lock.",
+                        int(getattr(seg, "index", 0)) + 1,
+                        exc,
+                    )
 
         continue_after_shift = None
         if continue_mode and pin_frames > 0:
@@ -745,6 +1073,7 @@ def apply_segment_refine(
         sigma_steps = max(1, len(sigma_list) - 1)
         how = "sigmas wired" if wired_sigmas else f"sigma {sigma_sampler}"
         note_parts.append(f"{how} {sigma_steps}-step")
+        note_parts.append(f"seed {refine_seed_for(pack, seed, 0)}")
         if pack.get("enable_tiling"):
             tile_count = max(1, min(8, int(pack.get("tile_count") or 2)))
             overlap = max(0, int(pack.get("tile_overlap") or 128))
@@ -758,14 +1087,16 @@ def apply_segment_refine(
             )
         # Pass 1 samples after optional upscale; later passes are same-canvas refine only.
         for i in range(n_passes):
+            refine_seed = refine_seed_for(pack, seed, pass_index=i)
             log.info(
-                "Director refine pass %d/%d (%s %s %d-step%s)",
+                "Director refine pass %d/%d (%s %s %d-step%s, seed=%s)",
                 i + 1,
                 n_passes,
                 "sigmas wired" if wired_sigmas else "sigma",
                 sigma_sampler,
                 sigma_steps,
                 ", custom model" if refine_model is not model else "",
+                refine_seed,
             )
             if on_phase:
                 on_phase("refine", (i + 0.5) / n_passes)
@@ -774,7 +1105,7 @@ def apply_segment_refine(
                 positive=refine_positive,
                 negative=negative,
                 latent=work,
-                seed=refine_seed_for(pack, seed, pass_index=i),
+                seed=refine_seed,
                 cfg=cfg,
                 steps=sigma_steps,
                 sampler_name=sigma_sampler,

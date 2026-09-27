@@ -123,9 +123,9 @@ def _normalize_shots(raw_shots: list | None, *, frame_rate: float = 24.0) -> lis
         cursor += fc
     return out
 
-# Hard locks for every fl2v shot (re-applied after PE). Community cue words:
-# MiniMax H3 locks first/last via MiniMaxH3ImageToVideo keyframe latents.
-# Prompt text reinforces continuity; avoid Bernini image0/image1 tokens.
+# Legacy hard-lock wraps (no longer injected). Official MiniMaxH3ImageToVideo
+# locks first/last via keyframe latents; the user / PE prompt is sent as-is.
+# Keep these strings only so old saved prompts and PE leaks can be stripped.
 FLF_PROMPT_PREFIX = (
     "完全保持首尾帧。"
     "视频第一帧必须与给定首帧画面一致，最后一帧必须与给定尾帧画面一致；"
@@ -171,53 +171,40 @@ _LEGACY_FL2V_WRAPS = (
 
 
 def _strip_fl2v_wraps(text: str) -> str:
+    wraps = (
+        FLF_PROMPT_PREFIX,
+        I2V_PROMPT_PREFIX,
+        L2V_PROMPT_PREFIX,
+        FLF_PROMPT_SUFFIX,
+        I2V_PROMPT_SUFFIX,
+        L2V_PROMPT_SUFFIX,
+        *_LEGACY_FL2V_WRAPS,
+    )
     changed = True
     while changed and text:
         changed = False
-        for p in (FLF_PROMPT_PREFIX, I2V_PROMPT_PREFIX, L2V_PROMPT_PREFIX, *_LEGACY_FL2V_WRAPS):
-            if text.startswith(p):
-                text = text[len(p) :].strip()
+        for w in wraps:
+            if text.startswith(w):
+                text = text[len(w) :].strip()
                 changed = True
-        for s in (FLF_PROMPT_SUFFIX, I2V_PROMPT_SUFFIX, L2V_PROMPT_SUFFIX, *_LEGACY_FL2V_WRAPS):
-            if text.endswith(s):
-                text = text[: -len(s)].strip()
+            if text.endswith(w):
+                text = text[: -len(w)].strip()
                 changed = True
     return text
 
 
 def _sanitize_fl2v_body(text: str) -> str:
-    """Rewrite soft「参考」wording that weakens first/last-frame locking."""
+    """Drop leftover lock-line fragments after wrap strip (do not rewrite user text)."""
     if not text:
         return text
-    replacements = (
-        ("reference image0", "image0"),
-        ("reference image1", "image1"),
-        ("Reference image0", "image0"),
-        ("Reference image1", "image1"),
-        ("参考图 image0", "image0"),
-        ("参考图 image1", "image1"),
-        ("参考图image0", "image0"),
-        ("参考图image1", "image1"),
-        ("参考 image0", "image0"),
-        ("参考 image1", "image1"),
-        ("参考image0", "image0"),
-        ("参考image1", "image1"),
-        ("以image0为参考", "完全按照image0"),
-        ("以image1为参考", "完全保持image1"),
-        ("把image0当作参考", "完全按照image0"),
-        ("把image1当作参考", "完全保持image1"),
-        ("image0的构图", "image0的画面"),
-        ("image1的构图", "image1的画面"),
-        ("首尾构图", "首尾画面"),
-        ("首帧构图", "首帧画面"),
-    )
     out = text
-    for old, new in replacements:
-        out = out.replace(old, new)
-    # Drop duplicated lock lines already present in the body (prefix/suffix will re-add).
     for marker in (
         "完全保持首尾帧。",
         "完全保持首帧。",
+        "完全保持尾帧。",
+        "完全保持首尾帧：开头锁定首帧，结尾锁定尾帧。",
+        "完全保持首帧：开头锁定首帧。",
+        "完全保持尾帧：结尾锁定尾帧。",
         "视频开始完全按照image0的画面，不修改，视频结束完全保持image1的画面。",
         "视频开始完全按照image0的画面，不修改，视频结束完全保持image1。",
         "视频开始完全按照image0的构图，不修改，视频结束完全保持image1。",
@@ -232,7 +219,7 @@ def _sanitize_fl2v_body(text: str) -> str:
 
 
 def fl2v_prompt_body_only(prompt: str) -> str:
-    """Strip hard-lock wraps / PE duplicates; keep only the motion body for UI storage."""
+    """Strip legacy hard-lock wraps / PE duplicates; keep the user (or PE) body."""
     text = _sanitize_fl2v_body(_strip_fl2v_wraps((prompt or "").strip()))
     if text.startswith("中间过程："):
         text = text[len("中间过程：") :].strip()
@@ -242,26 +229,16 @@ def fl2v_prompt_body_only(prompt: str) -> str:
 def reinforce_fl2v_prompt(
     prompt: str,
     *,
-    has_end_frame: bool,
+    has_end_frame: bool = False,
     has_start_frame: bool = True,
 ) -> str:
-    """Ensure first/last-frame hard constraints wrap the (possibly PE-enhanced) prompt.
+    """Official ImageToVideo path: user/PE prompt only. Keyframes lock the frames.
 
-    Hard locks are placed *before* the motion body so they survive token truncation.
-    Supports start-only, end-only, start+end, and neither (plain text-to-video).
+    ``has_*_frame`` is kept for callers; frames are encoded as latents, not as
+    Chinese lock sentences. Legacy wraps are stripped so old timelines stay clean.
     """
-    text = fl2v_prompt_body_only(prompt)
-    if not has_start_frame and not has_end_frame:
-        return text
-    if has_start_frame and has_end_frame:
-        prefix, suffix = FLF_PROMPT_PREFIX, FLF_PROMPT_SUFFIX
-    elif has_end_frame:
-        prefix, suffix = L2V_PROMPT_PREFIX, L2V_PROMPT_SUFFIX
-    else:
-        prefix, suffix = I2V_PROMPT_PREFIX, I2V_PROMPT_SUFFIX
-    if text:
-        return f"{prefix}{suffix}中间过程：{text}"
-    return f"{prefix}{suffix}"
+    del has_end_frame, has_start_frame
+    return fl2v_prompt_body_only(prompt)
 
 
 def is_fl2v_timeline(timeline: dict, task_key: str = "") -> bool:

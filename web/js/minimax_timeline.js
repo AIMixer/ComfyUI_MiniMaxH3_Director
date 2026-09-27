@@ -502,6 +502,7 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
     clear_vram_between_segments: "widget.clearVram",
     clear_vram_before_refine: "widget.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.clearVramBeforeFaceRefine",
+    cache_frames_codec: "widget.cacheFramesCodec",
     export_source_images: "widget.exportSourceImages",
     export_pre_face_refine: "widget.exportPreFaceRefine",
     control_after_generate: "widget.controlAfterGenerate",
@@ -512,6 +513,7 @@ const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
     clear_vram_before_refine: "widget.tooltip.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.tooltip.clearVramBeforeFaceRefine",
+    cache_frames_codec: "widget.tooltip.cacheFramesCodec",
     export_source_images: "widget.tooltip.exportSourceImages",
     export_pre_face_refine: "widget.tooltip.exportPreFaceRefine",
 };
@@ -523,6 +525,9 @@ const DIRECTOR_GROUP_LABEL_KEYS = {
     bd_grp_face_detect: "widget.grpFaceDetect",
     bd_grp_face_sample: "widget.grpSample",
     bd_grp_face_paste: "widget.grpFacePaste",
+    bd_grp_selflift_sample: "widget.grpSelfLiftSample",
+    bd_grp_selflift_lift: "widget.grpSelfLiftLift",
+    bd_grp_selflift_tile: "widget.grpSelfLiftTile",
 };
 
 function widgetByName(node, name) {
@@ -871,7 +876,8 @@ function makeGroupHeaderWidget(inputName, inputData) {
             drawGroupHeader(ctx, node, widget_width, y, H, text);
         },
         computeSize(width) {
-            return [width, 26];
+            // DOM header is margin+padding+text (~40px). 26 clipped Vue SelfLift/Refine.
+            return [width, 38];
         },
         mouse() {
             return false;
@@ -1652,6 +1658,7 @@ const PERF_WIDGET_ORDER = [
     "clear_vram_between_segments",
     "clear_vram_before_refine",
     "clear_vram_before_face_refine",
+    "cache_frames_codec",
 ];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {
@@ -4139,12 +4146,10 @@ class MiniMaxH3DirectorEditor {
 
     toggleSegmentRun(index) {
         if (!this.isRunSelectEnabled()) return;
-        if (this.isFl2vMode()) {
-            if (!this.timeline.segments?.[index]?.isStartFrame) return;
-        } else {
-            const n = this.getRunnableSegmentCount();
-            if (index < 0 || index >= n) return;
-        }
+        // fl2v: every shot is runnable (text-only / end-only groups too), so
+        // never gate on isStartFrame — that only means "has a start image".
+        const n = this.getRunnableSegmentCount();
+        if (index < 0 || index >= n) return;
         const sel = new Set(this.timeline.runSelection || []);
         if (sel.has(index)) sel.delete(index);
         else sel.add(index);
@@ -8979,7 +8984,6 @@ class MiniMaxH3DirectorEditor {
         // in run-select mode; keeps hit type accurate for cursor / future hooks).
         if (this.isRunSelectEnabled() && this.getRunnableSegmentCount() >= 2 && y >= TRACK_Y && y <= trackBottom) {
             for (let i = segs.length - 1; i >= 0; i--) {
-                if (this.isFl2vMode() && !segs[i]?.isStartFrame) continue;
                 const g = this._runCheckGeometry(segs[i], width);
                 if (x >= g.hitX0 && x <= g.hitX1 && y >= g.hitY0 && y <= g.hitY1) {
                     return { type: "run-check", index: i };
@@ -10465,11 +10469,10 @@ class MiniMaxH3DirectorEditor {
             const sel = showSegSel && i === this.selectedIndex;
             const running = i === this._runHighlightSeg;
             const runOn = this.isSegmentRunEnabled(i);
-            const fl2vStart = !this.isFl2vMode() || !!seg.isStartFrame;
             const visualRank = this._visualRankFromArrayIndex(i);
             const isDragSource = reordering && visualRank === dragFromRank;
             const isDropTarget = reordering && dropRank >= 0 && visualRank === dropRank && dropRank !== dragFromRank;
-            if (this.isRunSelectEnabled() && this.getRunnableSegmentCount() >= 2 && fl2vStart && !runOn) {
+            if (this.isRunSelectEnabled() && this.getRunnableSegmentCount() >= 2 && !runOn) {
                 this.ctx.globalAlpha = 0.32;
             } else if (isDragSource) {
                 this.ctx.globalAlpha = 0.28;
@@ -10544,7 +10547,6 @@ class MiniMaxH3DirectorEditor {
                 this.isRunSelectEnabled()
                 && this.getRunnableSegmentCount() >= 2
                 && pxW >= RUN_CHECK_SIZE + 8
-                && (!this.isFl2vMode() || seg.isStartFrame)
             ) {
                 const g = this._runCheckGeometry(seg, width);
                 this._drawSegmentRunCheck(g.boxX, g.boxY, runOn);

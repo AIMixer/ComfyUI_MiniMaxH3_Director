@@ -110,6 +110,19 @@ def director_perf_inputs() -> dict:
                 ),
             },
         ),
+        "cache_frames_codec": (
+            ["raw", "ffv1"],
+            {
+                "default": "raw",
+                "tooltip": (
+                    "分段缓存的像素帧怎么存。"
+                    "raw：uint8 .pt，读写快，磁盘大。"
+                    "ffv1：无损压缩，体积大约三分之一，命中和写入都会多一次编解码。"
+                    "两种都能读；某一段被重新写入时才换成当前选项。"
+                    "latent / 音频缓存不受影响。"
+                ),
+            },
+        ),
         "export_source_images": (
             "BOOLEAN",
             {
@@ -203,6 +216,8 @@ def prepare_director_plan(
     unique_id: str | None,
     i2v_groups=None,
     r2v_groups=None,
+    selflift=None,
+    semantic_bridge=None,
     refine=None,
     face_refine=None,
 ):
@@ -246,6 +261,8 @@ def prepare_director_plan(
             height=height,
             ref_max_size=ref_max_size,
         )
+        plan = _attach_selflift(plan, selflift)
+        plan = _attach_semantic_bridge(plan, semantic_bridge)
         plan = _attach_refine(plan, refine)
         plan = _attach_face_refine(plan, face_refine)
         log.info(
@@ -273,9 +290,25 @@ def prepare_director_plan(
         height=height,
         ref_max_size=ref_max_size,
     )
+    plan = _attach_selflift(plan, selflift)
+    plan = _attach_semantic_bridge(plan, semantic_bridge)
     plan = _attach_refine(plan, refine)
     plan = _attach_face_refine(plan, face_refine)
     log.info(plan_summary(plan).replace("\n", " | "))
+    return plan
+
+
+def _attach_selflift(plan, selflift):
+    from ..director.selflift.pack import normalize_selflift_pack
+
+    plan.selflift = normalize_selflift_pack(selflift)
+    return plan
+
+
+def _attach_semantic_bridge(plan, semantic_bridge):
+    from ..director.semantic_bridge import normalize_semantic_bridge_pack
+
+    plan.semantic_bridge = normalize_semantic_bridge_pack(semantic_bridge)
     return plan
 
 

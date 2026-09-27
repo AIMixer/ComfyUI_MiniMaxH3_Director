@@ -276,6 +276,27 @@ def _video_tail_blocks(
     return blocks, step_offsets(steps), covered, pin_end_px, gap
 
 
+def describe_pin_window(
+    latent: dict | None, n_frames: int, *, end_frame: int | None = None
+) -> str:
+    """Run-report note: which previous frames / latent steps the pin window covers."""
+    if latent is None:
+        return ""
+    try:
+        total = int(video_from_latent(latent).shape[2])
+        steps = steps_for_frames(int(n_frames))
+        if steps is None:
+            return ""
+        start, pin_end_px, _gap = _phase_aligned_tail_start(total, steps, end_frame)
+        return (
+            f"pin window: prev frames [{pixel_frames_for_latent_t(start)}:{pin_end_px}) "
+            f"of {pixel_frames_for_latent_t(total)} "
+            f"(steps {start}..{start + steps - 1}/{total})"
+        )
+    except Exception as exc:  # report-only — never break the run
+        return f"pin window: unavailable ({exc})"
+
+
 def copy_av_tail_into_prefix(
     target: dict,
     source: dict,
