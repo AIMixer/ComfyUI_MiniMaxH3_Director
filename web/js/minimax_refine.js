@@ -378,6 +378,7 @@ function directorValue(node, name, fallback) {
 
 /** Fingerprint key → what the user actually changed. */
 const CACHE_DIFF_LABELS = {
+    project: "项目 ID",
     seed: "seed",
     start: "片段起点",
     end: "片段终点（时间范围变化）",
@@ -408,6 +409,7 @@ const CACHE_DIFF_LABELS = {
     shift_video: "视频 shift",
     shift_audio: "音频 shift",
     "<invalid-meta>": "缓存信息损坏",
+    "<missing-cache>": "该段还没跑过一采（无缓存）",
     external_wiring: "外接组接线",
     external_prompt: "外接组提示词",
     external_length: "外接组时长",
@@ -619,12 +621,12 @@ function renderCacheStatus(node, data, kind = "normal") {
         ? data.cached_seeds.join(", ")
         : "—";
     const diffLabels = CACHE_DIFF_LABELS;
-    const diffs = sortDiffKeys(
-        (Array.isArray(data?.diff_keys) ? data.diff_keys : [])
-            .filter((key) => key !== "<missing-cache>"),
-    )
+    const rawDiffKeys = Array.isArray(data?.diff_keys) ? data.diff_keys : [];
+    const hasMissing = rawDiffKeys.includes("<missing-cache>");
+    const diffs = sortDiffKeys(rawDiffKeys.filter((key) => key !== "<missing-cache>"))
         .slice(0, 12)
         .map((key) => diffLabels[key] || key);
+    if (hasMissing) diffs.push(diffLabels["<missing-cache>"]);
     const selTotal = data?.selected_total;
     const selMatched = data?.selected_matched;
     const selActive = Number.isFinite(selTotal) && Number(selTotal) !== total;
@@ -643,7 +645,25 @@ function renderCacheStatus(node, data, kind = "normal") {
     } else if (confirmReason === "refine_skipped") {
         lines.push("确认二采：不可以 — 当前选中段不会跑二采（如 skip_fl2v）");
     } else {
-        lines.push("确认二采：不可以 — 一采指纹不匹配，Queue 只会写一采 / 重跑一采");
+        const rows = Array.isArray(data?.segments) ? data.segments : [];
+        const selRows = rows.filter((row) => row?.selected);
+        const scope = selRows.length ? selRows : rows;
+        const missRows = scope.filter((row) => row?.status === "missing");
+        const badRows = scope.filter((row) => row?.status && row.status !== "missing" && !row?.matches);
+        if (missRows.length) {
+            lines.push(
+                `确认二采：不可以 — 选中段还没有一采缓存（${missRows.length} 段未跑过一采），Queue 会先跑一采`,
+            );
+        } else {
+            lines.push("确认二采：不可以 — 一采指纹不匹配，Queue 只会写一采 / 重跑一采");
+        }
+        if (badRows.length) {
+            const segNo = badRows
+                .map((row) => row?.segment ?? Number(row?.index) + 1)
+                .slice(0, 12)
+                .join("、");
+            lines.push(`指纹不符段：第 ${segNo} 段`);
+        }
     }
     lines.push(`缓存 seed：${seeds}`);
     lines.push(`当前 seed：${data?.current_seed ?? "—"}`);

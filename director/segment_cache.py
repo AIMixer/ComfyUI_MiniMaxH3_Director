@@ -43,6 +43,12 @@ SOURCE_VIDEO_FP_KEY = "source_video"
 # receive it) and is never persisted.
 EXTERNAL_SEGMENT_FP_KEY = "external_group"
 
+# Resolved project / cache key (timeline ``projectId``, else the node id) folded
+# into the segment identity. The cache directory is already keyed by it, so this
+# makes the project part of the fingerprint itself: a segment rendered under one
+# project can never be validated against another one.
+PROJECT_FP_KEY = "project"
+
 # Fingerprint keys that come out of the executed group payloads (prompts,
 # durations, reference counts/slots, per-row continuity). The cache-status panel
 # cannot rebuild them for graph-wired groups, so in external-group mode it
@@ -226,6 +232,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         "prompt": seg.prompt,
         "negative": seg.negative_prompt,
         "task_key": seg.task_key,
+        PROJECT_FP_KEY: str(getattr(plan, "project_id", "") or ""),
         "width": plan.width,
         "height": plan.height,
         "frame_rate": float(getattr(plan, "frame_rate", 24) or 24),
@@ -665,6 +672,19 @@ def _inspect_drop_keys(plan, *, first_pass: bool = True) -> set[str]:
     return drop
 
 
+def _expected_for_stored(stored: Any, expected: dict[str, Any]) -> dict[str, Any]:
+    """Align ``expected`` with the revision of the meta found on disk.
+
+    Metas written before ``PROJECT_FP_KEY`` joined the fingerprint have no such
+    key. The cache directory is already keyed by the resolved project id, so such
+    a meta can never be a cross-project hit — dropping the key keeps those caches
+    reusable instead of forcing a full first-pass re-run.
+    """
+    if isinstance(stored, dict) and PROJECT_FP_KEY in expected and PROJECT_FP_KEY not in stored:
+        return {k: v for k, v in expected.items() if k != PROJECT_FP_KEY}
+    return expected
+
+
 def _cmp_inspect_fingerprints(
     stored: Any,
     expected: dict[str, Any],
@@ -673,6 +693,7 @@ def _cmp_inspect_fingerprints(
 ) -> tuple[bool, list[str]]:
     if not isinstance(stored, dict):
         return False, ["<invalid-meta>"]
+    expected = _expected_for_stored(stored, expected)
     stored_cmp = {k: v for k, v in stored.items() if k not in drop_keys}
     expected_cmp = {k: v for k, v in expected.items() if k not in drop_keys}
     return stored_cmp == expected_cmp, _fingerprint_diff_keys(stored_cmp, expected_cmp)
@@ -742,8 +763,8 @@ def load_segment_handoff_meta(
     if not meta_path.is_file() or not handoff_path.is_file():
         return None
     try:
-        expected = segment_cache_fingerprint(seg, plan)
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        expected = _expected_for_stored(stored, segment_cache_fingerprint(seg, plan))
         if stored != expected:
             if _reject_source_stale(stored, expected, seg_index=idx, quiet=True) or not allow_stale:
                 return None
@@ -801,7 +822,7 @@ def load_first_pass_av_latent(
     try:
         if meta_path.is_file():
             stored = json.loads(meta_path.read_text(encoding="utf-8"))
-            expected = first_pass_cache_fingerprint(seg, plan)
+            expected = _expected_for_stored(stored, first_pass_cache_fingerprint(seg, plan))
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
                     return None
@@ -837,7 +858,7 @@ def load_first_pass_low_carry(
     try:
         if meta_path.is_file():
             stored = json.loads(meta_path.read_text(encoding="utf-8"))
-            expected = first_pass_cache_fingerprint(seg, plan)
+            expected = _expected_for_stored(stored, first_pass_cache_fingerprint(seg, plan))
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
                     return None
@@ -872,7 +893,7 @@ def load_segment_av_latent(
         return None
     try:
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
-        expected = segment_cache_fingerprint(seg, plan)
+        expected = _expected_for_stored(stored, segment_cache_fingerprint(seg, plan))
         if stored != expected:
             if _reject_source_stale(stored, expected, seg_index=idx, quiet=True) or not allow_stale:
                 return None
@@ -902,7 +923,7 @@ def _fingerprint_matches(
         return False
     try:
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
-        expected = segment_cache_fingerprint(seg, plan)
+        expected = _expected_for_stored(stored, segment_cache_fingerprint(seg, plan))
         if stored == expected:
             return True
         if _reject_source_stale(stored, expected, seg_index=seg.index, quiet=True):
@@ -940,6 +961,7 @@ def load_segment_cache(
         expected = segment_cache_fingerprint(seg, plan)
         if meta_path.is_file():
             stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = _expected_for_stored(stored, expected)
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx):
                     return None
@@ -1179,7 +1201,7 @@ def load_first_pass_cache(
         return None
     try:
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
-        expected = first_pass_cache_fingerprint(seg, plan)
+        expected = _expected_for_stored(stored, first_pass_cache_fingerprint(seg, plan))
         missing_external = (
             isinstance(stored, dict)
             and _plan_uses_external_groups(plan)
@@ -1591,8 +1613,13 @@ def _inspect_external_group_cache(
             unverified += 1
             diff = ["<unverified-external>"]
         else:
+            # Legacy metas predate PROJECT_FP_KEY; the cache dir already scopes the
+            # project, so the missing key is not a change (see _expected_for_stored).
+            legacy_skip = {PROJECT_FP_KEY} if PROJECT_FP_KEY not in stored else set()
             diff = [
-                key for key, value in expected_knobs.items() if stored.get(key) != value
+                key
+                for key, value in expected_knobs.items()
+                if key not in legacy_skip and stored.get(key) != value
             ]
             # This segment's own group is the only per-group input to reuse.
             # A peer group's edit is deliberately invisible here — that is what

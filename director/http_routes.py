@@ -612,6 +612,10 @@ async def minimax_first_pass_cache_status(request):
         # Different projects must not share segment cache; fall back to node_id
         # when the timeline has no usable projectId (old workflows / parse failure).
         cache_key = resolve_project_id(getattr(plan, "raw", None), node_id)
+        # Mirror the executor (executor_core.py sets plan.project_id = cache_key):
+        # projectId is part of the fingerprint, so the panel must stamp the same
+        # resolved key or every row would report a project diff.
+        plan.project_id = cache_key
         return web.json_response(
             inspect_first_pass_cache(cache_key, plan, external_groups=witness)
         )
