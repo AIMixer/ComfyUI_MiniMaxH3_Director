@@ -186,7 +186,9 @@ export function rebaseR2vGroupSlotsForCommon(editor) {
     const vidOff = r2vCommonVideoOffset(editor);
     if (picOff <= 0 && audOff <= 0 && vidOff <= 0) return false;
     let changed = false;
+    const globalKey = resolveTaskKey(editor.getTaskKey?.() || "");
     for (const seg of editor.timeline?.segments || []) {
+        if (globalKey === "mixed" && resolveSegmentTaskKey(seg, globalKey) !== "r2v") continue;
         if (Array.isArray(seg.refs) && seg.refs.length) {
             const r = _rebaseIndexedMedia(seg.refs, _refHasImage, picOff, R2V_PICTURE_SLOTS);
             if (r.changed) {
