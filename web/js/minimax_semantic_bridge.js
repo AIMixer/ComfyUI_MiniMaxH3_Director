@@ -22,19 +22,48 @@ function widgetValue(w) {
     return v;
 }
 
+/**
+ * Link lookup that tolerates every table shape the frontend has shipped:
+ * newer builds keep `graph.links` a `Map` (and `graph._links` as well), older
+ * ones a plain object keyed by link id, some a plain array. Indexing a Map
+ * silently returns undefined, which used to make the whole wiring walk fail and
+ * the cache panel report「不匹配」for every segment.
+ */
 function graphLinkRecord(graph, linkId) {
     if (linkId == null || !graph) return null;
-    const links = graph.links;
-    if (!links) return null;
-    let link = links[linkId];
-    if (!link && typeof links.find === "function") {
-        link = links.find((l) => l && (l.id === linkId || l[0] === linkId));
+    for (const pool of [graph.links, graph._links]) {
+        if (!pool) continue;
+        let link = null;
+        if (typeof pool.get === "function") {
+            link = pool.get(linkId) ?? pool.get(String(linkId));
+        } else if (Array.isArray(pool)) {
+            link = pool.find((l) => l && (l.id === linkId || l[0] === linkId)) ?? null;
+        } else {
+            link = pool[linkId] ?? pool[String(linkId)] ?? null;
+        }
+        if (!link) continue;
+        const originId = link.origin_id ?? link.originId ?? link[1];
+        if (originId == null) continue;
+        return {
+            originId,
+            originSlot: link.origin_slot ?? link.originSlot ?? link[2],
+        };
     }
-    if (!link) return null;
-    return {
-        originId: link.origin_id ?? link[1],
-        originSlot: link.origin_slot ?? link[2],
-    };
+    return null;
+}
+
+/** Node lookup that still works when the graph has no `getNodeById`. */
+function findGraphNode(graph, id) {
+    if (!graph || id == null) return null;
+    const wanted = String(id);
+    if (typeof graph.getNodeById === "function") {
+        const hit = graph.getNodeById(wanted) ?? graph.getNodeById(id);
+        if (hit) return hit;
+    }
+    for (const candidate of graph._nodes ?? graph.nodes ?? []) {
+        if (String(candidate?.id) === wanted) return candidate;
+    }
+    return null;
 }
 
 function linkedSourceNode(graph, node, inputName) {
@@ -43,7 +72,7 @@ function linkedSourceNode(graph, node, inputName) {
     if (inp?.link == null) return null;
     const rec = graphLinkRecord(graph, inp.link);
     if (!rec) return null;
-    return graph.getNodeById?.(rec.originId) || null;
+    return findGraphNode(graph, rec.originId);
 }
 
 function isPassthroughNode(node) {

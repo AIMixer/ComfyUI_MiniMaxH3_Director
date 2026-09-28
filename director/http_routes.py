@@ -616,9 +616,18 @@ async def minimax_first_pass_cache_status(request):
         # projectId is part of the fingerprint, so the panel must stamp the same
         # resolved key or every row would report a project diff.
         plan.project_id = cache_key
-        return web.json_response(
-            inspect_first_pass_cache(cache_key, plan, external_groups=witness)
-        )
+        status = inspect_first_pass_cache(cache_key, plan, external_groups=witness)
+        if not status.get("matches"):
+            # Name the reason in the log so a「不匹配」 report can be diagnosed
+            # without re-deriving the fingerprint by hand.
+            log.info(
+                "MiniMax H3 Director first-pass cache panel [%s]: %s/%s matched, diff=%s",
+                cache_key,
+                status.get("matched_count"),
+                status.get("segment_total"),
+                status.get("diff_keys"),
+            )
+        return web.json_response(status)
     except Exception as exc:
         log.warning("MiniMax H3 Director first-pass cache inspection failed: %s", exc)
         return web.json_response(

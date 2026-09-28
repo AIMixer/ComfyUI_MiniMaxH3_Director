@@ -358,6 +358,30 @@ function graphNodes() {
     return graph?._nodes ?? graph?.nodes ?? [];
 }
 
+/**
+ * Link lookup that tolerates every table shape the frontend has shipped:
+ * newer builds keep `graph.links` a `Map` (and `graph._links` as well), older
+ * ones a plain object keyed by link id, some a plain array. Indexing a Map
+ * silently returns undefined, which made this walk fail and the panel report
+ * 「未找到相连的 MiniMax H3 Director」or「不匹配」.
+ */
+function findGraphLink(graph, linkId) {
+    if (linkId == null || !graph) return null;
+    for (const pool of [graph.links, graph._links]) {
+        if (!pool) continue;
+        let link = null;
+        if (typeof pool.get === "function") {
+            link = pool.get(linkId) ?? pool.get(String(linkId));
+        } else if (Array.isArray(pool)) {
+            link = pool.find((l) => l && (l.id === linkId || l[0] === linkId)) ?? null;
+        } else {
+            link = pool[linkId] ?? pool[String(linkId)] ?? null;
+        }
+        if (link) return link;
+    }
+    return null;
+}
+
 function connectedDirector(refineNode) {
     const graph = refineNode?.graph ?? app.graph ?? app.canvas?.graph;
     for (const candidate of graphNodes()) {
@@ -365,8 +389,9 @@ function connectedDirector(refineNode) {
         if (!DIRECTOR_CLASSES.has(cls)) continue;
         const input = candidate.inputs?.find((item) => item?.name === "refine");
         if (input?.link == null) continue;
-        const link = graph?.links?.[input.link] ?? graph?._links?.[input.link];
-        if (String(link?.origin_id) === String(refineNode.id)) return candidate;
+        const link = findGraphLink(graph, input.link);
+        const originId = link?.origin_id ?? link?.originId ?? link?.[1];
+        if (String(originId) === String(refineNode.id)) return candidate;
     }
     return null;
 }
