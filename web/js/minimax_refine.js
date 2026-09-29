@@ -684,6 +684,22 @@ function renderCacheStatus(node, data, kind = "normal") {
     ui.body.textContent = lines.join("\n");
 }
 
+function cacheStatusSelectionError(timelineData) {
+    if (!timelineData || typeof timelineData !== "string") return "";
+    try {
+        const timeline = JSON.parse(timelineData);
+        const enabled = Boolean(timeline?.runSelectEnabled ?? timeline?.run_select_enabled);
+        const segments = Array.isArray(timeline?.segments) ? timeline.segments : [];
+        const selection = timeline?.runSelection ?? timeline?.run_selection;
+        if (enabled && segments.length && Array.isArray(selection) && selection.length === 0) {
+            return "缓存检查跳过：已开启「选择运行」，但当前没有勾选片段。请勾选至少一段，或关闭「选择运行」。";
+        }
+    } catch {
+        /* The backend will report malformed timeline data. */
+    }
+    return "";
+}
+
 async function refreshFirstPassCacheStatus(node) {
     if (!isRefineNode(node)) return;
     ensureFirstPassCacheUI(node);
@@ -692,14 +708,33 @@ async function refreshFirstPassCacheStatus(node) {
         renderCacheStatus(node, "未找到相连的 MiniMax H3 Director。", "warn");
         return;
     }
+    const previousController = node._mmxCacheStatusAbortController;
+    const payload = cacheStatusPayload(director, node);
+    const selectionError = cacheStatusSelectionError(payload.timeline_data);
+    const requestKey = JSON.stringify(payload);
+    if (!selectionError && previousController && node._mmxCacheStatusRequestKey === requestKey) {
+        return;
+    }
     const seq = (node._mmxCacheStatusSeq || 0) + 1;
     node._mmxCacheStatusSeq = seq;
+    if (selectionError) {
+        previousController?.abort();
+        node._mmxCacheStatusAbortController = null;
+        node._mmxCacheStatusRequestKey = "";
+        renderCacheStatus(node, selectionError, "warn");
+        return;
+    }
+    previousController?.abort();
+    const controller = new AbortController();
+    node._mmxCacheStatusAbortController = controller;
+    node._mmxCacheStatusRequestKey = requestKey;
     renderCacheStatus(node, "正在检查分段缓存…", "muted");
     try {
         const response = await api.fetchApi("/minimax/director/first_pass_cache_status", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(cacheStatusPayload(director, node)),
+            body: requestKey,
+            signal: controller.signal,
         });
         const data = await response.json();
         if (seq !== node._mmxCacheStatusSeq) return;
@@ -712,8 +747,14 @@ async function refreshFirstPassCacheStatus(node) {
             : (data.matches ? "ok" : (data.exists ? "warn" : "muted"));
         renderCacheStatus(node, data, tone);
     } catch (error) {
+        if (error?.name === "AbortError") return;
         if (seq !== node._mmxCacheStatusSeq) return;
         renderCacheStatus(node, `缓存检查失败：${error?.message || error}`, "error");
+    } finally {
+        if (node._mmxCacheStatusAbortController === controller) {
+            node._mmxCacheStatusAbortController = null;
+            node._mmxCacheStatusRequestKey = "";
+        }
     }
 }
 
