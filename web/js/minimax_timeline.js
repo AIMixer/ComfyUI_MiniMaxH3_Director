@@ -6246,7 +6246,7 @@ class MiniMaxH3DirectorEditor {
                 this.r2vCommonStatus.removeAttribute("data-i18n");
             } else {
                 this.r2vCommonStatus.classList.toggle("on", on);
-                const skey = on ? "panel.commonEnabled" : `panel.${copy}CommonOff`;
+                const skey = on ? "panel.commonEnabled" : "panel.commonDisabled";
                 this.r2vCommonStatus.textContent = t(skey);
                 this.r2vCommonStatus.setAttribute("data-i18n", skey);
             }

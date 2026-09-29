@@ -722,7 +722,7 @@ export function mountImageBatchPanel(root) {
             <button type="button" class="bd-btn" data-a="batch-detail-mode" data-i18n="toolbar.batchDetailSolo" data-i18n-title="tooltip.batchDetailSolo">单显模式</button>
             <span class="bd-meta" data-r="batch-hint" data-i18n="batch.hint.defaultImage">每组生成 1 张图片</span>
             <div class="bd-batch-common-slot hidden" data-r="batch-common-slot">
-                <span class="bd-r2v-common-status" data-r="r2v-common-status" data-i18n="panel.r2vCommonOff">未启用 · 各组独立素材与提示词</span>
+                <span class="bd-r2v-common-status" data-r="r2v-common-status" data-i18n="panel.commonDisabled">公共参数未启用</span>
                 <div class="bd-r2v-common-actions">
                     <button type="button" class="bd-btn bd-r2v-common-fold hidden" data-r="r2v-common-fold" data-i18n="panel.r2vCommonCollapse">收起公共参数</button>
                     <button type="button" class="bd-btn bd-r2v-common-toggle" data-r="r2v-common-toggle" data-i18n="panel.r2vCommonEnable">启用公共参数</button>
