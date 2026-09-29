@@ -49,6 +49,7 @@ import {
 import {
     IMAGE_BATCH_STYLES,
     addImageBatchGroup,
+    selectBatchGroup,
     bindImageBatchEvents,
     bindR2vMediaPlayback,
     deleteImageBatchGroup,
@@ -94,6 +95,7 @@ import {
     mountFl2vPanel,
     newFl2vShot,
     normalizeFl2vSegments,
+    duplicateFl2vShot,
     openFl2vUpload,
     setFl2vToolbar,
     flushFl2vPromptDraft,
@@ -1074,6 +1076,7 @@ const STYLES = `
 .bd-output .bd-out-source-wrap input[type=checkbox],.bd-output .bd-out-preface-wrap input[type=checkbox]{margin:0;width:13px;height:13px;flex:0 0 auto;align-self:center;accent-color:#4fff8f}
 .bd-output .bd-out-source-wrap label span,.bd-output .bd-out-preface-wrap label span{line-height:1.2;display:inline-block}
 .bd-split{display:block;width:100%;box-sizing:border-box;min-width:0}
+.bd-video-group-bar{margin:0 0 8px}
 .bd-r2v-common-hint{margin:0 0 8px;font-size:11px;line-height:1.4;color:#9ab;opacity:.95}
 .bd-panel.bd-r2v-common-panel{border:1px solid #3a4a5a;background:linear-gradient(180deg,#1a222c 0%,#151a20 100%)}
 .bd-r2v-common-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px}
@@ -1081,9 +1084,12 @@ const STYLES = `
 .bd-r2v-common-titles b{margin:0}
 .bd-r2v-common-status{display:none;font-size:11px;color:#8a9}
 .bd-r2v-common-status.on{color:#8fdfb0}
-.bd-panel.bd-r2v-common-panel .bd-r2v-common-status{display:inline}
 .bd-r2v-common-actions{display:none;align-items:center;gap:8px;flex:0 0 auto}
-.bd-panel.bd-r2v-common-panel .bd-r2v-common-actions{display:flex}
+.bd-batch-common-slot{margin-left:auto;display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:0 1 auto;min-width:0}
+.bd-batch-common-slot.hidden{display:none!important}
+.bd-batch-common-slot .bd-r2v-common-status{display:inline;white-space:nowrap}
+.bd-batch-common-slot .bd-r2v-common-actions{display:flex}
+.bd-batch>[data-r="global-panel"]{flex:0 1 auto;min-height:0;max-height:42%;overflow:auto;margin:0 0 8px}
 .bd-btn.bd-r2v-common-toggle,.bd-btn.bd-r2v-common-fold{display:inline-block;flex:0 0 auto;padding:5px 10px;font-size:12px;border-radius:6px;border:1px solid #4a6a8a;background:#243040;color:#d8e6f5;cursor:pointer}
 .bd-btn.bd-r2v-common-fold{border-color:#3a4a5a;background:#1c2430}
 .bd-btn.bd-r2v-common-toggle:hover,.bd-btn.bd-r2v-common-fold:hover{border-color:#6a9aca;background:#2c3c50}
@@ -1569,8 +1575,8 @@ function getDirectorUiHeight(editor) {
         // t2v / i2v / r2v show the main timeline track above batch cards.
         if (editor?.usesBatchTimeline?.()) {
             const track = editor?.canvasHeight || RULER_H + SEG_LABEL_H + TRACK_H;
-            // Collapsed「公共参数」bar (t2v / r2v). Expanded body scrolls inside the split.
-            const commonBar = editor?.usesSharedParamsPanel?.() ? 56 : 0;
+            // Expanded「公共参数」lives inside the batch column; collapsed adds no bar.
+            const commonBar = 0;
             // toolbar + track + batch panel (batchH already includes list max-height cap)
             return batchH + track + 100 + commonBar;
         }
@@ -2845,22 +2851,21 @@ class MiniMaxH3DirectorEditor {
                     <button type="button" class="bd-btn bd-btn-primary hidden" data-a="r2v-add-group" data-i18n="toolbar.addRefGroup" data-i18n-title="tooltip.addRefGroup">添加素材组</button>
                     <button type="button" class="bd-btn bd-btn-primary" data-a="video" data-i18n="toolbar.uploadVideo">上传视频</button>
                     <button type="button" class="bd-btn" data-a="video-existing" data-i18n="mediaPicker.pickExistingVideo" data-i18n-title="mediaPicker.pickExistingHint">选已有视频</button>
-                    <button type="button" class="bd-btn bd-btn-primary hidden" data-a="fl2v-add-shot" data-i18n="toolbar.addShot" data-i18n-title="tooltip.addShot">添加一组</button>
                     <button type="button" class="bd-btn" data-a="video-append" data-i18n="toolbar.appendVideo" data-i18n-title="tooltip.appendVideo">追加视频</button>
                     <button type="button" class="bd-btn" data-a="split" data-i18n="toolbar.split">+ 分割</button>
                     <input type="number" class="bd-num" data-r="equal-n" min="2" max="64" value="2" data-i18n-title="tooltip.equalSplitN">
                     <button type="button" class="bd-btn" data-a="equal" data-i18n="toolbar.equalSplit">均分</button>
                     <button type="button" class="bd-btn" data-a="smart-split" data-i18n="toolbar.smartSplit" data-i18n-title="tooltip.smartSplit">智能分割</button>
-                    <button type="button" class="bd-btn" data-a="run-select-toggle" data-i18n="toolbar.runSelect" data-i18n-title="tooltip.runSelect">选择运行</button>
-                    <label class="bd-run-select-all-wrap hidden" data-r="run-select-all-wrap" data-i18n-title="tooltip.runSelectAll">
-                        <input type="checkbox" data-r="run-select-all-cb">
-                        <span data-i18n="toolbar.selectAll">全选</span>
-                    </label>
                     <button type="button" class="bd-btn bd-btn-danger" data-a="del" data-i18n="toolbar.deleteSegment" data-i18n-title="tooltip.deleteSegment">删除片段</button>
                     <div class="bd-mode">
                         <button type="button" data-a="mode-global" class="active" data-i18n="toolbar.modeGlobal">全局模式</button>
                         <button type="button" data-a="mode-segment" data-i18n="toolbar.modeSegment">分段模式</button>
                     </div>
+                    <button type="button" class="bd-btn" data-a="run-select-toggle" data-i18n="toolbar.runSelect" data-i18n-title="tooltip.runSelect">选择运行</button>
+                    <label class="bd-run-select-all-wrap hidden" data-r="run-select-all-wrap" data-i18n-title="tooltip.runSelectAll">
+                        <input type="checkbox" data-r="run-select-all-cb">
+                        <span data-i18n="toolbar.selectAll">全选</span>
+                    </label>
                     <select class="bd-select" data-r="global-task" title="task_type"></select>
                     <span class="bd-video-tag" data-r="video-name" data-i18n="toolbar.noVideo">未上传视频</span>
                 </div>
@@ -3052,15 +3057,16 @@ class MiniMaxH3DirectorEditor {
         const bottom = document.createElement("div");
         bottom.className = "bd-split";
         bottom.innerHTML = `
+            <div class="bd-batch-toolbar bd-video-group-bar hidden" data-r="video-group-bar">
+                <button type="button" class="bd-btn" data-a="video-group-prev" data-i18n="toolbar.prevGroup" data-i18n-title="tooltip.prevGroup">上一组</button>
+                <button type="button" class="bd-btn" data-a="video-group-next" data-i18n="toolbar.nextGroup" data-i18n-title="tooltip.nextGroup">下一组</button>
+                <button type="button" class="bd-btn" data-a="video-duplicate" data-i18n="toolbar.duplicateGroup" data-i18n-title="tooltip.duplicateGroup">复制当前分组</button>
+                <button type="button" class="bd-btn bd-btn-danger" data-a="video-del" data-i18n="toolbar.deleteCurrentGroup" data-i18n-title="tooltip.deleteCurrentGroup">删除当前分组</button>
+            </div>
             <div class="bd-panel" data-r="global-panel">
                 <div class="bd-r2v-common-head" data-r="r2v-common-head">
                     <div class="bd-r2v-common-titles">
                         <b data-r="global-panel-title" data-i18n="panel.globalPromptAndRefs">全局提示词 & 参考图 (图片1–9)</b>
-                        <span class="bd-r2v-common-status" data-r="r2v-common-status" data-i18n="panel.r2vCommonOff">未启用 · 各组独立素材与提示词</span>
-                    </div>
-                    <div class="bd-r2v-common-actions">
-                        <button type="button" class="bd-btn bd-r2v-common-fold hidden" data-r="r2v-common-fold" data-i18n="panel.r2vCommonCollapse">收起公共参数</button>
-                        <button type="button" class="bd-btn bd-r2v-common-toggle" data-r="r2v-common-toggle" data-i18n="panel.r2vCommonEnable">启用公共参数</button>
                     </div>
                 </div>
                 <div class="bd-r2v-common-body" data-r="r2v-common-body">
@@ -3283,6 +3289,7 @@ class MiniMaxH3DirectorEditor {
         this.r2vCommonHead = this.root.querySelector('[data-r="r2v-common-head"]');
         this.r2vCommonBody = this.root.querySelector('[data-r="r2v-common-body"]');
         this.r2vCommonHint = this.root.querySelector('[data-r="r2v-common-hint"]');
+        this.batchCommonSlot = this.root.querySelector('[data-r="batch-common-slot"]');
         this.r2vCommonStatus = this.root.querySelector('[data-r="r2v-common-status"]');
         this.r2vCommonFold = this.root.querySelector('[data-r="r2v-common-fold"]');
         this.r2vCommonToggle = this.root.querySelector('[data-r="r2v-common-toggle"]');
@@ -3404,6 +3411,10 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="video"]', () => this.pickVideoFile());
         bind('[data-a="video-existing"]', () => { void this.pickExistingVideoFile(); });
         bind('[data-a="fl2v-add-shot"]', () => openFl2vUpload(this));
+        bind('[data-a="fl2v-duplicate"]', () => duplicateFl2vShot(this));
+        bind('[data-a="fl2v-del"]', () => this.deleteSelectedSegment());
+        bind('[data-a="fl2v-group-prev"]', () => this.stepSelectedGroup(-1));
+        bind('[data-a="fl2v-group-next"]', () => this.stepSelectedGroup(1));
         bind('[data-a="r2v-add-group"]', () => addImageBatchGroup(this));
         bind('[data-a="video-append"]', () => this.pickAppendVideoFile());
         bind('[data-a="split"]', () => this.splitAtFrame(this.currentFrame));
@@ -3411,6 +3422,10 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="smart-split"]', () => { void this.smartSplit(); });
         bind('[data-a="del-split"]', () => this.deleteSelectedSplitPoint());
         bind('[data-a="run-select-toggle"]', () => this.toggleRunSelectMode());
+        bind('[data-a="video-duplicate"]', () => this.duplicateSelectedVideoSegment());
+        bind('[data-a="video-group-prev"]', () => this.stepSelectedGroup(-1));
+        bind('[data-a="video-group-next"]', () => this.stepSelectedGroup(1));
+        bind('[data-a="video-del"]', () => this.deleteSelectedSegment());
         bind('[data-a="del"]', () => this.deleteSelectedSegment());
         bind('[data-a="mode-global"]', () => this.setEditMode("global"));
         bind('[data-a="mode-segment"]', () => this.setEditMode("segment"));
@@ -4296,18 +4311,13 @@ class MiniMaxH3DirectorEditor {
         const n = this.getRunnableSegmentCount();
         const canRunSelect = this.supportsRunSelect();
         const enabled = this.isRunSelectEnabled() && canRunSelect;
-        // r2v, t2v, and mixed use the top toolbar button, immediately left of「删除选中组」.
-        // Other batch tasks keep「选择运行」on the card bar.
-        const taskKey = this.getTaskKey();
-        const useTopRunSelect = this.isR2vBatch() || taskKey === "t2v" || taskKey === "mixed";
-        const useBatchBar = this.isImageBatch() && canRunSelect && !useTopRunSelect;
+        // Every mode keeps「选择运行」on the top bar, immediately left of the task selector.
         this.btnRunSelectToggle?.classList.toggle("active", enabled);
         this.btnRunSelectToggle?.classList.toggle("bd-btn-run-select", true);
-        this.btnRunSelectToggle?.classList.toggle("hidden", !canRunSelect || useBatchBar);
-        this.batchRunSelectBtn?.classList.toggle("active", enabled);
-        this.batchRunSelectBtn?.classList.toggle("hidden", !useBatchBar);
-        this.runSelectAllWrap?.classList.toggle("hidden", !enabled || useBatchBar);
-        this.batchRunSelectAllWrap?.classList.toggle("hidden", !enabled || !useBatchBar);
+        this.btnRunSelectToggle?.classList.toggle("hidden", !canRunSelect);
+        this.batchRunSelectBtn?.classList.toggle("hidden", true);
+        this.runSelectAllWrap?.classList.toggle("hidden", !enabled);
+        this.batchRunSelectAllWrap?.classList.toggle("hidden", true);
         // Keep the chip hidden while a run is active — otherwise commit/sync
         // re-shows it on top of the green progress title.
         const running = !!this.runStatusEl?.classList.contains("active");
@@ -5070,9 +5080,13 @@ class MiniMaxH3DirectorEditor {
         this.updateStageVisibility();
         this.updateLiveSamplePanel();
         this.syncExternalGroupsTimeline();
-        // r2v / t2v / mixed keep bd-split visible so「公共参数」can sit above batch cards.
-        const showCommonSplit = isR2v || (isBatch && (taskKey === "t2v" || taskKey === "mixed"));
-        this.root.querySelector(".bd-split")?.classList.toggle("hidden", (isBatch && !showCommonSplit) || isFl2v);
+        // Shared params render under the batch toolbar, so the split row stays hidden in batch.
+        const showVideoDup = isVideoEditTaskKey(taskKey);
+        this.root.querySelector('[data-r="video-group-bar"]')?.classList.toggle("hidden", !showVideoDup);
+        const videoDup = this.root.querySelector('[data-a="video-duplicate"]');
+        if (videoDup) videoDup.disabled = !showVideoDup || !this.hasVideo?.();
+        this.syncGroupNavButtons();
+        this.root.querySelector(".bd-split")?.classList.toggle("hidden", isBatch || isFl2v);
         this.batchPanel?.classList.toggle("hidden", !isBatch);
         this.root?.classList.toggle("bd-batch-fill", !!isBatch);
         this.fl2vUi?.root?.classList.toggle("hidden", !isFl2v);
@@ -5123,6 +5137,9 @@ class MiniMaxH3DirectorEditor {
             }
             updateFl2vToolbarBtns(this);
             updateR2vToolbarBtns(this);
+        }
+        if (showVideoDup || isFl2v || isBatch) {
+            this.root.querySelector('.bd-actions [data-a="del"]')?.classList.add("hidden");
         }
 
         // Side ref panels stay hidden for most batch modes (refs live in cards).
@@ -6152,6 +6169,28 @@ class MiniMaxH3DirectorEditor {
         return this.isGlobalMode() || this.isR2vCommonEnabled();
     }
 
+    /** Shared params sit under the group toolbar, and stay hidden until expanded. */
+    _placeCommonParamsPanel(shared, bodyHidden) {
+        const panel = this.globalPanel;
+        if (!panel) return;
+        const split = this.root.querySelector(".bd-split");
+        const batch = this.batchPanel;
+        const notice = batch?.querySelector('[data-r="batch-i2v-notice"]');
+        if (shared && batch && notice) {
+            if (panel.parentElement !== batch || panel.nextElementSibling !== notice) {
+                batch.insertBefore(panel, notice);
+            }
+            panel.classList.toggle("hidden", !!bodyHidden);
+            return;
+        }
+        if (split && panel.parentElement !== split) {
+            const seg = split.querySelector('[data-r="segment-panel"]');
+            if (seg) split.insertBefore(panel, seg);
+            else split.appendChild(panel);
+        }
+        panel.classList.remove("hidden");
+    }
+
     syncR2vCommonCollapse() {
         const shared = this.usesSharedParamsPanel();
         const r2v = this.usesR2vCommonPanel();
@@ -6162,6 +6201,8 @@ class MiniMaxH3DirectorEditor {
         const bodyHidden = mixed ? shellFolded : (!on || folded);
         const promptOnly = shared && !r2v;
         const copy = promptOnly ? "t2v" : "r2v";
+        this.batchCommonSlot?.classList.toggle("hidden", !shared);
+        this._placeCommonParamsPanel(shared, bodyHidden);
         this.globalPanel?.classList.toggle("bd-r2v-common-panel", shared);
         this.globalPanel?.classList.toggle("bd-t2v-common-panel", promptOnly);
         this.globalPanel?.classList.toggle("bd-mixed-unified", mixed && shared);
@@ -6205,9 +6246,7 @@ class MiniMaxH3DirectorEditor {
                 this.r2vCommonStatus.removeAttribute("data-i18n");
             } else {
                 this.r2vCommonStatus.classList.toggle("on", on);
-                const skey = !on
-                    ? `panel.${copy}CommonOff`
-                    : (folded ? `panel.${copy}CommonOnCollapsed` : `panel.${copy}CommonOn`);
+                const skey = on ? "panel.commonEnabled" : `panel.${copy}CommonOff`;
                 this.r2vCommonStatus.textContent = t(skey);
                 this.r2vCommonStatus.setAttribute("data-i18n", skey);
             }
@@ -9985,6 +10024,162 @@ class MiniMaxH3DirectorEditor {
                 btn.textContent = prevLabel || t("toolbar.smartSplit");
             }
         }
+    }
+
+    /** Enable 上一组 / 下一组 only when that neighbor exists. */
+    syncGroupNavButtons() {
+        const fl2v = !!this.isFl2vMode?.();
+        const batch = !!this.isImageBatch?.();
+        const video = isVideoEditTaskKey(this.getTaskKey?.());
+        let count = 0;
+        if (fl2v) count = this.timeline?.shots?.length || 0;
+        else if (batch || video) count = this.timeline?.segments?.length || 0;
+        const index = this.selectedIndex ?? 0;
+        const atStart = count < 2 || index <= 0;
+        const atEnd = count < 2 || index >= count - 1;
+        const videoBlocked = video && !this.hasVideo?.();
+        const apply = (sel, disabled) => {
+            const btn = this.root?.querySelector(sel);
+            if (!btn || btn.classList.contains("hidden")) return;
+            btn.disabled = !!disabled;
+        };
+        apply('[data-a="batch-group-prev"]', atStart);
+        apply('[data-a="batch-group-next"]', atEnd);
+        apply('[data-a="fl2v-group-prev"]', atStart);
+        apply('[data-a="fl2v-group-next"]', atEnd);
+        apply('[data-a="video-group-prev"]', videoBlocked || atStart);
+        apply('[data-a="video-group-next"]', videoBlocked || atEnd);
+    }
+
+    _scrollFrameIntoView(frame) {
+        const vp = this.viewport;
+        if (!vp) return;
+        const x = this.frameToX(frame, this.getLayoutWidth());
+        if (!Number.isFinite(x)) return;
+        const pad = 24;
+        const left = vp.scrollLeft;
+        const right = left + vp.clientWidth;
+        if (x < left + pad || x > right - pad) {
+            vp.scrollLeft = Math.max(0, x - vp.clientWidth / 3);
+        }
+    }
+
+    /** Move the timeline highlight and playhead onto the selected group. */
+    _revealSelectedTimelineGroup() {
+        const seg = (this.timeline?.segments || [])[this.selectedIndex];
+        if (!seg) {
+            this.scheduleRender?.();
+            return;
+        }
+        const start = Math.max(0, parseInt(seg.start, 10) || 0);
+        const len = Math.max(1, parseInt(seg.length ?? seg.frameCount, 10) || 1);
+        const inside = this.currentFrame >= start && this.currentFrame < start + len;
+        if (!inside) this.seekToFrame(start);
+        else this.scheduleRender?.();
+        this._scrollFrameIntoView(inside ? this.currentFrame : start);
+    }
+
+    /** Step the current group in t2v / i2v / r2v / mixed, fl2v, v2v, and rv2v. */
+    stepSelectedGroup(delta) {
+        const step = delta < 0 ? -1 : 1;
+        if (this.isFl2vMode?.()) {
+            const shots = this.timeline?.shots || [];
+            if (shots.length < 2) return;
+            const cur = clamp(this.selectedIndex ?? 0, 0, shots.length - 1);
+            const next = clamp(cur + step, 0, shots.length - 1);
+            if (next === cur) return;
+            this.selectedIndex = next;
+            updateFl2vDetailUI(this);
+            this.updateVideoNameLabel?.();
+            this.fl2vUi?.shotsEl?.querySelector?.(".bd-fl2v-shot.selected")
+                ?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+            this._revealSelectedTimelineGroup();
+            this.syncGroupNavButtons();
+            return;
+        }
+        if (this.isImageBatch?.()) {
+            selectBatchGroup(this, (this.selectedIndex ?? 0) + step);
+            this._revealSelectedTimelineGroup();
+            return;
+        }
+        if (!isVideoEditTaskKey(this.getTaskKey?.()) || !this.hasVideo?.()) return;
+        const segs = this.timeline.segments || [];
+        if (segs.length < 2) return;
+        const cur = clamp(this.selectedIndex ?? 0, 0, segs.length - 1);
+        const next = clamp(cur + step, 0, segs.length - 1);
+        if (next === cur) return;
+        this._flushPromptTokenEditors?.();
+        if (!this.isGlobalMode() && this.segPrompt && segs[cur]) {
+            segs[cur].prompt = this.segPrompt.value || "";
+        }
+        const start = Math.max(0, parseInt(segs[next].start, 10) || 0);
+        this.seekToFrame(start, { fromUi: true });
+        this._scrollFrameIntoView(start);
+        this.syncGroupNavButtons();
+    }
+
+    /** v2v / rv2v: copy the selected range, its prompt, and its refs, inserted after it. */
+    duplicateSelectedVideoSegment() {
+        if (!isVideoEditTaskKey(this.getTaskKey())) return;
+        if (!this.hasVideo?.()) return;
+        this._flushPromptTokenEditors?.();
+        const segs = this.timeline.segments || [];
+        const index = clamp(this.selectedIndex ?? 0, 0, Math.max(0, segs.length - 1));
+        const src = segs[index];
+        if (!src) return;
+        if (!this.isGlobalMode() && this.segPrompt) src.prompt = this.segPrompt.value || "";
+        const start = Math.max(0, parseInt(src.start, 10) || 0);
+        const len = Math.max(0, parseInt(src.length ?? src.frameCount, 10) || 0);
+        if (len < 1) return;
+        if (!this.getFrameMap().length && this.getTotalFrames() > 0) this.materializeFrameMap();
+        const map = [...this.getFrameMap()];
+        if (start + len > map.length) return;
+        const slice = map.slice(start, start + len).map((entry) => (
+            entry && typeof entry === "object" ? { ...entry } : entry
+        ));
+        const frameAt = start + len;
+        map.splice(frameAt, 0, ...slice);
+        this.setFrameMap(map);
+        this._syncPrimaryVideoFromClips(map);
+        const copy = JSON.parse(JSON.stringify(src));
+        copy.id = uid();
+        copy.start = frameAt;
+        copy.length = len;
+        copy.frameCount = len;
+        delete copy.previewB64;
+        delete copy.previewFrames;
+        delete copy.previewMime;
+        delete copy.imageB64;
+        for (const seg of segs) {
+            if (seg !== src && (parseInt(seg.start, 10) || 0) >= frameAt) {
+                seg.start = (parseInt(seg.start, 10) || 0) + len;
+            }
+        }
+        segs.splice(index + 1, 0, copy);
+        if (Array.isArray(this.timeline.runSelection)) {
+            const sourceOn = this.timeline.runSelection.includes(index);
+            this.timeline.runSelection = this.timeline.runSelection.map((i) => (i >= index + 1 ? i + 1 : i));
+            if (this.timeline.runSelectEnabled && sourceOn) {
+                this.timeline.runSelection.push(index + 1);
+                this.timeline.runSelection.sort((a, b) => a - b);
+            }
+        }
+        this.selectedIndex = index + 1;
+        this.timeline.totalFrames = map.length;
+        if (this.totalFramesWidget) this.totalFramesWidget.value = map.length;
+        this.currentFrame = clamp(frameAt, 0, Math.max(0, map.length - 1));
+        if (this.seekBar) {
+            this.seekBar.max = Math.max(0, map.length - 1);
+            this.seekBar.value = this.currentFrame;
+        }
+        this.updateSelectionUI();
+        this.updateVideoNameLabel();
+        this._prefetchSegmentThumbs(0, Math.min(map.length, THUMB_PREFETCH_BATCH * 4));
+        this._syncStagePreview?.(this.currentFrame, { force: true });
+        this.scheduleRender();
+        this.commit(false, { syncTimeline: true });
+        this.updateRunSelectUI();
+        this.updateDomWidgetHeight?.();
     }
 
     deleteSelectedSegment() {
