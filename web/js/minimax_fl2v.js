@@ -791,8 +791,8 @@ export function mountFl2vPanel(parent) {
             <button type="button" class="bd-btn bd-btn-primary" data-a="fl2v-add-shot" data-i18n="toolbar.addShot" data-i18n-title="tooltip.addShot">添加一组</button>
             <button type="button" class="bd-btn" data-a="fl2v-group-prev" data-i18n="toolbar.prevGroup" data-i18n-title="tooltip.prevGroup">上一组</button>
             <button type="button" class="bd-btn" data-a="fl2v-group-next" data-i18n="toolbar.nextGroup" data-i18n-title="tooltip.nextGroup">下一组</button>
-            <button type="button" class="bd-btn" data-a="fl2v-duplicate" data-i18n="toolbar.duplicateSelected" data-i18n-title="tooltip.duplicateGroup">复制选中组</button>
-            <button type="button" class="bd-btn bd-btn-danger" data-a="fl2v-del" data-i18n="toolbar.deleteSelectedGroup" data-i18n-title="tooltip.deleteSelectedFl2vGroup">删除选中组</button>
+            <button type="button" class="bd-btn" data-a="fl2v-duplicate" data-i18n="toolbar.duplicateGroup" data-i18n-title="tooltip.duplicateGroup">复制当前分组</button>
+            <button type="button" class="bd-btn bd-btn-danger" data-a="fl2v-del" data-i18n="toolbar.deleteCurrentGroup" data-i18n-title="tooltip.deleteCurrentGroup">删除当前分组</button>
             <span class="bd-fl2v-help">
                 <button type="button" class="bd-fl2v-help-btn" aria-label="怎么用">?</button>
                 <div class="bd-fl2v-help-pop" role="tooltip">
@@ -1679,7 +1679,7 @@ export function setFl2vToolbar(editor, enabled) {
     const externalLocked = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
     const del = editor.root?.querySelector('[data-a="del"]');
     if (del && enabled) {
-        // fl2v uses the button beside 复制选中组; keep the old top-toolbar delete hidden.
+        // fl2v uses the button beside 复制当前分组; keep the old top-toolbar delete hidden.
         del.classList.add("hidden");
         del.disabled = true;
     } else if (del && !externalLocked) {
