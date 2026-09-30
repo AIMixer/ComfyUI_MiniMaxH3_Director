@@ -1742,3 +1742,16 @@ def clear_segment_cache(node_id: str | None, kind: str = "final") -> int:
     if removed:
         log.info("Cleared %s cache for node %s (%d file(s)).", kind, node_id, removed)
     return removed
+
+
+def segment_cache_exists(node_id: str | None, seg: SegmentPlan) -> bool:
+    """True when this segment's frames are on disk, without loading them.
+
+    Either codec counts - raw writes ``seg_NNNN.pt``, ffv1 writes ``seg_NNNN.frames.mkv`` -
+    or offload would decide nothing is cached and quietly keep everything in RAM."""
+    if not node_id:
+        return False
+    root = _cache_root(node_id)
+    if root is None:
+        return False
+    return _frames_exist(root, int(seg.index), first_pass=False)

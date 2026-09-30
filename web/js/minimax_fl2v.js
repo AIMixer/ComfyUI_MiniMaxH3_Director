@@ -1276,7 +1276,8 @@ function renderFl2vShotCards(editor) {
             });
         }
         const loraSection = createLoraSection(editor, shot, () => editor.timeline.shots?.[i]);
-        for (const evt of ["pointerdown", "click"]) {
+        // mousedown/dragstart too: dragging a LoRA row must not start a drag of the whole shot card.
+        for (const evt of ["pointerdown", "mousedown", "click", "dragstart"]) {
             loraSection.addEventListener(evt, (e) => e.stopPropagation());
         }
         card.appendChild(loraSection);
