@@ -1,6 +1,7 @@
 /** Multi prompt-group UI for t2i / i2i / r2i / t2v / i2v / r2v (prompt batch mode). */
 
 import { api } from "../../scripts/api.js";
+import { createLoraSection } from "./minimax_segment_loras.js";
 import {
     DEFAULT_ASPECT_RATIO,
     DEFAULT_MEGAPIXELS,
@@ -186,7 +187,9 @@ export function rebaseR2vGroupSlotsForCommon(editor) {
     const vidOff = r2vCommonVideoOffset(editor);
     if (picOff <= 0 && audOff <= 0 && vidOff <= 0) return false;
     let changed = false;
+    const globalKey = resolveTaskKey(editor.getTaskKey?.() || "");
     for (const seg of editor.timeline?.segments || []) {
+        if (globalKey === "mixed" && resolveSegmentTaskKey(seg, globalKey) !== "r2v") continue;
         if (Array.isArray(seg.refs) && seg.refs.length) {
             const r = _rebaseIndexedMedia(seg.refs, _refHasImage, picOff, R2V_PICTURE_SLOTS);
             if (r.changed) {
@@ -713,8 +716,19 @@ export function mountImageBatchPanel(root) {
                 <input type="checkbox" data-r="batch-run-all-cb">
                 <span data-i18n="toolbar.selectAll">全选</span>
             </label>
+            <button type="button" class="bd-btn" data-a="batch-group-prev" data-i18n="toolbar.prevGroup" data-i18n-title="tooltip.prevGroup">上一组</button>
+            <button type="button" class="bd-btn" data-a="batch-group-next" data-i18n="toolbar.nextGroup" data-i18n-title="tooltip.nextGroup">下一组</button>
+            <button type="button" class="bd-btn" data-a="batch-duplicate" data-i18n="toolbar.duplicateGroup" data-i18n-title="tooltip.duplicateGroup">复制当前分组</button>
+            <button type="button" class="bd-btn bd-btn-danger" data-a="batch-del" data-i18n="toolbar.deleteCurrentGroup" data-i18n-title="tooltip.deleteCurrentGroup">删除当前分组</button>
             <button type="button" class="bd-btn" data-a="batch-detail-mode" data-i18n="toolbar.batchDetailSolo" data-i18n-title="tooltip.batchDetailSolo">单显模式</button>
             <span class="bd-meta" data-r="batch-hint" data-i18n="batch.hint.defaultImage">每组生成 1 张图片</span>
+            <div class="bd-batch-common-slot hidden" data-r="batch-common-slot">
+                <span class="bd-r2v-common-status" data-r="r2v-common-status" data-i18n="panel.commonDisabled">公共参数未启用</span>
+                <div class="bd-r2v-common-actions">
+                    <button type="button" class="bd-btn bd-r2v-common-fold hidden" data-r="r2v-common-fold" data-i18n="panel.r2vCommonCollapse">收起公共参数</button>
+                    <button type="button" class="bd-btn bd-r2v-common-toggle" data-r="r2v-common-toggle" data-i18n="panel.r2vCommonEnable">启用公共参数</button>
+                </div>
+            </div>
         </div>
         <div class="bd-batch-i2v-notice" data-r="batch-i2v-notice"></div>
         <div class="bd-batch-picker" data-r="batch-picker"></div>
@@ -908,6 +922,70 @@ export function normalizeImageBatchSegments(editor) {
     }
     const out = editor.timeline.segments;
     editor.timeline.totalFrames = start || out[0]?.frameCount || defFc;
+}
+
+function cloneImageRef(raw) {
+    const ref = normalizeImageRef(raw);
+    if (!ref) return undefined;
+    const fileName = raw && typeof raw === "object" ? (raw.fileName || "") : "";
+    return fileName ? { ...ref, fileName } : ref;
+}
+
+/** Copy the selected group (prompt, duration, media) and insert it right after. */
+export function duplicateImageBatchGroup(editor) {
+    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
+    flushBatchPromptInputs(editor);
+    flushBatchDurationInputs(editor);
+    const segs = editor.timeline?.segments || [];
+    if (!segs.length) return;
+    const index = clamp(editor.selectedIndex ?? 0, 0, segs.length - 1);
+    const src = segs[index];
+    if (!src) return;
+    const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value || "");
+    const segKey = taskKey === "mixed" ? resolveSegmentTaskKey(src, taskKey) : taskKey;
+    const created = newBatchSegment({
+        frameRate: batchFrameRate(editor),
+        durationSec: src.durationSec,
+        prompt: src.prompt || "",
+        negativePrompt: src.negativePrompt || "",
+        taskType: taskKey === "mixed" ? segKey : (src.taskType || ""),
+        refs: cloneRefs(src.refs),
+        refAudios: cloneRefs(src.refAudios || src.ref_audios),
+        refVideos: cloneRefs(src.refVideos || src.ref_videos),
+        genImage: src.genImage?.imageFile
+            ? { imageFile: src.genImage.imageFile || "", fileName: src.genImage.fileName || "" }
+            : (cloneImageRef(src.startImage) || { imageFile: "" }),
+        startImage: cloneImageRef(src.startImage),
+        endImage: cloneImageRef(src.endImage),
+        referenceVideo: src.referenceVideo?.videoFile || src.referenceVideo?.fileName
+            ? { ...src.referenceVideo }
+            : undefined,
+        continuityFromPrev: src.continuityFromPrev,
+        refImageSize: src.refImageSize,
+        loras: Array.isArray(src.loras) ? JSON.parse(JSON.stringify(src.loras)) : [],
+        previewB64: "",
+        previewFrames: [],
+    });
+    // Keep duration even when the source group has no taskType of its own.
+    if (!created.durationSec && src.durationSec) created.durationSec = src.durationSec;
+    const insertAt = index + 1;
+    segs.splice(insertAt, 0, created);
+    if (Array.isArray(editor.timeline.runSelection)) {
+        const sourceOn = editor.timeline.runSelection.includes(index);
+        editor.timeline.runSelection = editor.timeline.runSelection.map((i) => (i >= insertAt ? i + 1 : i));
+        if (editor.timeline.runSelectEnabled && sourceOn) {
+            editor.timeline.runSelection.push(insertAt);
+            editor.timeline.runSelection.sort((a, b) => a - b);
+        }
+    }
+    normalizeImageBatchSegments(editor);
+    editor.selectedIndex = insertAt;
+    editor.renderImageBatchGroups();
+    editor.commit?.();
+    editor.updateVideoNameLabel?.();
+    editor.updateDomWidgetHeight?.();
+    editor.scheduleRender?.();
+    editor.updateRunSelectUI?.();
 }
 
 export function addImageBatchGroup(editor) {
@@ -2341,10 +2419,14 @@ export function toggleBatchDetailMode(editor) {
 
 export function selectBatchGroup(editor, index) {
     const segs = editor?.timeline?.segments || [];
-    if (!segs.length) return;
+    if (!segs.length) {
+        editor.syncGroupNavButtons?.();
+        return;
+    }
     const next = Math.max(0, Math.min(segs.length - 1, Number(index) || 0));
     if (next === editor.selectedIndex) {
         editor._syncR2vCardSelection?.();
+        editor.syncGroupNavButtons?.();
         return;
     }
     flushBatchPromptInputs(editor);
@@ -2354,9 +2436,12 @@ export function selectBatchGroup(editor, index) {
         editor.renderImageBatchGroups?.();
     } else {
         editor._syncR2vCardSelection?.();
-        editor.scheduleRender?.();
     }
+    editor.scheduleRender?.();
+    editor.batchList?.querySelector?.(`.bd-batch-card[data-batch-index="${next}"]`)
+        ?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
     editor.updateVideoNameLabel?.();
+    editor.syncGroupNavButtons?.();
 }
 
 function batchCardEl(editor, segmentIndex) {
@@ -2481,12 +2566,23 @@ export function renderImageBatchGroups(editor) {
     }
     const addBtn = editor.batchPanel?.querySelector('[data-a="batch-add"]');
     if (addBtn) {
-        addBtn.textContent = t(key === "r2v" ? "batch.addRefGroup" : "batch.addPromptGroup");
-        addBtn.setAttribute("data-i18n", key === "r2v" ? "batch.addRefGroup" : "batch.addPromptGroup");
-        // r2v: add from toolbar (left of task select), like fl2v.
+        addBtn.textContent = t(key === "r2v" ? "toolbar.addRefGroup" : "batch.addPromptGroup");
+        addBtn.setAttribute("data-i18n", key === "r2v" ? "toolbar.addRefGroup" : "batch.addPromptGroup");
+        if (key === "r2v") addBtn.title = t("tooltip.addRefGroup");
         // External groups: never add UI cards (graph is source of truth).
-        addBtn.classList.toggle("hidden", key === "r2v" || externalLocked);
+        addBtn.classList.toggle("hidden", externalLocked);
         addBtn.disabled = externalLocked;
+    }
+    const dupBtn = editor.batchPanel?.querySelector('[data-a="batch-duplicate"]');
+    if (dupBtn) {
+        dupBtn.classList.toggle("hidden", externalLocked);
+        dupBtn.disabled = externalLocked;
+    }
+    const delBtn = editor.batchPanel?.querySelector('[data-a="batch-del"]');
+    if (delBtn) {
+        const canDelete = !externalLocked && (editor.timeline?.segments?.length || 0) > 1;
+        delBtn.classList.toggle("hidden", externalLocked);
+        delBtn.disabled = !canDelete;
     }
 
     teardownPromptImageMentions(list);
@@ -2508,6 +2604,7 @@ export function renderImageBatchGroups(editor) {
     updateR2vToolbarBtns(editor);
     refreshPromptTokenEditors(list);
     editor.updateDomWidgetHeight?.();
+    editor.syncGroupNavButtons?.();
 }
 
 function appendBatchCard(list, editor, seg, index, ctx) {
@@ -2707,19 +2804,6 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             }
             meta.appendChild(secRow);
         }
-        if (!externalLocked) {
-            const del = document.createElement("button");
-            del.type = "button";
-            del.className = "bd-batch-del";
-            del.textContent = t("batch.delete");
-            del.disabled = editor.timeline.segments.length <= 1;
-            del.onclick = (e) => {
-                e.stopPropagation();
-                const liveIdx = (editor.timeline.segments || []).findIndex((s) => s?.id && s.id === seg.id);
-                deleteImageBatchGroup(editor, liveIdx >= 0 ? liveIdx : index);
-            };
-            meta.appendChild(del);
-        }
         head.appendChild(meta);
         card.appendChild(head);
 
@@ -2857,6 +2941,10 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             card.appendChild(prompts);
             card.appendChild(preview);
         }
+        card.appendChild(createLoraSection(editor, seg, () => {
+            const segs = editor.timeline?.segments || [];
+            return (seg?.id && segs.find((s) => s?.id === seg.id)) || segs[index] || seg;
+        }));
 
         list.appendChild(card);
 }
@@ -2929,6 +3017,22 @@ export function bindImageBatchEvents(editor) {
     editor.batchAddBtn?.addEventListener("click", (e) => {
         e.stopPropagation();
         addImageBatchGroup(editor);
+    });
+    editor.batchPanel?.querySelector('[data-a="batch-duplicate"]')?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        duplicateImageBatchGroup(editor);
+    });
+    editor.batchPanel?.querySelector('[data-a="batch-group-prev"]')?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        editor.stepSelectedGroup?.(-1);
+    });
+    editor.batchPanel?.querySelector('[data-a="batch-group-next"]')?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        editor.stepSelectedGroup?.(1);
+    });
+    editor.batchPanel?.querySelector('[data-a="batch-del"]')?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        editor.deleteSelectedSegment?.();
     });
 }
 
@@ -3191,11 +3295,15 @@ export function syncBatchPanelFillHeight(editor, opts = {}) {
         const batchToolbar = panel.querySelector?.(".bd-batch-toolbar");
         const notice = panel.querySelector?.(".bd-batch-i2v-notice");
         const picker = editor.batchPicker;
+        const commonPanel = panel.querySelector?.(':scope > [data-r="global-panel"]');
+        const commonH = commonPanel && !commonPanel.classList.contains("hidden")
+            ? (commonPanel.offsetHeight + 8)
+            : 0;
         const noticeH = notice?.classList?.contains("visible") ? (notice.offsetHeight + 8) : 0;
         const pickerH = picker?.classList?.contains("visible") ? (picker.offsetHeight + 8) : 0;
         const listH = Math.max(
             0,
-            batchH - (batchToolbar?.offsetHeight || 0) - noticeH - pickerH - 10,
+            batchH - (batchToolbar?.offsetHeight || 0) - noticeH - pickerH - commonH - 10,
         );
         list.style.flex = "1 1 0";
         list.style.minHeight = "0";
@@ -3294,53 +3402,56 @@ export function setR2vToolbar(editor, enabled) {
     editor.root?.querySelector(".bd-mode")?.classList.toggle("hidden", enabled);
 
     const externalLocked = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
-    const del = editor.root?.querySelector('[data-a="del"]');
-    if (del) {
-        if (externalLocked) {
-            del.classList.add("hidden");
-            del.disabled = true;
-        } else {
-            const deleteDisabled = enabled && (editor.timeline?.segments?.length || 0) <= 1;
-            del.disabled = deleteDisabled;
-            del.classList.toggle("bd-disabled", deleteDisabled);
-            del.classList.remove("hidden");
-            del.textContent = enabled ? t("toolbar.deleteSelectedGroup") : t("toolbar.deleteSegment");
-            del.setAttribute("data-i18n", enabled ? "toolbar.deleteSelectedGroup" : "toolbar.deleteSegment");
-            del.setAttribute("data-i18n-title", enabled ? "tooltip.deleteSelectedR2vGroup" : "tooltip.deleteSegment");
-            del.title = enabled
-                ? t("tooltip.deleteSelectedR2vGroup")
-                : t("tooltip.deleteSegment");
-        }
+    const del = editor.root?.querySelector('.bd-actions [data-a="del"]');
+    if (del && enabled) {
+        del.classList.add("hidden");
+        del.disabled = true;
+    } else if (del && !externalLocked) {
+        del.disabled = false;
+        del.classList.remove("bd-disabled", "hidden");
+        del.textContent = t("toolbar.deleteSegment");
+        del.setAttribute("data-i18n", "toolbar.deleteSegment");
+        del.setAttribute("data-i18n-title", "tooltip.deleteSegment");
+        del.title = t("tooltip.deleteSegment");
+    } else if (del) {
+        del.classList.add("hidden");
+        del.disabled = true;
     }
     const addBtn = editor.root?.querySelector('[data-a="r2v-add-group"]');
     if (addBtn) {
-        addBtn.classList.toggle("hidden", !enabled || externalLocked);
-        addBtn.disabled = !enabled || externalLocked;
+        addBtn.classList.add("hidden");
+        addBtn.disabled = true;
     }
-    const batchAdd = editor.batchPanel?.querySelector('[data-a="batch-add"]');
-    if (batchAdd) batchAdd.classList.toggle("hidden", enabled || externalLocked);
+    if (enabled) {
+        const batchAdd = editor.batchPanel?.querySelector('[data-a="batch-add"]');
+        if (batchAdd) {
+            batchAdd.classList.toggle("hidden", externalLocked);
+            batchAdd.disabled = externalLocked;
+            batchAdd.textContent = t("toolbar.addRefGroup");
+            batchAdd.setAttribute("data-i18n", "toolbar.addRefGroup");
+            batchAdd.title = t("tooltip.addRefGroup");
+        }
+    }
     updateR2vToolbarBtns(editor);
 }
 
 export function updateR2vToolbarBtns(editor) {
     const addBtn = editor?.root?.querySelector?.('[data-a="r2v-add-group"]');
-    const externalLocked = !!(editor?.hasExternalI2vGroups?.() || editor?.hasExternalR2vGroups?.());
-    const isR2v = !!editor?.isR2vBatch?.();
-    const show = isR2v && !externalLocked;
     if (addBtn) {
-        addBtn.classList.toggle("hidden", !show);
-        addBtn.disabled = !show;
+        addBtn.classList.add("hidden");
+        addBtn.disabled = true;
     }
+    const isR2v = !!editor?.isR2vBatch?.();
     if (!isR2v) return;
-
-    const del = editor?.root?.querySelector?.('[data-a="del"]');
-    if (!del) return;
-    const canDelete = !externalLocked && (editor.timeline?.segments?.length || 0) > 1;
-    del.classList.toggle("hidden", externalLocked);
-    del.disabled = !canDelete;
-    del.classList.toggle("bd-disabled", !canDelete);
-    del.textContent = t("toolbar.deleteSelectedGroup");
-    del.setAttribute("data-i18n", "toolbar.deleteSelectedGroup");
-    del.setAttribute("data-i18n-title", "tooltip.deleteSelectedR2vGroup");
-    del.title = t("tooltip.deleteSelectedR2vGroup");
+    const externalLocked = !!(editor?.hasExternalI2vGroups?.() || editor?.hasExternalR2vGroups?.());
+    const batchAdd = editor?.batchPanel?.querySelector?.('[data-a="batch-add"]');
+    if (batchAdd) {
+        batchAdd.classList.toggle("hidden", externalLocked);
+        batchAdd.disabled = externalLocked;
+    }
+    const del = editor?.root?.querySelector?.('.bd-actions [data-a="del"]');
+    if (del) {
+        del.classList.add("hidden");
+        del.disabled = true;
+    }
 }

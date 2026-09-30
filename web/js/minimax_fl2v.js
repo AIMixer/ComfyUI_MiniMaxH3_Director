@@ -5,6 +5,7 @@
  */
 
 import { api } from "../../scripts/api.js";
+import { createLoraSection, normalizeLoraRows } from "./minimax_segment_loras.js";
 import {
     defaultDurationSec,
     defaultFrameCount,
@@ -24,8 +25,13 @@ import { t } from "./minimax_i18n.js";
 
 export const FL2V_STYLES = `
 .bd-fl2v-detail-wrap{width:100%;box-sizing:border-box;display:flex;flex-direction:column;gap:8px}
-.bd-fl2v-hint{color:#aaa;font-size:11px;line-height:1.45;background:#181818;border:1px solid #333;border-radius:6px;padding:8px 10px}
-.bd-fl2v-hint b{color:#4fff8f;font-weight:600}
+.bd-fl2v-group-bar{position:relative}
+.bd-fl2v-help{margin-left:auto;position:relative;flex:0 0 auto;display:inline-flex;align-items:center}
+.bd-fl2v-help-btn{width:22px;height:22px;border-radius:50%;border:1px solid #3a3a3a;background:#1c1c1c;color:#8d8;font-size:13px;font-weight:700;line-height:1;cursor:help;padding:0;display:inline-flex;align-items:center;justify-content:center}
+.bd-fl2v-help-btn:hover,.bd-fl2v-help:focus-within .bd-fl2v-help-btn{border-color:#4fff8f;color:#4fff8f}
+.bd-fl2v-help-pop{display:none;position:absolute;right:0;top:calc(100% + 6px);width:min(560px,72vw);z-index:30;color:#aaa;font-size:11px;line-height:1.45;background:#181818;border:1px solid #333;border-radius:6px;padding:8px 10px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.bd-fl2v-help:hover .bd-fl2v-help-pop,.bd-fl2v-help:focus-within .bd-fl2v-help-pop{display:block}
+.bd-fl2v-help-pop b{color:#4fff8f;font-weight:600}
 .bd-fl2v-workbench{display:flex;flex-wrap:wrap;gap:12px;align-items:stretch;width:100%;box-sizing:border-box}
 .bd-fl2v-workbench .bd-live-sample{flex:1 1 320px;min-width:280px;max-width:560px;min-height:320px;display:flex;flex-direction:column}
 .bd-fl2v-workbench .bd-live-sample .bd-live-sample-body{flex:1 1 auto;min-height:260px;max-height:none}
@@ -193,6 +199,7 @@ export function newFl2vShot(overrides = {}) {
     if (overrides.continuityFromPrev != null || overrides.continuity_from_prev != null) {
         shot.continuityFromPrev = overrides.continuityFromPrev ?? overrides.continuity_from_prev;
     }
+    if (Array.isArray(overrides.loras)) shot.loras = overrides.loras;
     return shot;
 }
 
@@ -310,6 +317,7 @@ export function flattenFl2vShotsToSegments(editor) {
             prompt: shot.prompt || "",
             negativePrompt: shot.negativePrompt || DEFAULT_FL2V_NEGATIVE,
             continuityFromPrev: isSegmentContinuityFromPrev(shot, i),
+            loras: normalizeLoraRows(shot.loras),
             taskType: "",
             refs: [],
             // Do not mark start when end-only — canvas badges / thumbs key off these.
@@ -722,6 +730,45 @@ export function removeFl2vShot(editor, index) {
     if (!shots.length) editor.selectedIndex = 0;
 }
 
+/** Copy the selected fl2v shot and insert the clone immediately after it. */
+export function duplicateFl2vShot(editor) {
+    if (editor?.hasExternalI2vGroups?.() || editor?.hasExternalR2vGroups?.()) return;
+    flushFl2vPromptDraft(editor);
+    ensureFl2vTimeline(editor);
+    const shots = editor.timeline?.shots || [];
+    if (!shots.length) return;
+    const index = clamp(editor.selectedIndex ?? 0, 0, shots.length - 1);
+    const src = shots[index];
+    if (!src) return;
+    const shot = newFl2vShot({
+        durationSec: src.durationSec,
+        prompt: src.prompt || "",
+        negativePrompt: src.negativePrompt || "",
+        startImage: src.startImage,
+        endImage: src.endImage,
+        continuityFromPrev: src.continuityFromPrev,
+        loras: Array.isArray(src.loras) ? src.loras.map((row) => ({ ...row })) : [],
+    });
+    const insertAt = index + 1;
+    shots.splice(insertAt, 0, shot);
+    if (Array.isArray(editor.timeline.runSelection)) {
+        const sourceOn = editor.timeline.runSelection.includes(index);
+        editor.timeline.runSelection = editor.timeline.runSelection.map((i) => (i >= insertAt ? i + 1 : i));
+        if (editor.timeline.runSelectEnabled && sourceOn) {
+            editor.timeline.runSelection.push(insertAt);
+            editor.timeline.runSelection.sort((a, b) => a - b);
+        }
+    }
+    syncFl2vFromShots(editor);
+    editor.selectedIndex = insertAt;
+    updateFl2vDetailUI(editor);
+    editor.commit?.(false, { syncTimeline: true });
+    editor.updateVideoNameLabel?.();
+    editor.scheduleRender?.();
+    editor.updateDomWidgetHeight?.();
+    editor.updateRunSelectUI?.();
+}
+
 export function openFl2vUpload(editor) {
     addFl2vShot(editor);
     updateFl2vDetailUI(editor);
@@ -744,9 +791,19 @@ export function mountFl2vPanel(parent) {
     const wrap = document.createElement("div");
     wrap.className = "bd-fl2v-detail-wrap";
     wrap.innerHTML = `
-        <div class="bd-fl2v-hint" data-r="fl2v-hint">
-            <b data-i18n="panel.fl2v.howToTitle">怎么用</b>：
-            <span data-i18n-html="panel.fl2v.hint"></span>
+        <div class="bd-batch-toolbar bd-fl2v-group-bar">
+            <button type="button" class="bd-btn bd-btn-primary" data-a="fl2v-add-shot" data-i18n="toolbar.addShot" data-i18n-title="tooltip.addShot">添加一组</button>
+            <button type="button" class="bd-btn" data-a="fl2v-group-prev" data-i18n="toolbar.prevGroup" data-i18n-title="tooltip.prevGroup">上一组</button>
+            <button type="button" class="bd-btn" data-a="fl2v-group-next" data-i18n="toolbar.nextGroup" data-i18n-title="tooltip.nextGroup">下一组</button>
+            <button type="button" class="bd-btn" data-a="fl2v-duplicate" data-i18n="toolbar.duplicateGroup" data-i18n-title="tooltip.duplicateGroup">复制当前分组</button>
+            <button type="button" class="bd-btn bd-btn-danger" data-a="fl2v-del" data-i18n="toolbar.deleteCurrentGroup" data-i18n-title="tooltip.deleteCurrentGroup">删除当前分组</button>
+            <span class="bd-fl2v-help">
+                <button type="button" class="bd-fl2v-help-btn" aria-label="怎么用">?</button>
+                <div class="bd-fl2v-help-pop" role="tooltip">
+                    <b data-i18n="panel.fl2v.howToTitle">怎么用</b>：
+                    <span data-i18n-html="panel.fl2v.hint"></span>
+                </div>
+            </span>
         </div>
         <div class="bd-fl2v-workbench" data-r="fl2v-workbench">
             <div class="bd-fl2v-shots" data-r="fl2v-shots"></div>
@@ -763,7 +820,7 @@ export function mountFl2vPanel(parent) {
     if (hintBody) hintBody.innerHTML = t("panel.fl2v.hint");
     return {
         root: wrap,
-        hint: wrap.querySelector(".bd-fl2v-hint"),
+        hint: wrap.querySelector(".bd-fl2v-help-pop"),
         workbench: wrap.querySelector('[data-r="fl2v-workbench"]'),
         shotsEl: wrap.querySelector('[data-r="fl2v-shots"]'),
         detail: wrap.querySelector('[data-r="fl2v-detail"]'),
@@ -1218,6 +1275,11 @@ function renderFl2vShotCards(editor) {
                 e.stopPropagation();
             });
         }
+        const loraSection = createLoraSection(editor, shot, () => editor.timeline.shots?.[i]);
+        for (const evt of ["pointerdown", "click"]) {
+            loraSection.addEventListener(evt, (e) => e.stopPropagation());
+        }
+        card.appendChild(loraSection);
         bindFl2vShotCardDnD(editor, card, i);
         const pickBtn = card.querySelector('[data-a="fl2v-pick-existing"]');
         if (pickBtn) {
@@ -1553,6 +1615,7 @@ export function buildFl2vPayloadFields(editor) {
         prompt: s.prompt || "",
         negativePrompt: s.negativePrompt || DEFAULT_FL2V_NEGATIVE,
         continuityFromPrev: isSegmentContinuityFromPrev(s, i),
+        loras: normalizeLoraRows(s.loras),
         startImage: s.startImage
             ? {
                 imageFile: s.startImage.imageFile || "",
@@ -1582,6 +1645,7 @@ export function buildFl2vPayloadFields(editor) {
             prompt: s.prompt || "",
             negativePrompt: s.negativePrompt || DEFAULT_FL2V_NEGATIVE,
             continuityFromPrev: isSegmentContinuityFromPrev(s, i),
+            loras: normalizeLoraRows(s.loras),
             isStartFrame: !!(s.genImage?.imageFile || s.imageFile),
             isEndFrame: !!s.endImage?.imageFile,
             genImage: {
@@ -1625,19 +1689,20 @@ export function setFl2vToolbar(editor, enabled) {
     }
     const externalLocked = !!(editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.());
     const del = editor.root?.querySelector('[data-a="del"]');
-    if (del) {
-        if (externalLocked) {
-            del.classList.add("hidden");
-            del.disabled = true;
-        } else {
-            del.disabled = false;
-            del.classList.remove("bd-disabled", "hidden");
-            del.textContent = enabled ? t("toolbar.deleteSelectedGroup") : t("toolbar.deleteSegment");
-            del.title = enabled ? t("tooltip.deleteSelectedFl2vGroup") : t("tooltip.deleteSegment");
-            // Keep data-i18n in sync when locale refreshes static attrs later.
-            del.setAttribute("data-i18n", enabled ? "toolbar.deleteSelectedGroup" : "toolbar.deleteSegment");
-            del.setAttribute("data-i18n-title", enabled ? "tooltip.deleteSelectedFl2vGroup" : "tooltip.deleteSegment");
-        }
+    if (del && enabled) {
+        // fl2v uses the button beside 复制当前分组; keep the old top-toolbar delete hidden.
+        del.classList.add("hidden");
+        del.disabled = true;
+    } else if (del && !externalLocked) {
+        del.disabled = false;
+        del.classList.remove("bd-disabled", "hidden");
+        del.textContent = t("toolbar.deleteSegment");
+        del.title = t("tooltip.deleteSegment");
+        del.setAttribute("data-i18n", "toolbar.deleteSegment");
+        del.setAttribute("data-i18n-title", "tooltip.deleteSegment");
+    } else if (del) {
+        del.classList.add("hidden");
+        del.disabled = true;
     }
     for (const sel of ['[data-a="fl2v-insert-before"]', '[data-a="fl2v-insert-after"]', '[data-a="fl2v-replace"]']) {
         const btn = editor.root?.querySelector(sel);
@@ -1651,17 +1716,36 @@ export function setFl2vToolbar(editor, enabled) {
         addBtn.classList.toggle("hidden", !enabled || externalLocked);
         addBtn.disabled = !enabled || externalLocked;
     }
+    for (const sel of ['[data-a="fl2v-group-prev"]', '[data-a="fl2v-group-next"]']) {
+        const btn = editor.root?.querySelector(sel);
+        if (!btn) continue;
+        btn.classList.toggle("hidden", !enabled);
+    }
+    for (const sel of ['[data-a="fl2v-duplicate"]', '[data-a="fl2v-del"]']) {
+        const btn = editor.root?.querySelector(sel);
+        if (!btn) continue;
+        btn.classList.toggle("hidden", !enabled || externalLocked);
+        btn.disabled = !enabled || externalLocked;
+    }
     updateFl2vToolbarBtns(editor);
 }
 
 export function updateFl2vToolbarBtns(editor) {
-    const addBtn = editor?.root?.querySelector?.('[data-a="fl2v-add-shot"]');
-    if (addBtn) {
-        const externalLocked = !!(editor?.hasExternalI2vGroups?.() || editor?.hasExternalR2vGroups?.());
-        const show = !!editor?.isFl2vMode?.() && !externalLocked;
-        addBtn.classList.toggle("hidden", !show);
-        addBtn.disabled = !show;
+    const externalLocked = !!(editor?.hasExternalI2vGroups?.() || editor?.hasExternalR2vGroups?.());
+    const show = !!editor?.isFl2vMode?.();
+    const showEdit = show && !externalLocked;
+    for (const sel of ['[data-a="fl2v-add-shot"]', '[data-a="fl2v-duplicate"]', '[data-a="fl2v-del"]']) {
+        const btn = editor?.root?.querySelector?.(sel);
+        if (!btn) continue;
+        btn.classList.toggle("hidden", !showEdit);
+        btn.disabled = !showEdit;
     }
+    for (const sel of ['[data-a="fl2v-group-prev"]', '[data-a="fl2v-group-next"]']) {
+        const btn = editor?.root?.querySelector?.(sel);
+        if (!btn) continue;
+        btn.classList.toggle("hidden", !show);
+    }
+    editor?.syncGroupNavButtons?.();
 }
 
 /** @deprecated */

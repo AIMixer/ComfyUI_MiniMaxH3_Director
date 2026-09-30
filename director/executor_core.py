@@ -27,6 +27,7 @@ from .refine_pack import (
     refine_will_sample,
 )
 from .refine_sampling import apply_segment_refine
+from .segment_loras import apply_segment_loras, describe_lora_rows
 from .frame_align import minimax_align_frame_count, pad_or_trim_frames
 from .audio_export import (
     AUDIO_MODE_GENERATE,
@@ -737,6 +738,13 @@ def execute_director_plan_core(
             )
 
         ui_idx = seg.timeline_index
+        seg_model = model
+        seg_lora_label = describe_lora_rows(getattr(seg, "loras", None))
+        if seg_lora_label:
+            seg_model = apply_segment_loras(seg_model, getattr(seg, "loras", None))
+            reports.append(
+                f"Segment {ui_idx + 1}/{timeline_seg_total}: LoRA → {seg_lora_label}"
+            )
         will_refine = refine_will_sample(plan, seg)
         confirm_first = confirm_first_pass_enabled(plan)
         from .face_refine.pack import face_refine_enabled as _face_refine_on
@@ -1329,7 +1337,7 @@ def execute_director_plan_core(
             )
         elif selflift_will_run(plan, seg):
             samples, low_carry = sample_selflift_stage(
-                model=model,
+                model=seg_model,
                 positive=positive,
                 negative=negative,
                 latent=latent,
@@ -1365,7 +1373,7 @@ def execute_director_plan_core(
             )
         else:
             samples = sample_single_stage(
-                model=model,
+                model=seg_model,
                 positive=positive,
                 negative=negative,
                 latent=latent,
@@ -1516,7 +1524,7 @@ def execute_director_plan_core(
                 plan,
                 seg,
                 samples=samples,
-                model=model,
+                model=seg_model,
                 vae=vae,
                 audio_vae=audio_vae,
                 positive=positive,
@@ -1649,7 +1657,7 @@ def execute_director_plan_core(
                 plan=plan,
                 seg=seg,
                 pack=plan.face_refine,
-                model=model,
+                model=seg_model,
                 vae=vae,
                 audio_vae=audio_vae,
                 clip=clip,

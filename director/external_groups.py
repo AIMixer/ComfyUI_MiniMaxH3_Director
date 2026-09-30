@@ -606,6 +606,7 @@ def build_plan_from_external_groups(
         reinforce_r2v_prompt,
         usable_ref_audio_indices,
     )
+    from .segment_loras import normalize_lora_rows
 
     timeline = _parse_timeline_meta(timeline_data)
     fps = float(timeline.get("frameRate") or frame_rate or 24.0)
@@ -753,6 +754,9 @@ def build_plan_from_external_groups(
                         row, segment_index=plan_idx
                     ),
                     ref_image_size=_resolve_group_ref_image_size(g, row, timeline),
+                    loras=normalize_lora_rows(
+                        (row or {}).get("loras") if isinstance(row, dict) else None
+                    ),
                 )
             )
         else:
@@ -823,6 +827,9 @@ def build_plan_from_external_groups(
                         row, segment_index=plan_idx
                     ),
                     ref_image_size=_resolve_group_ref_image_size(g, row, timeline),
+                    loras=normalize_lora_rows(
+                        (row or {}).get("loras") if isinstance(row, dict) else None
+                    ),
                 )
             )
 
