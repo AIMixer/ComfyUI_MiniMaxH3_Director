@@ -2843,6 +2843,10 @@ class MiniMaxH3DirectorEditor {
 
     copyProject() {
         if (!this.projectStore || !this.activeProjectId) return;
+        // 复制的是「当前工作流里已经设置好的内容」：必须先把编辑器现状落盘回当前项目，
+        // 再复制它。否则复制到的是上一次保存的旧快照（新建 addProject 也是先落盘），
+        // 表现就是新项目里看不到刚设好的每段提示词。
+        this.saveActiveProject();
         const copied = duplicateMMH3Project(this.projectStore, this.activeProjectId, newMMH3ProjectId);
         if (!copied.project) return;
         this.persistProjectStore();

@@ -556,6 +556,49 @@ async def minimax_detect_shots(request):
     return web.json_response(result)
 
 
+def _log_prompt_diff(cache_key: str, plan, rows: list[dict]) -> None:
+    """Explain a `prompt`-only mismatch: differing offset plus both sides.
+
+    Every other key matching while `prompt` differs means the timeline text
+    itself changed for that segment. Without the two snippets the panel can only
+    say「不匹配」, which is not actionable.
+    """
+    try:
+        from .segment_cache import _cache_dir
+
+        root = _cache_dir(cache_key)
+        segments = list(getattr(plan, "segments", None) or [])
+        if root is None:
+            return
+        for row in rows:
+            if "prompt" not in (row.get("diff_keys") or []):
+                continue
+            index = int(row.get("index") or 0)
+            if not 0 <= index < len(segments):
+                continue
+            meta_path = root / f"seg_{index:04d}.pre.meta.json"
+            if not meta_path.is_file():
+                continue
+            stored = str(json.loads(meta_path.read_text(encoding="utf-8")).get("prompt") or "")
+            current = str(getattr(segments[index], "prompt", "") or "")
+            offset = next(
+                (i for i, (a, b) in enumerate(zip(stored, current)) if a != b),
+                min(len(stored), len(current)),
+            )
+            log.info(
+                "MiniMax H3 Director segment %s prompt differs at offset %s "
+                "(cached %s chars / current %s chars) | cached=%r | current=%r",
+                row.get("segment"),
+                offset,
+                len(stored),
+                len(current),
+                stored[max(0, offset - 30): offset + 50],
+                current[max(0, offset - 30): offset + 50],
+            )
+    except Exception as exc:  # pragma: no cover - diagnostics only
+        log.warning("MiniMax H3 Director prompt diff diagnostic failed: %s", exc)
+
+
 async def minimax_first_pass_cache_status(request):
     """Compare stored first-pass metadata with the Director's current inputs."""
     try:
@@ -620,13 +663,21 @@ async def minimax_first_pass_cache_status(request):
         if not status.get("matches"):
             # Name the reason in the log so a「不匹配」 report can be diagnosed
             # without re-deriving the fingerprint by hand.
+            bad_rows = [
+                row for row in (status.get("segments") or []) if not row.get("matches")
+            ]
             log.info(
-                "MiniMax H3 Director first-pass cache panel [%s]: %s/%s matched, diff=%s",
+                "MiniMax H3 Director first-pass cache panel [%s]: %s/%s matched, diff=%s, bad=%s",
                 cache_key,
                 status.get("matched_count"),
                 status.get("segment_total"),
                 status.get("diff_keys"),
+                [
+                    {"seg": row.get("segment"), "diff": row.get("diff_keys")}
+                    for row in bad_rows[:8]
+                ],
             )
+            _log_prompt_diff(cache_key, plan, bad_rows)
         return web.json_response(status)
     except Exception as exc:
         log.warning("MiniMax H3 Director first-pass cache inspection failed: %s", exc)
