@@ -49,6 +49,10 @@ EXTERNAL_SEGMENT_FP_KEY = "external_group"
 # project can never be validated against another one.
 PROJECT_FP_KEY = "project"
 
+# Per-segment LoRA stack, folded into the segment identity so a segment rendered
+# with one stack can never be validated against a run that used another.
+LORAS_FP_KEY = "loras"
+
 # Fingerprint keys that come out of the executed group payloads (prompts,
 # durations, reference counts/slots, per-row continuity). The cache-status panel
 # cannot rebuild them for graph-wired groups, so in external-group mode it
@@ -206,6 +210,17 @@ def _ref_audio_file_stamp(audio: Any, fallback_index: int) -> str:
     return f"aud{index}:{name}:{stamp}"
 
 
+def _lora_fingerprint_value(rows: Any) -> list[list[Any]]:
+    """JSON-stable form of a segment's LoRA stack for fingerprint comparison.
+
+    Uses ``lora_signature`` so inactive / zero-strength rows are ignored — toggling
+    such a row off changes nothing in the render and must not invalidate a cache.
+    """
+    from .segment_loras import lora_signature
+
+    return [list(item) for item in lora_signature(rows)]
+
+
 def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
     """Identity that affects first-pass sampling (no Refine settings)."""
     ref_files = sorted(
@@ -233,6 +248,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         "negative": seg.negative_prompt,
         "task_key": seg.task_key,
         PROJECT_FP_KEY: str(getattr(plan, "project_id", "") or ""),
+        LORAS_FP_KEY: _lora_fingerprint_value(getattr(seg, "loras", None)),
         "width": plan.width,
         "height": plan.height,
         "frame_rate": float(getattr(plan, "frame_rate", 24) or 24),
@@ -679,10 +695,21 @@ def _expected_for_stored(stored: Any, expected: dict[str, Any]) -> dict[str, Any
     key. The cache directory is already keyed by the resolved project id, so such
     a meta can never be a cross-project hit — dropping the key keeps those caches
     reusable instead of forcing a full first-pass re-run.
+
+    ``LORAS_FP_KEY`` gets the same treatment *only* while the segment has no
+    effective LoRA: such an old latent was rendered without a stack, which is
+    exactly what the current setup would produce again. As soon as the segment
+    carries a LoRA the key is kept, so the missing value correctly invalidates
+    that segment instead of silently reusing a latent that had no LoRA.
     """
-    if isinstance(stored, dict) and PROJECT_FP_KEY in expected and PROJECT_FP_KEY not in stored:
-        return {k: v for k, v in expected.items() if k != PROJECT_FP_KEY}
-    return expected
+    if not isinstance(stored, dict):
+        return expected
+    out = expected
+    if PROJECT_FP_KEY in out and PROJECT_FP_KEY not in stored:
+        out = {k: v for k, v in out.items() if k != PROJECT_FP_KEY}
+    if LORAS_FP_KEY in out and LORAS_FP_KEY not in stored and not out[LORAS_FP_KEY]:
+        out = {k: v for k, v in out.items() if k != LORAS_FP_KEY}
+    return out
 
 
 def _cmp_inspect_fingerprints(
