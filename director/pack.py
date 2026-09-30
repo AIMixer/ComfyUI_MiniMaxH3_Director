@@ -429,6 +429,7 @@ def _group_json(seg: dict) -> dict:
         "refVideos": seg.get("refVideos") or seg.get("ref_videos") or [],
         "continuityFromPrev": seg.get("continuityFromPrev", seg.get("continuity_from_prev")),
         "refImageSize": seg.get("refImageSize") or seg.get("ref_image_size"),
+        "loras": seg.get("loras") or [],
     }
     if isinstance(seg.get("genImage"), dict):
         out["genImage"] = {
@@ -821,6 +822,7 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
             "refVideos": _merge_refs(raw.get("refVideos") or raw.get("ref_videos"), scanned["refVideos"]),
             "continuityFromPrev": raw.get("continuityFromPrev", raw.get("continuity_from_prev")),
             "refImageSize": raw.get("refImageSize") or raw.get("ref_image_size"),
+            "loras": raw.get("loras") or [],
             "genImage": gen or {"imageFile": ""},
             "imageFile": (gen or {}).get("imageFile") or raw.get("imageFile") or "",
             "startImage": start_img,
@@ -833,6 +835,7 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
             "prompt": seg["prompt"],
             "negativePrompt": seg["negativePrompt"],
             "continuityFromPrev": seg["continuityFromPrev"],
+            "loras": seg.get("loras") or [],
             "startImage": start_img,
             "endImage": end_img,
         })

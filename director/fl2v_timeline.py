@@ -119,6 +119,8 @@ def _normalize_shots(raw_shots: list | None, *, frame_rate: float = 24.0) -> lis
             row["continuityFromPrev"] = item.get("continuityFromPrev")
         elif "continuity_from_prev" in item:
             row["continuity_from_prev"] = item.get("continuity_from_prev")
+        if "loras" in item:
+            row["loras"] = item.get("loras")
         out.append(row)
         cursor += fc
     return out
@@ -523,6 +525,7 @@ def build_fl2v_director_plan(
         _parse_run_selection,
         _resolve_export_mode,
     )
+    from .segment_loras import normalize_lora_rows
 
     global_block = timeline.get("global") or {}
     task_type = global_block.get("taskType") or global_task_type or task_type_option_label(
@@ -690,6 +693,7 @@ def build_fl2v_director_plan(
                     shot if isinstance(shot, dict) else {},
                     segment_index=plan_index,
                 ),
+                loras=normalize_lora_rows(shot.get("loras") if isinstance(shot, dict) else None),
             )
         )
         plan_index += 1

@@ -1,6 +1,7 @@
 /** Multi prompt-group UI for t2i / i2i / r2i / t2v / i2v / r2v (prompt batch mode). */
 
 import { api } from "../../scripts/api.js";
+import { createLoraSection } from "./minimax_segment_loras.js";
 import {
     DEFAULT_ASPECT_RATIO,
     DEFAULT_MEGAPIXELS,
@@ -961,6 +962,7 @@ export function duplicateImageBatchGroup(editor) {
             : undefined,
         continuityFromPrev: src.continuityFromPrev,
         refImageSize: src.refImageSize,
+        loras: Array.isArray(src.loras) ? JSON.parse(JSON.stringify(src.loras)) : [],
         previewB64: "",
         previewFrames: [],
     });
@@ -2939,6 +2941,10 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             card.appendChild(prompts);
             card.appendChild(preview);
         }
+        card.appendChild(createLoraSection(editor, seg, () => {
+            const segs = editor.timeline?.segments || [];
+            return (seg?.id && segs.find((s) => s?.id === seg.id)) || segs[index] || seg;
+        }));
 
         list.appendChild(card);
 }
