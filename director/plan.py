@@ -246,8 +246,7 @@ class SegmentPlan:
     continuity_from_prev: bool = True
     # match | 1024 | 1280 | 1536 | max. Official node only sees match | max.
     ref_image_size: str = "match"
-    # Per-segment LoRA stack: [{name, strength, active}], applied on top of
-    # the Director MODEL right before sampling.
+    # Per-segment LoRA stack: [{name, strength, active}]. Empty = the node's model.
     loras: list = field(default_factory=list)
 
     @property
@@ -281,6 +280,8 @@ class DirectorPlan:
     source_total_frames: int = 0
     export_max_frames: int = 0
     export_mode: str = "all"  # "all" | "segments"
+    # Pixel-frame cache codec. "raw" = uint8 .pt; "ffv1" = lossless mkv.
+    cache_frames_codec: str = "raw"
     run_indices: frozenset[int] | None = None  # None = run all segments
     continuity_enabled: bool = False
     continuity_overlap_frames: int = 0
@@ -901,8 +902,7 @@ def build_director_plan(
             )
             seg_ref_video = dict(seg_data.get("referenceVideo") or seg_data.get("reference_video") or {})
 
-        # Global edit mode has no per-segment cards, so the global LoRA stack
-        # (if any) applies to every segment.
+        # Global edit mode has no per-segment cards, so a global stack applies to every segment.
         seg_loras = normalize_lora_rows(
             global_block.get("loras") if use_global else seg_data.get("loras")
         )

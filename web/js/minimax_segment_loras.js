@@ -566,7 +566,7 @@ export function segmentLoraTemplate() {
     return `
                 <div class="bd-seg-loras-wrap" data-r="seg-loras-wrap">
                     <div class="bd-r2v-section-head">
-                        <span class="bd-label bd-r2v-section-title" data-i18n="panel.segmentLoras">片段 LoRA</span>
+                        <span class="bd-label bd-r2v-section-title" data-i18n="panel.segmentLoras">分组 LoRA</span>
                         <span class="bd-r2v-section-actions">
                             <button type="button" class="bd-seg-lora-refresh" data-r="seg-loras-refresh" data-i18n-title="panel.refreshLoras">↻</button>
                             <button type="button" class="bd-r2v-pick-existing" data-r="seg-loras-add" data-i18n="panel.addLora" data-i18n-title="tooltip.segmentLoras">+ LoRA</button>
@@ -853,6 +853,7 @@ export function bindSegmentLoraEvents(ui) {
 }
 
 export function renderSegmentLoras(ui, seg) {
+    ensureSegmentLoraStyles();
     const box = ui.segLorasBox;
     if (!box) return;
     box.innerHTML = "";

@@ -389,7 +389,8 @@ def sample_selflift_stage(
     if not pack.get("h3_latent_model") and pack.get("latent_upscale_ref") is None:
         raise ValueError(
             "SelfLift 需要 H3 3D latent 放大权重。"
-            "请把 minimax_h3_latent_upscaler_3d_*.safetensors 放到 "
+            "请把 H3 系权重（如 minimax_h3_latent_upscaler_3d_*.safetensors、"
+            "h3_upscaler_lms_*.safetensors）放到 "
             "ComfyUI/models/latent_upscale_models/ 并在节点里选中。"
         )
 

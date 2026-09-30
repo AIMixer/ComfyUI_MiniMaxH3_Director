@@ -110,6 +110,19 @@ def director_perf_inputs() -> dict:
                 ),
             },
         ),
+        "cache_frames_codec": (
+            ["raw", "ffv1"],
+            {
+                "default": "raw",
+                "tooltip": (
+                    "分段缓存的像素帧怎么存。"
+                    "raw：uint8 .pt，读写快，磁盘大。"
+                    "ffv1：无损压缩，体积大约三分之一，命中和写入都会多一次编解码。"
+                    "两种都能读；某一段被重新写入时才换成当前选项。"
+                    "latent / 音频缓存不受影响。"
+                ),
+            },
+        ),
         "export_source_images": (
             "BOOLEAN",
             {

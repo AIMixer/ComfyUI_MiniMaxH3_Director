@@ -453,6 +453,26 @@ def build_gen_director_plan(
         if edit_mode == "global" or common_enabled
         else []
     )
+    # Mixed: t2v common prompt is independent of r2v (global prompt + refs).
+    # Graphs saved before the split have no t2vCommon; keep the old shared prompt.
+    t2v_common_block = global_block.get("t2vCommon") or global_block.get("t2v_common") or {}
+    if not isinstance(t2v_common_block, dict):
+        t2v_common_block = {}
+    if task_key == "mixed" and (
+        "enabled" in t2v_common_block
+        or "commonEnabled" in t2v_common_block
+        or "prompt" in t2v_common_block
+    ):
+        t2v_flag = t2v_common_block.get("enabled")
+        if t2v_flag is None:
+            t2v_flag = t2v_common_block.get(
+                "commonEnabled", t2v_common_block.get("common_enabled")
+            )
+        mixed_t2v_enabled = bool(t2v_flag)
+        mixed_t2v_prompt = t2v_common_block.get("prompt") or ""
+    else:
+        mixed_t2v_enabled = common_enabled
+        mixed_t2v_prompt = prompt
 
     output_block = timeline.get("output") or {}
     gen_block = timeline.get("gen") or {}
@@ -568,8 +588,26 @@ def build_gen_director_plan(
             )
             seg_task_key_preview = resolve_task_key(seg_task)
             local_prompt = (seg_data.get("prompt") or "").strip()
-            # r2v/r2i + commonEnabled: shared prompt prefixes each group prompt.
-            if seg_task_key_preview in ("r2v", "r2i") and common_enabled:
+            # t2v mode: one shared prompt. Mixed: t2v and r2v each have their own.
+            # Mixed i2v / fl2v ignore both. t2v never merges reference media.
+            if task_key == "mixed":
+                if seg_task_key_preview == "t2v":
+                    seg_prompt = (
+                        concat_common_segment_prompt(mixed_t2v_prompt, local_prompt)
+                        if mixed_t2v_enabled
+                        else local_prompt
+                    )
+                elif seg_task_key_preview in ("r2v", "r2i") and common_enabled:
+                    seg_prompt = concat_common_segment_prompt(prompt, local_prompt)
+                else:
+                    seg_prompt = local_prompt
+            elif seg_task_key_preview == "t2v" and task_key == "t2v":
+                seg_prompt = (
+                    concat_common_segment_prompt(prompt, local_prompt)
+                    if common_enabled
+                    else local_prompt
+                )
+            elif seg_task_key_preview in ("r2v", "r2i") and common_enabled:
                 seg_prompt = concat_common_segment_prompt(prompt, local_prompt)
             else:
                 seg_prompt = local_prompt or prompt
@@ -708,8 +746,6 @@ def build_gen_director_plan(
                     seg_data if isinstance(seg_data, dict) else {},
                     timeline,
                 ),
-                # Prompt-batch / gen timelines build their segments here, not in
-                # build_director_plan, so the LoRA stack has to be carried again.
                 loras=normalize_lora_rows(
                     global_block.get("loras")
                     if use_global

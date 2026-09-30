@@ -32,7 +32,6 @@ from .fl2v_timeline import (
     reinforce_fl2v_prompt,
 )
 from .frame_align import minimax_align_frame_count
-from .segment_loras import normalize_lora_rows
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.external_groups")
 
@@ -618,6 +617,7 @@ def build_plan_from_external_groups(
         reinforce_r2v_prompt,
         usable_ref_audio_indices,
     )
+    from .segment_loras import normalize_lora_rows
 
     timeline = _parse_timeline_meta(timeline_data)
     fps = float(timeline.get("frameRate") or frame_rate or 24.0)
@@ -765,6 +765,9 @@ def build_plan_from_external_groups(
                         row, segment_index=plan_idx
                     ),
                     ref_image_size=_resolve_group_ref_image_size(g, row, timeline),
+                    loras=normalize_lora_rows(
+                        (row or {}).get("loras") if isinstance(row, dict) else None
+                    ),
                 )
             )
         else:
@@ -835,15 +838,11 @@ def build_plan_from_external_groups(
                         row, segment_index=plan_idx
                     ),
                     ref_image_size=_resolve_group_ref_image_size(g, row, timeline),
+                    loras=normalize_lora_rows(
+                        (row or {}).get("loras") if isinstance(row, dict) else None
+                    ),
                 )
             )
-
-    # One packer node -> one segment, so all_indexed lines up.
-    for _sp, (_si, _g) in zip(segments, all_indexed):
-        _row = timeline_row_for_index(timeline, int(_si)) or {}
-        _sp.loras = normalize_lora_rows(
-            _row.get("loras") or (_g or {}).get("loras")
-        )
 
     if not segments:
         raise ValueError("External groups produced no runnable segments.")
