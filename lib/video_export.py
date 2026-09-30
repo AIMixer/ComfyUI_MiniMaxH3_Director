@@ -42,6 +42,10 @@ def _frames_to_rgb_u8(frames: torch.Tensor) -> np.ndarray:
     return (arr * 255.0).astype(np.uint8)
 
 
+def _frame_chunk_to_rgb_u8(frames: torch.Tensor, start: int, end: int) -> np.ndarray:
+    return _frames_to_rgb_u8(frames[start:end])
+
+
 def _pad_even_hw(rgb: np.ndarray) -> np.ndarray:
     """Pad H/W to even sizes required by yuv420p / libx264."""
     n, h, w, c = rgb.shape
@@ -99,8 +103,11 @@ def write_frames_to_mp4(
     if fps <= 0:
         fps = 24.0
 
-    rgb = _pad_even_hw(_frames_to_rgb_u8(frames))
-    n, h, w, _ = rgb.shape
+    if not isinstance(frames, torch.Tensor) or frames.ndim != 4:
+        raise ValueError(f"Expected NHWC frames tensor, got {type(frames)} shape={getattr(frames, 'shape', None)}")
+    n = int(frames.shape[0])
+    h = _even(int(frames.shape[1]))
+    w = _even(int(frames.shape[2]))
     if n <= 0:
         raise ValueError("No frames to encode")
 
@@ -157,10 +164,17 @@ def write_frames_to_mp4(
         # Do not write+close stdin then communicate(): on Linux that raises
         # ``ValueError: flush of closed file`` after ffmpeg closes the pipe.
         # communicate(input=) writes and closes once, and drains stderr.
-        raw = np.ascontiguousarray(rgb)
         try:
-            _stdout, stderr = proc.communicate(input=raw.tobytes())
-        except (BrokenPipeError, ValueError) as exc:
+            for start in range(0, n, 8):
+                end = min(n, start + 8)
+                rgb = _pad_even_hw(_frame_chunk_to_rgb_u8(frames, start, end))
+                proc.stdin.write(np.ascontiguousarray(rgb).tobytes())
+                del rgb
+            proc.stdin.close()
+            _stdout = proc.stdout.read()
+            stderr = proc.stderr.read()
+            proc.wait()
+        except (BrokenPipeError, OSError, ValueError) as exc:
             # ffmpeg already closed stdin (common after a long rawvideo feed).
             try:
                 if proc.poll() is None:
