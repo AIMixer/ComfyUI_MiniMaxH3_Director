@@ -2686,7 +2686,35 @@ class MiniMaxH3DirectorEditor {
         );
         this.activeProjectId = String(this.projectStore.activeId || "");
         this.persistProjectStore();
+        this.syncActiveProjectSnapshot();
         this.renderProjectBar();
+    }
+
+    /**
+     * 用编辑器现状回写当前项目的快照（只在内容确实不同时写）。
+     * 注入工具等外部写入只改 timeline、不改项目仓库，快照会落后一版；
+     * 若不对齐，之后任何「切换/复制/新建/删除」都会把旧提示词整条覆盖回编辑器。
+     */
+    syncActiveProjectSnapshot() {
+        if (!this.projectStore || !this.activeProjectId) return false;
+        const active = getMMH3Project(this.projectStore, this.activeProjectId);
+        if (!active) return false;
+        const payload = this._projectSnapshot(this.activeProjectId);
+        if (this._projectPayloadInSync(active, payload)) return false;
+        saveMMH3Project(this.projectStore, this.activeProjectId, payload);
+        this.persistProjectStore();
+        return true;
+    }
+
+    /** 只比段内容，避免把 UI/选中态等易变字段误判成「不一致」而反复写脏。 */
+    _projectPayloadInSync(project, payload) {
+        try {
+            const stored = JSON.stringify(project?.payload?.segments || []);
+            const current = JSON.stringify(payload?.segments || []);
+            return stored === current;
+        } catch {
+            return false;
+        }
     }
 
     persistProjectStore() {
@@ -2786,6 +2814,8 @@ class MiniMaxH3DirectorEditor {
 
     _activateProject(target) {
         this.activeProjectId = target.id;
+        // 仓库自己的 activeId 也要跟着走，否则每次存档都留下一个指向上一代项目的死指针。
+        if (this.projectStore) this.projectStore.activeId = target.id;
         this.node.properties.mmh3_active_project_id = target.id;
         this.persistProjectStore();
         this.loadProjectPayload(target.payload);
