@@ -267,17 +267,9 @@ I'm providing {image_num} reference image(s) used as input frames.
 只输出最终的英文 prompt，不要其它说明。
 """
 
-FL2V_TEMPLATE = """Task: First-Last Frame Image-to-Video (fl2v)
-User's prompt: "{user_prompt}"
-I'm providing {image_num} image(s): image0 is the FIXED first frame, image1 (if present) is the FIXED last frame.
-They are NOT soft "reference" images — the video must start as image0 and end as image1.
-
-扩写规则（必须遵守，输出简体中文）：
-1. 只扩写「中间过程」的运动/镜头/情绪过渡。系统会在采样前自动注入首尾帧硬锁定句，你不要再写。
-2. 禁止输出以下锁定套话（及其变体）：「完全保持首尾帧」「完全保持首帧」「视频开始完全按照image0…」「视频结束完全保持image1…」「中间过程：」。
-3. 禁止把 image0/image1 写成「参考图 / reference」；描述过渡时可用 image0/image1 英文编号指代首尾画面。
-4. 不要输出其它说明，只输出中间过程正文。
-"""
+# Official Bernini I2V already covers first-only / first-last / first-mid-last.
+# Director fl2v is the same MiniMaxH3ImageToVideo path; do not add lock wraps.
+FL2V_TEMPLATE = I2V_TEMPLATE
 
 VI2V_TEMPLATE = """Task: Video Editing with Reference Image (vi2v)
 User's editing instruction: "{user_prompt}"

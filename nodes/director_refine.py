@@ -66,7 +66,9 @@ class MiniMaxH3DirectorRefine:
                         "tooltip": (
                             "H3 3D latent 放大权重。"
                             "放到 ComfyUI/models/latent_upscale_models/，"
-                            "文件名含 3d（如 minimax_h3_latent_upscaler_3d_*.safetensors）。"
+                            "目录里的 H3 系权重会自动列出"
+                            "（如 minimax_h3_latent_upscaler_3d_*.safetensors、"
+                            "h3_upscaler_lms_*.safetensors）。"
                             "mode=latent_upscale，或 upscale + h3_latent 时使用。"
                         ),
                     },

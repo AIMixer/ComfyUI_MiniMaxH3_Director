@@ -429,6 +429,7 @@ def _group_json(seg: dict) -> dict:
         "refVideos": seg.get("refVideos") or seg.get("ref_videos") or [],
         "continuityFromPrev": seg.get("continuityFromPrev", seg.get("continuity_from_prev")),
         "refImageSize": seg.get("refImageSize") or seg.get("ref_image_size"),
+        "loras": seg.get("loras") or [],
     }
     if isinstance(seg.get("genImage"), dict):
         out["genImage"] = {
@@ -604,6 +605,13 @@ def build_export_pack(timeline: dict, widgets: dict | None = None, *, dry_run: b
         "refAudios": global_block.get("refAudios") or global_block.get("ref_audios") or [],
         "refVideos": global_block.get("refVideos") or global_block.get("ref_videos") or [],
     }
+    t2v_common = global_block.get("t2vCommon") or global_block.get("t2v_common")
+    if isinstance(t2v_common, dict):
+        shared_json["t2vCommon"] = {
+            "enabled": bool(t2v_common.get("enabled") if t2v_common.get("enabled") is not None else t2v_common.get("commonEnabled")),
+            "collapsed": bool(t2v_common.get("collapsed") or t2v_common.get("commonCollapsed")),
+            "prompt": t2v_common.get("prompt") or "",
+        }
 
     result: dict[str, Any] = {
         "missing": unique_missing,
@@ -774,6 +782,13 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
         "referenceVideo": {},
         "continuousReference": False,
     }
+    t2v_common = shared.get("t2vCommon") or shared.get("t2v_common")
+    if isinstance(t2v_common, dict):
+        global_block["t2vCommon"] = {
+            "enabled": bool(t2v_common.get("enabled") if t2v_common.get("enabled") is not None else t2v_common.get("commonEnabled")),
+            "collapsed": bool(t2v_common.get("collapsed") or t2v_common.get("commonCollapsed")),
+            "prompt": t2v_common.get("prompt") or "",
+        }
     groups_root = extracted / "asset_groups"
     group_dirs = sorted(
         [p for p in groups_root.iterdir() if p.is_dir()],
@@ -807,6 +822,7 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
             "refVideos": _merge_refs(raw.get("refVideos") or raw.get("ref_videos"), scanned["refVideos"]),
             "continuityFromPrev": raw.get("continuityFromPrev", raw.get("continuity_from_prev")),
             "refImageSize": raw.get("refImageSize") or raw.get("ref_image_size"),
+            "loras": raw.get("loras") or [],
             "genImage": gen or {"imageFile": ""},
             "imageFile": (gen or {}).get("imageFile") or raw.get("imageFile") or "",
             "startImage": start_img,
@@ -819,6 +835,7 @@ def _assemble_timeline(extracted: Path, pack_meta: dict) -> dict:
             "prompt": seg["prompt"],
             "negativePrompt": seg["negativePrompt"],
             "continuityFromPrev": seg["continuityFromPrev"],
+            "loras": seg.get("loras") or [],
             "startImage": start_img,
             "endImage": end_img,
         })

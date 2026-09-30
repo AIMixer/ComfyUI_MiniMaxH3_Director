@@ -52,6 +52,7 @@ import {
 import {
     IMAGE_BATCH_STYLES,
     addImageBatchGroup,
+    selectBatchGroup,
     bindImageBatchEvents,
     bindR2vMediaPlayback,
     deleteImageBatchGroup,
@@ -97,6 +98,7 @@ import {
     mountFl2vPanel,
     newFl2vShot,
     normalizeFl2vSegments,
+    duplicateFl2vShot,
     openFl2vUpload,
     setFl2vToolbar,
     flushFl2vPromptDraft,
@@ -106,6 +108,13 @@ import {
     updateFl2vToolbarBtns,
 } from "./minimax_fl2v.js";
 import { mountPromptImageMentions, refreshPromptTokenEditors, teardownPromptImageMentions } from "./minimax_prompt_mentions.js";
+import {
+    bindSegmentLoraEvents,
+    bindSegmentLoraRefs,
+    normalizeLoraRows,
+    renderSegmentLoras,
+    segmentLoraTemplate,
+} from "./minimax_segment_loras.js";
 import {
     applyI18nDom,
     aspectDisplayLabel,
@@ -354,6 +363,7 @@ function sanitizeSegmentForPayload(seg) {
                 subfolder: rest.referenceVideo.subfolder || "",
             }
             : undefined,
+        loras: normalizeLoraRows(rest.loras),
     };
 }
 
@@ -366,9 +376,22 @@ function cloneJson(value, fallback) {
     }
 }
 
+function sanitizeT2vCommon(raw) {
+    if (!raw || typeof raw !== "object") return undefined;
+    const has = raw.enabled != null || raw.commonEnabled != null
+        || raw.collapsed != null || raw.commonCollapsed != null
+        || raw.prompt != null;
+    if (!has) return undefined;
+    return {
+        enabled: !!(raw.enabled ?? raw.commonEnabled),
+        collapsed: !!(raw.collapsed ?? raw.commonCollapsed),
+        prompt: raw.prompt || "",
+    };
+}
+
 function sanitizeBatchGlobalCommon(gc) {
     const src = gc && typeof gc === "object" ? gc : {};
-    return {
+    const out = {
         commonEnabled: !!src.commonEnabled,
         commonCollapsed: !!src.commonCollapsed,
         prompt: src.prompt || "",
@@ -378,6 +401,9 @@ function sanitizeBatchGlobalCommon(gc) {
             ? src.refVideos.map(sanitizeRefVideo)
             : (Array.isArray(src.ref_videos) ? src.ref_videos.map(sanitizeRefVideo) : []),
     };
+    const t2v = sanitizeT2vCommon(src.t2vCommon || src.t2v_common);
+    if (t2v) out.t2vCommon = t2v;
+    return out;
 }
 
 /** Persistable t2v/i2v/r2v snapshot (no preview frames). */
@@ -504,6 +530,7 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
     clear_vram_between_segments: "widget.clearVram",
     clear_vram_before_refine: "widget.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.clearVramBeforeFaceRefine",
+    cache_frames_codec: "widget.cacheFramesCodec",
     export_source_images: "widget.exportSourceImages",
     export_pre_face_refine: "widget.exportPreFaceRefine",
     control_after_generate: "widget.controlAfterGenerate",
@@ -514,6 +541,7 @@ const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
     clear_vram_before_refine: "widget.tooltip.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.tooltip.clearVramBeforeFaceRefine",
+    cache_frames_codec: "widget.tooltip.cacheFramesCodec",
     export_source_images: "widget.tooltip.exportSourceImages",
     export_pre_face_refine: "widget.tooltip.exportPreFaceRefine",
 };
@@ -900,9 +928,14 @@ const STYLES = `
  */
 .bd-wrap.bd-batch-fill .bd-main{flex:1 1 0;min-height:0;overflow:hidden}
 .bd-wrap.bd-batch-fill .bd-main>:not(.bd-batch):not(.bd-split){flex:0 0 auto}
-/* 公共参数区：可收缩+内部滚动，避免展开后把素材组挤出视口 */
+/* 公共参数区：标题栏不参与压缩（否则时间轴很高时会被挤成 0）。
+   展开后最多占 42% 并内部滚动，避免把素材组挤出视口。 */
 .bd-wrap.bd-batch-fill .bd-main>.bd-split{
-  flex:0 1 auto;min-height:0;max-height:42%;overflow:auto;width:100%
+  flex:0 0 auto;min-height:0;max-height:42%;overflow:auto;width:100%
+}
+.bd-wrap.bd-batch-fill .bd-main>.bd-split.bd-split-dual{max-height:62%}
+.bd-wrap.bd-batch-fill .bd-main>.bd-split:not(.hidden){
+  min-height:44px
 }
 .bd-wrap.bd-batch-fill .bd-main>.bd-batch:not(.hidden){
   flex:1 1 0;min-height:0;overflow:hidden;display:flex;flex-direction:column
@@ -1054,6 +1087,7 @@ const STYLES = `
 .bd-output .bd-out-source-wrap input[type=checkbox],.bd-output .bd-out-preface-wrap input[type=checkbox]{margin:0;width:13px;height:13px;flex:0 0 auto;align-self:center;accent-color:#4fff8f}
 .bd-output .bd-out-source-wrap label span,.bd-output .bd-out-preface-wrap label span{line-height:1.2;display:inline-block}
 .bd-split{display:block;width:100%;box-sizing:border-box;min-width:0}
+.bd-video-group-bar{margin:0 0 8px}
 .bd-r2v-common-hint{margin:0 0 8px;font-size:11px;line-height:1.4;color:#9ab;opacity:.95}
 .bd-panel.bd-r2v-common-panel{border:1px solid #3a4a5a;background:linear-gradient(180deg,#1a222c 0%,#151a20 100%)}
 .bd-r2v-common-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px}
@@ -1061,9 +1095,12 @@ const STYLES = `
 .bd-r2v-common-titles b{margin:0}
 .bd-r2v-common-status{display:none;font-size:11px;color:#8a9}
 .bd-r2v-common-status.on{color:#8fdfb0}
-.bd-panel.bd-r2v-common-panel .bd-r2v-common-status{display:inline}
 .bd-r2v-common-actions{display:none;align-items:center;gap:8px;flex:0 0 auto}
-.bd-panel.bd-r2v-common-panel .bd-r2v-common-actions{display:flex}
+.bd-batch-common-slot{margin-left:auto;display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:0 1 auto;min-width:0}
+.bd-batch-common-slot.hidden{display:none!important}
+.bd-batch-common-slot .bd-r2v-common-status{display:inline;white-space:nowrap}
+.bd-batch-common-slot .bd-r2v-common-actions{display:flex}
+.bd-batch>[data-r="global-panel"]{flex:0 1 auto;min-height:0;max-height:42%;overflow:auto;margin:0 0 8px}
 .bd-btn.bd-r2v-common-toggle,.bd-btn.bd-r2v-common-fold{display:inline-block;flex:0 0 auto;padding:5px 10px;font-size:12px;border-radius:6px;border:1px solid #4a6a8a;background:#243040;color:#d8e6f5;cursor:pointer}
 .bd-btn.bd-r2v-common-fold{border-color:#3a4a5a;background:#1c2430}
 .bd-btn.bd-r2v-common-toggle:hover,.bd-btn.bd-r2v-common-fold:hover{border-color:#6a9aca;background:#2c3c50}
@@ -1072,6 +1109,24 @@ const STYLES = `
 .bd-panel.bd-r2v-common-panel.bd-r2v-common-collapsed{padding-bottom:10px}
 .bd-panel.bd-r2v-common-panel.bd-r2v-common-collapsed .bd-r2v-common-body{display:none!important}
 .bd-panel.bd-r2v-common-panel .bd-r2v-common-body{min-width:0}
+.bd-panel.bd-t2v-common-panel .bd-prompt-layout{grid-template-columns:1fr}
+.bd-panel.bd-t2v-common-panel .bd-refs-col{display:none!important}
+.bd-panel.bd-t2v-common-panel .bd-prompt-col .bd-prompt{min-height:88px}
+.bd-mixed-stack{display:flex;flex-direction:column;gap:8px}
+.bd-mixed-stack.hidden{display:none!important}
+.bd-mixed-sec{border:1px solid #2c3a48;border-radius:8px;background:#141b22;padding:8px 10px}
+.bd-mixed-sec-head{display:flex;align-items:center;gap:8px;min-width:0}
+.bd-mixed-sec-tag{flex:0 0 auto;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:#1e3a32;color:#b7ebc9}
+.bd-mixed-sec-tag.r2v{background:#1e2e44;color:#c5d8f0}
+.bd-mixed-sec-note{flex:1;min-width:0;font-size:11px;line-height:1.35;color:#8ea0b0}
+.bd-mixed-sec-body{margin-top:8px}
+.bd-mixed-sec.off .bd-mixed-sec-body{display:none}
+.bd-mixed-sec .bd-prompt{min-height:72px}
+.bd-btn.bd-mixed-sec-toggle{padding:3px 10px;font-size:11px;border-radius:999px}
+.bd-panel.bd-mixed-unified .bd-mixed-sec[data-r="mixed-r2v-sec"]{border-bottom:none;border-radius:8px 8px 0 0;padding-bottom:4px}
+.bd-panel.bd-mixed-unified:not(.bd-mixed-r2v-off) [data-r="global-prompt-layout"]{margin-top:0;border:1px solid #2c3a48;border-top:none;border-radius:0 0 8px 8px;padding:4px 10px 10px;background:#141b22}
+.bd-panel.bd-mixed-unified.bd-mixed-r2v-off .bd-mixed-sec[data-r="mixed-r2v-sec"]{border-bottom:1px solid #2c3a48;border-radius:8px;padding-bottom:8px}
+.bd-panel.bd-mixed-unified.bd-mixed-r2v-off [data-r="global-prompt-layout"]{display:none!important}
 .bd-panel.bd-r2v-common-panel .bd-refs-col{height:auto;min-height:0}
 .bd-panel.bd-r2v-common-panel .bd-rv2v-layout .bd-ref{min-height:72px}
 .bd-panel.bd-r2v-common-panel .bd-rv2v-layout .bd-ref-audio{min-height:44px}
@@ -1536,8 +1591,10 @@ function getDirectorUiHeight(editor) {
         // t2v / i2v / r2v show the main timeline track above batch cards.
         if (editor?.usesBatchTimeline?.()) {
             const track = editor?.canvasHeight || RULER_H + SEG_LABEL_H + TRACK_H;
+            // Expanded「公共参数」lives inside the batch column; collapsed adds no bar.
+            const commonBar = 0;
             // toolbar + track + batch panel (batchH already includes list max-height cap)
-            return batchH + track + 100;
+            return batchH + track + 100 + commonBar;
         }
         return batchH + 100;
     }
@@ -1662,6 +1719,7 @@ const PERF_WIDGET_ORDER = [
     "clear_vram_between_segments",
     "clear_vram_before_refine",
     "clear_vram_before_face_refine",
+    "cache_frames_codec",
 ];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {
@@ -2329,6 +2387,7 @@ class MiniMaxH3DirectorEditor {
                     // External graph is source of truth for media previews.
                     startImage: imageRefFromPath(spec.firstImageFile),
                     endImage: imageRefFromPath(spec.lastImageFile),
+                    loras: matched?.loras,
                 });
             });
             syncFl2vFromShots(this);
@@ -2429,6 +2488,7 @@ class MiniMaxH3DirectorEditor {
                         ? resolveSegmentRefImageSize({ refImageSize: spec.refImageSize })
                         : resolveSegmentRefImageSize(matched, this.timeline?.output),
                     ...(matched?.runEnabled != null ? { runEnabled: matched.runEnabled } : {}),
+                    loras: matched?.loras,
                 });
             });
             for (const item of promptWriteBack) {
@@ -2657,6 +2717,7 @@ class MiniMaxH3DirectorEditor {
                         // Persist per-segment「引用上段」(default true when unset).
                         continuityFromPrev: isSegmentContinuityFromPrev(clean, i),
                         refImageSize: resolveSegmentRefImageSize(clean, this.timeline.output),
+                        loras: normalizeLoraRows(clean.loras),
                     };
                 }),
                 ...this._runSelectionPayload(),
@@ -2809,22 +2870,21 @@ class MiniMaxH3DirectorEditor {
                     <button type="button" class="bd-btn bd-btn-primary hidden" data-a="r2v-add-group" data-i18n="toolbar.addRefGroup" data-i18n-title="tooltip.addRefGroup">添加素材组</button>
                     <button type="button" class="bd-btn bd-btn-primary" data-a="video" data-i18n="toolbar.uploadVideo">上传视频</button>
                     <button type="button" class="bd-btn" data-a="video-existing" data-i18n="mediaPicker.pickExistingVideo" data-i18n-title="mediaPicker.pickExistingHint">选已有视频</button>
-                    <button type="button" class="bd-btn bd-btn-primary hidden" data-a="fl2v-add-shot" data-i18n="toolbar.addShot" data-i18n-title="tooltip.addShot">添加一组</button>
                     <button type="button" class="bd-btn" data-a="video-append" data-i18n="toolbar.appendVideo" data-i18n-title="tooltip.appendVideo">追加视频</button>
                     <button type="button" class="bd-btn" data-a="split" data-i18n="toolbar.split">+ 分割</button>
                     <input type="number" class="bd-num" data-r="equal-n" min="2" max="64" value="2" data-i18n-title="tooltip.equalSplitN">
                     <button type="button" class="bd-btn" data-a="equal" data-i18n="toolbar.equalSplit">均分</button>
                     <button type="button" class="bd-btn" data-a="smart-split" data-i18n="toolbar.smartSplit" data-i18n-title="tooltip.smartSplit">智能分割</button>
-                    <button type="button" class="bd-btn" data-a="run-select-toggle" data-i18n="toolbar.runSelect" data-i18n-title="tooltip.runSelect">选择运行</button>
-                    <label class="bd-run-select-all-wrap hidden" data-r="run-select-all-wrap" data-i18n-title="tooltip.runSelectAll">
-                        <input type="checkbox" data-r="run-select-all-cb">
-                        <span data-i18n="toolbar.selectAll">全选</span>
-                    </label>
                     <button type="button" class="bd-btn bd-btn-danger" data-a="del" data-i18n="toolbar.deleteSegment" data-i18n-title="tooltip.deleteSegment">删除片段</button>
                     <div class="bd-mode">
                         <button type="button" data-a="mode-global" class="active" data-i18n="toolbar.modeGlobal">全局模式</button>
                         <button type="button" data-a="mode-segment" data-i18n="toolbar.modeSegment">分段模式</button>
                     </div>
+                    <button type="button" class="bd-btn" data-a="run-select-toggle" data-i18n="toolbar.runSelect" data-i18n-title="tooltip.runSelect">选择运行</button>
+                    <label class="bd-run-select-all-wrap hidden" data-r="run-select-all-wrap" data-i18n-title="tooltip.runSelectAll">
+                        <input type="checkbox" data-r="run-select-all-cb">
+                        <span data-i18n="toolbar.selectAll">全选</span>
+                    </label>
                     <select class="bd-select" data-r="global-task" title="task_type"></select>
                     <span class="bd-video-tag" data-r="video-name" data-i18n="toolbar.noVideo">未上传视频</span>
                 </div>
@@ -3017,19 +3077,39 @@ class MiniMaxH3DirectorEditor {
         const bottom = document.createElement("div");
         bottom.className = "bd-split";
         bottom.innerHTML = `
+            <div class="bd-batch-toolbar bd-video-group-bar hidden" data-r="video-group-bar">
+                <button type="button" class="bd-btn" data-a="video-group-prev" data-i18n="toolbar.prevGroup" data-i18n-title="tooltip.prevGroup">上一组</button>
+                <button type="button" class="bd-btn" data-a="video-group-next" data-i18n="toolbar.nextGroup" data-i18n-title="tooltip.nextGroup">下一组</button>
+                <button type="button" class="bd-btn" data-a="video-duplicate" data-i18n="toolbar.duplicateGroup" data-i18n-title="tooltip.duplicateGroup">复制当前分组</button>
+                <button type="button" class="bd-btn bd-btn-danger" data-a="video-del" data-i18n="toolbar.deleteCurrentGroup" data-i18n-title="tooltip.deleteCurrentGroup">删除当前分组</button>
+            </div>
             <div class="bd-panel" data-r="global-panel">
                 <div class="bd-r2v-common-head" data-r="r2v-common-head">
                     <div class="bd-r2v-common-titles">
                         <b data-r="global-panel-title" data-i18n="panel.globalPromptAndRefs">全局提示词 & 参考图 (图片1–9)</b>
-                        <span class="bd-r2v-common-status" data-r="r2v-common-status" data-i18n="panel.r2vCommonOff">未启用 · 各组独立素材与提示词</span>
-                    </div>
-                    <div class="bd-r2v-common-actions">
-                        <button type="button" class="bd-btn bd-r2v-common-fold hidden" data-r="r2v-common-fold" data-i18n="panel.r2vCommonCollapse">收起公共参数</button>
-                        <button type="button" class="bd-btn bd-r2v-common-toggle" data-r="r2v-common-toggle" data-i18n="panel.r2vCommonEnable">启用公共参数</button>
                     </div>
                 </div>
                 <div class="bd-r2v-common-body" data-r="r2v-common-body">
                     <div class="bd-meta bd-r2v-common-hint hidden" data-r="r2v-common-hint" data-i18n="panel.r2vCommonHint">公共参考图/视频/音频供各组读取；公共提示词会与每组提示词拼接成完整提示词。同槽位以组内素材优先。</div>
+                    <div class="bd-mixed-stack hidden" data-r="mixed-stack">
+                        <div class="bd-mixed-sec off" data-r="mixed-t2v-sec">
+                            <div class="bd-mixed-sec-head">
+                                <span class="bd-mixed-sec-tag">t2v</span>
+                                <span class="bd-mixed-sec-note" data-r="mixed-t2v-note" data-i18n="panel.mixedT2vNote">只拼在 t2v 组前面</span>
+                                <button type="button" class="bd-btn bd-r2v-common-toggle bd-mixed-sec-toggle" data-r="mixed-t2v-toggle" data-i18n="panel.mixedSecEnable">启用</button>
+                            </div>
+                            <div class="bd-mixed-sec-body" data-r="mixed-t2v-body">
+                                <textarea class="bd-prompt" data-r="mixed-t2v-prompt" data-i18n-placeholder="placeholder.mixedT2vCommonPrompt" placeholder=""></textarea>
+                            </div>
+                        </div>
+                        <div class="bd-mixed-sec off" data-r="mixed-r2v-sec">
+                            <div class="bd-mixed-sec-head">
+                                <span class="bd-mixed-sec-tag r2v">r2v</span>
+                                <span class="bd-mixed-sec-note" data-i18n="panel.mixedR2vNote">提示词和参考素材只进 r2v 组</span>
+                                <button type="button" class="bd-btn bd-r2v-common-toggle bd-mixed-sec-toggle" data-r="mixed-r2v-toggle" data-i18n="panel.mixedSecEnable">启用</button>
+                            </div>
+                        </div>
+                    </div>
                     <div class="bd-prompt-layout" data-r="global-prompt-layout">
                         <div class="bd-refs-col" data-r="global-refs-col">
                             <div class="bd-refs-images-wrap" data-r="global-refs-images-wrap">
@@ -3143,6 +3223,7 @@ class MiniMaxH3DirectorEditor {
                     <span class="bd-label" data-i18n="panel.segmentFrames">片段帧数</span>
                     <input type="number" class="bd-num" data-r="gen-seg-fc" min="1" max="${MAX_GEN_FRAMES}" value="124" style="width:72px">
                 </div>
+                ${segmentLoraTemplate()}
             </div>`;
         this.mainBody.appendChild(bottom);
 
@@ -3218,12 +3299,18 @@ class MiniMaxH3DirectorEditor {
             this.stageVideo.playsInline = true;
         }
         this.globalTask = this.root.querySelector('[data-r="global-task"]');
+        this.mixedStack = this.root.querySelector('[data-r="mixed-stack"]');
+        this.mixedT2vSec = this.root.querySelector('[data-r="mixed-t2v-sec"]');
+        this.mixedT2vToggle = this.root.querySelector('[data-r="mixed-t2v-toggle"]');
+        this.mixedT2vPrompt = this.root.querySelector('[data-r="mixed-t2v-prompt"]');
+        this.mixedR2vToggle = this.root.querySelector('[data-r="mixed-r2v-toggle"]');
         this.globalPanel = this.root.querySelector('[data-r="global-panel"]');
         this.globalPanelTitle = this.globalPanel?.querySelector('[data-r="global-panel-title"]')
             || this.globalPanel?.querySelector("b");
         this.r2vCommonHead = this.root.querySelector('[data-r="r2v-common-head"]');
         this.r2vCommonBody = this.root.querySelector('[data-r="r2v-common-body"]');
         this.r2vCommonHint = this.root.querySelector('[data-r="r2v-common-hint"]');
+        this.batchCommonSlot = this.root.querySelector('[data-r="batch-common-slot"]');
         this.r2vCommonStatus = this.root.querySelector('[data-r="r2v-common-status"]');
         this.r2vCommonFold = this.root.querySelector('[data-r="r2v-common-fold"]');
         this.r2vCommonToggle = this.root.querySelector('[data-r="r2v-common-toggle"]');
@@ -3337,6 +3424,8 @@ class MiniMaxH3DirectorEditor {
     }
 
     bindEvents() {
+        bindSegmentLoraRefs(this);
+        bindSegmentLoraEvents(this);
         const bind = (sel, fn) => {
             const el = this.root.querySelector(sel);
             if (!el) return;
@@ -3345,6 +3434,10 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="video"]', () => this.pickVideoFile());
         bind('[data-a="video-existing"]', () => { void this.pickExistingVideoFile(); });
         bind('[data-a="fl2v-add-shot"]', () => openFl2vUpload(this));
+        bind('[data-a="fl2v-duplicate"]', () => duplicateFl2vShot(this));
+        bind('[data-a="fl2v-del"]', () => this.deleteSelectedSegment());
+        bind('[data-a="fl2v-group-prev"]', () => this.stepSelectedGroup(-1));
+        bind('[data-a="fl2v-group-next"]', () => this.stepSelectedGroup(1));
         bind('[data-a="r2v-add-group"]', () => addImageBatchGroup(this));
         bind('[data-a="video-append"]', () => this.pickAppendVideoFile());
         bind('[data-a="split"]', () => this.splitAtFrame(this.currentFrame));
@@ -3352,6 +3445,10 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="smart-split"]', () => { void this.smartSplit(); });
         bind('[data-a="del-split"]', () => this.deleteSelectedSplitPoint());
         bind('[data-a="run-select-toggle"]', () => this.toggleRunSelectMode());
+        bind('[data-a="video-duplicate"]', () => this.duplicateSelectedVideoSegment());
+        bind('[data-a="video-group-prev"]', () => this.stepSelectedGroup(-1));
+        bind('[data-a="video-group-next"]', () => this.stepSelectedGroup(1));
+        bind('[data-a="video-del"]', () => this.deleteSelectedSegment());
         bind('[data-a="del"]', () => this.deleteSelectedSegment());
         bind('[data-a="mode-global"]', () => this.setEditMode("global"));
         bind('[data-a="mode-segment"]', () => this.setEditMode("segment"));
@@ -3479,15 +3576,42 @@ class MiniMaxH3DirectorEditor {
         }
         this.globalTask.onchange = () => this.onGlobalField("taskType", this.globalTask.value);
         this.globalPrompt.oninput = () => this.onGlobalField("prompt", this.globalPrompt.value);
+        if (this.mixedT2vPrompt) {
+            this.mixedT2vPrompt.oninput = () => {
+                if (this.getTaskKey() !== "mixed") return;
+                const block = this.ensureMixedT2vCommon();
+                if (!block) return;
+                block.prompt = this.mixedT2vPrompt.value;
+                this.scheduleTimelineSync();
+            };
+        }
+        if (this.mixedT2vToggle) {
+            this.mixedT2vToggle.onclick = (e) => {
+                stopDomEvent(e);
+                if (this.getTaskKey() !== "mixed") return;
+                const block = this.ensureMixedT2vCommon();
+                if (!block) return;
+                const nextOn = !block.enabled;
+                block.enabled = nextOn;
+                if (nextOn) this.timeline.global.commonCollapsed = false;
+                this.syncR2vCommonCollapse();
+                this.scheduleTimelineSync();
+                this.updateDomWidgetHeight?.();
+            };
+        }
         if (this.r2vCommonFold) {
             this.r2vCommonFold.onclick = (e) => {
                 stopDomEvent(e);
-                if (!this.usesR2vCommonPanel() || !this.isR2vCommonEnabled()) return;
+                if (!this.usesSharedParamsPanel()) return;
+                const mixed = this.getTaskKey() === "mixed";
+                if (!mixed && !this.isSharedParamsEnabled()) return;
                 this.timeline.global = this.timeline.global || {
                     refs: [], refAudios: [], prompt: "",
                     commonEnabled: true, commonCollapsed: false,
                 };
-                this.timeline.global.commonCollapsed = !this.isR2vCommonCollapsed();
+                this.timeline.global.commonCollapsed = mixed
+                    ? !this.timeline.global.commonCollapsed
+                    : !this.isR2vCommonCollapsed();
                 this.syncR2vCommonCollapse();
                 this.scheduleTimelineSync();
                 this.updateDomWidgetHeight?.();
@@ -3496,7 +3620,7 @@ class MiniMaxH3DirectorEditor {
         if (this.r2vCommonToggle) {
             this.r2vCommonToggle.onclick = (e) => {
                 stopDomEvent(e);
-                if (!this.usesR2vCommonPanel()) return;
+                if (!this.usesSharedParamsPanel()) return;
                 this.timeline.global = this.timeline.global || {
                     refs: [], refAudios: [], refVideos: [], prompt: "",
                     commonEnabled: false, commonCollapsed: false,
@@ -3504,11 +3628,16 @@ class MiniMaxH3DirectorEditor {
                 this.timeline.global.refs = this.timeline.global.refs || [];
                 this.timeline.global.refAudios = this.timeline.global.refAudios || [];
                 this.timeline.global.refVideos = this.timeline.global.refVideos || [];
-                const nextOn = !this.isR2vCommonEnabled();
+                const nextOn = !this.isSharedParamsEnabled();
                 this.timeline.global.commonEnabled = nextOn;
-                // Enable → expand; disable → collapse and stop runtime merge.
-                this.timeline.global.commonCollapsed = !nextOn;
-                if (nextOn) {
+                // Mixed keeps one shell; enabling r2v must not fold away the t2v section.
+                if (this.getTaskKey() === "mixed") {
+                    if (nextOn) this.timeline.global.commonCollapsed = false;
+                } else {
+                    // Enable → expand; disable → collapse and stop runtime merge.
+                    this.timeline.global.commonCollapsed = !nextOn;
+                }
+                if (nextOn && (this.isR2vBatch() || this.getTaskKey() === "mixed")) {
                     rebaseR2vGroupSlotsForCommon(this);
                 }
                 // Must refresh visibility + render ref/audio slots (they stay empty until first paint).
@@ -3517,6 +3646,7 @@ class MiniMaxH3DirectorEditor {
                 this.scheduleTimelineSync();
                 this.updateDomWidgetHeight?.();
             };
+            if (this.mixedR2vToggle) this.mixedR2vToggle.onclick = this.r2vCommonToggle.onclick;
         }
         if (this.continuousRefCb) {
             this.continuousRefCb.onchange = () => {
@@ -4148,12 +4278,10 @@ class MiniMaxH3DirectorEditor {
 
     toggleSegmentRun(index) {
         if (!this.isRunSelectEnabled()) return;
-        if (this.isFl2vMode()) {
-            if (!this.timeline.segments?.[index]?.isStartFrame) return;
-        } else {
-            const n = this.getRunnableSegmentCount();
-            if (index < 0 || index >= n) return;
-        }
+        // fl2v: every shot is runnable (text-only / end-only groups too), so
+        // never gate on isStartFrame — that only means "has a start image".
+        const n = this.getRunnableSegmentCount();
+        if (index < 0 || index >= n) return;
         const sel = new Set(this.timeline.runSelection || []);
         if (sel.has(index)) sel.delete(index);
         else sel.add(index);
@@ -4206,15 +4334,13 @@ class MiniMaxH3DirectorEditor {
         const n = this.getRunnableSegmentCount();
         const canRunSelect = this.supportsRunSelect();
         const enabled = this.isRunSelectEnabled() && canRunSelect;
-        // r2v uses timeline checkboxes (fl2v-style); other batch tasks use the card bar.
-        const useBatchBar = this.isImageBatch() && canRunSelect && !this.isR2vBatch();
+        // Every mode keeps「选择运行」on the top bar, immediately left of the task selector.
         this.btnRunSelectToggle?.classList.toggle("active", enabled);
         this.btnRunSelectToggle?.classList.toggle("bd-btn-run-select", true);
-        this.btnRunSelectToggle?.classList.toggle("hidden", !canRunSelect || useBatchBar);
-        this.batchRunSelectBtn?.classList.toggle("active", enabled);
-        this.batchRunSelectBtn?.classList.toggle("hidden", !useBatchBar);
-        this.runSelectAllWrap?.classList.toggle("hidden", !enabled || useBatchBar);
-        this.batchRunSelectAllWrap?.classList.toggle("hidden", !enabled || !useBatchBar);
+        this.btnRunSelectToggle?.classList.toggle("hidden", !canRunSelect);
+        this.batchRunSelectBtn?.classList.toggle("hidden", true);
+        this.runSelectAllWrap?.classList.toggle("hidden", !enabled);
+        this.batchRunSelectAllWrap?.classList.toggle("hidden", true);
         // Keep the chip hidden while a run is active — otherwise commit/sync
         // re-shows it on top of the green progress title.
         const running = !!this.runStatusEl?.classList.contains("active");
@@ -4361,6 +4487,7 @@ class MiniMaxH3DirectorEditor {
                 refs: cloneJson(g.refs, []),
                 refAudios: cloneJson(g.refAudios || g.ref_audios, []),
                 refVideos: cloneJson(g.refVideos || g.ref_videos, []),
+                t2vCommon: g.t2vCommon,
             },
         };
     }
@@ -4389,6 +4516,9 @@ class MiniMaxH3DirectorEditor {
         this.timeline.global.refs = cloneJson(gc.refs, []);
         this.timeline.global.refAudios = cloneJson(gc.refAudios, []);
         this.timeline.global.refVideos = cloneJson(gc.refVideos, []);
+        const videoT2v = sanitizeT2vCommon(gc.t2vCommon);
+        if (videoT2v) this.timeline.global.t2vCommon = videoT2v;
+        else delete this.timeline.global.t2vCommon;
         if (this.globalPrompt) this.globalPrompt.value = this.timeline.global.prompt || "";
         if (this.globalPromptWidget) this.globalPromptWidget.value = this.timeline.global.prompt || "";
         this.selectedIndex = clamp(
@@ -4435,8 +4565,10 @@ class MiniMaxH3DirectorEditor {
         this.timeline.global.continuousReference = false;
         this.timeline.global.commonEnabled = false;
         this.timeline.global.commonCollapsed = false;
+        delete this.timeline.global.t2vCommon;
         if (this.globalPrompt) this.globalPrompt.value = "";
         if (this.globalPromptWidget) this.globalPromptWidget.value = "";
+        if (this.mixedT2vPrompt) this.mixedT2vPrompt.value = "";
         this.updateVideoNameLabel();
     }
 
@@ -4476,6 +4608,7 @@ class MiniMaxH3DirectorEditor {
                 refs: g.refs,
                 refAudios: g.refAudios || g.ref_audios,
                 refVideos: g.refVideos || g.ref_videos,
+                t2vCommon: g.t2vCommon,
             },
         });
         if (!safe) return;
@@ -4522,6 +4655,7 @@ class MiniMaxH3DirectorEditor {
                 refs: cloneJson(g.refs, []),
                 refAudios: cloneJson(g.refAudios || g.ref_audios, []),
                 refVideos: cloneJson(g.refVideos || g.ref_videos, []),
+                t2vCommon: g.t2vCommon,
             },
         };
     }
@@ -4540,6 +4674,9 @@ class MiniMaxH3DirectorEditor {
         this.timeline.global.refs = cloneJson(gc.refs, []);
         this.timeline.global.refAudios = cloneJson(gc.refAudios, []);
         this.timeline.global.refVideos = cloneJson(gc.refVideos, []);
+        const batchT2v = sanitizeT2vCommon(gc.t2vCommon);
+        if (batchT2v) this.timeline.global.t2vCommon = batchT2v;
+        else delete this.timeline.global.t2vCommon;
         this.selectedIndex = clamp(
             ws.selectedIndex ?? 0,
             0,
@@ -4567,8 +4704,10 @@ class MiniMaxH3DirectorEditor {
         this.timeline.global.refs = [];
         this.timeline.global.refAudios = [];
         this.timeline.global.refVideos = [];
+        delete this.timeline.global.t2vCommon;
         if (this.globalPrompt) this.globalPrompt.value = "";
         if (this.globalPromptWidget) this.globalPromptWidget.value = "";
+        if (this.mixedT2vPrompt) this.mixedT2vPrompt.value = "";
     }
 
     /** Snapshot t2v / i2v / r2v groups for a specific task key (session + persist). */
@@ -4604,6 +4743,7 @@ class MiniMaxH3DirectorEditor {
                 refs: g.refs,
                 refAudios: g.refAudios || g.ref_audios,
                 refVideos: g.refVideos || g.ref_videos,
+                t2vCommon: g.t2vCommon,
             },
         });
         if (!safe) return;
@@ -4685,8 +4825,8 @@ class MiniMaxH3DirectorEditor {
     /** rv2v (and video-timeline tasks with refs) use the polished r2v-like asset stage. */
     usesRv2vRefStyle(taskKey = this.getTaskKey()) {
         const key = resolveTaskKey(taskKey);
-        // r2v shared panel reuses the polished image/audio slot chrome.
-        return key === "rv2v" || key === "vrc2v" || key === "vi2v" || key === "r2v";
+        // r2v / mixed shared panel reuses the polished image/audio slot chrome.
+        return key === "rv2v" || key === "vrc2v" || key === "vi2v" || key === "r2v" || key === "mixed";
     }
 
     /** v2v prompt-only video edit — full-width polished prompt stage. */
@@ -4700,7 +4840,9 @@ class MiniMaxH3DirectorEditor {
         const segKey = resolveTaskKey(
             seg?.taskType || this.timeline.global?.taskType || this.globalTask?.value || globalKey,
         );
-        const globalRefStyle = !hideTimeline && this.usesRv2vRefStyle(globalKey);
+        const globalRefStyle = !hideTimeline && (
+            this.usesRv2vRefStyle(globalKey) || this.usesR2vCommonPanel()
+        );
         const segRefStyle = !hideTimeline && this.usesRv2vRefStyle(segKey);
         const globalV2vStyle = !hideTimeline && this.usesV2vPromptStyle(globalKey);
         const segV2vStyle = !hideTimeline && this.usesV2vPromptStyle(segKey);
@@ -4737,10 +4879,11 @@ class MiniMaxH3DirectorEditor {
 
     updateReferenceImageVisibility({ hideTimeline = false, seg = null } = {}) {
         const globalKey = this.getTaskKey();
-        const showGlobalRefs = !hideTimeline && taskUsesReferenceImages(globalKey);
-        const showGlobalRefAudios = !hideTimeline && taskUsesReferenceAudios(globalKey);
-        // r2v common panel: multi-slot ref videos (distinct from ads2v single referenceVideo).
-        const showGlobalR2vVideos = !hideTimeline && this.usesR2vCommonPanel();
+        const commonMedia = !hideTimeline && this.usesR2vCommonPanel();
+        const showGlobalRefs = commonMedia || (!hideTimeline && taskUsesReferenceImages(globalKey));
+        const showGlobalRefAudios = commonMedia || (!hideTimeline && taskUsesReferenceAudios(globalKey));
+        // r2v / mixed common panel: multi-slot ref videos (distinct from ads2v single referenceVideo).
+        const showGlobalR2vVideos = commonMedia;
         const showGlobalRefVideo = !hideTimeline && taskUsesReferenceVideo(globalKey);
 
         this.globalRefsCol?.classList.toggle(
@@ -4753,8 +4896,12 @@ class MiniMaxH3DirectorEditor {
         this.globalRefVideoCol?.classList.toggle("hidden", !showGlobalRefVideo);
         if (this.globalPanelTitle) {
             let titleKey = "panel.globalPromptOnly";
-            if (this.usesR2vCommonPanel()) {
+            if (this.getTaskKey() === "mixed" && this.usesSharedParamsPanel()) {
+                titleKey = "panel.mixedCommonParams";
+            } else if (this.usesR2vCommonPanel()) {
                 titleKey = "panel.r2vCommonParams";
+            } else if (this.usesSharedParamsPanel()) {
+                titleKey = "panel.t2vCommonParams";
             } else if (showGlobalRefVideo) {
                 titleKey = "panel.globalPromptAndRefVideo";
             } else if (showGlobalRefs || showGlobalRefAudios) {
@@ -4956,8 +5103,13 @@ class MiniMaxH3DirectorEditor {
         this.updateStageVisibility();
         this.updateLiveSamplePanel();
         this.syncExternalGroupsTimeline();
-        // r2v keeps bd-split visible so the shared「公共参数」panel can sit above batch cards.
-        this.root.querySelector(".bd-split")?.classList.toggle("hidden", (isBatch && !isR2v) || isFl2v);
+        // Shared params render under the batch toolbar, so the split row stays hidden in batch.
+        const showVideoDup = isVideoEditTaskKey(taskKey);
+        this.root.querySelector('[data-r="video-group-bar"]')?.classList.toggle("hidden", !showVideoDup);
+        const videoDup = this.root.querySelector('[data-a="video-duplicate"]');
+        if (videoDup) videoDup.disabled = !showVideoDup || !this.hasVideo?.();
+        this.syncGroupNavButtons();
+        this.root.querySelector(".bd-split")?.classList.toggle("hidden", isBatch || isFl2v);
         this.batchPanel?.classList.toggle("hidden", !isBatch);
         this.root?.classList.toggle("bd-batch-fill", !!isBatch);
         this.fl2vUi?.root?.classList.toggle("hidden", !isFl2v);
@@ -5008,6 +5160,9 @@ class MiniMaxH3DirectorEditor {
             }
             updateFl2vToolbarBtns(this);
             updateR2vToolbarBtns(this);
+        }
+        if (showVideoDup || isFl2v || isBatch) {
+            this.root.querySelector('.bd-actions [data-a="del"]')?.classList.add("hidden");
         }
 
         // Side ref panels stay hidden for most batch modes (refs live in cards).
@@ -5992,20 +6147,43 @@ class MiniMaxH3DirectorEditor {
 
     isGlobalMode() { return (this.timeline.editMode || "global") === "global"; }
 
-    /** r2v batch: show timeline.global as shared params for all asset groups. */
+    /** Picture slots on the shared panel: r2v, or mixed (task key itself has no ref images). */
+    showsGlobalReferenceImages() {
+        return taskUsesReferenceImages(this.getTaskKey()) || !!this.usesR2vCommonPanel?.();
+    }
+
+    /** Audio slots on the shared panel: r2v, or mixed. */
+    showsGlobalReferenceAudios() {
+        return taskUsesReferenceAudios(this.getTaskKey()) || !!this.usesR2vCommonPanel?.();
+    }
+
+    /** r2v, and mixed (r2v groups read the shared media). */
     usesR2vCommonPanel() {
-        return !!this.isR2vBatch?.();
+        const key = this.getTaskKey?.();
+        return !!this.isImageBatch?.() && (key === "r2v" || key === "mixed");
+    }
+
+    /** r2v media, t2v shared prompt, mixed (t2v + r2v groups). */
+    usesSharedParamsPanel() {
+        const key = this.getTaskKey?.();
+        return !!this.isImageBatch?.() && (key === "r2v" || key === "t2v" || key === "mixed");
     }
 
     /** Whether shared common params are enabled at run time. Default off. */
+    isSharedParamsEnabled() {
+        if (!this.usesSharedParamsPanel()) return false;
+        return !!(this.timeline?.global?.commonEnabled ?? this.timeline?.global?.common_enabled);
+    }
+
+    /** r2v-only: media merge, slot rebase, inherit previews. */
     isR2vCommonEnabled() {
         if (!this.usesR2vCommonPanel()) return false;
-        return !!(this.timeline?.global?.commonEnabled ?? this.timeline?.global?.common_enabled);
+        return this.isSharedParamsEnabled();
     }
 
     /** UI-only fold; when enabled+collapsed, runtime still merges common params. */
     isR2vCommonCollapsed() {
-        if (!this.isR2vCommonEnabled()) return true;
+        if (!this.isSharedParamsEnabled()) return true;
         return !!(this.timeline?.global?.commonCollapsed ?? this.timeline?.global?.common_collapsed);
     }
 
@@ -6014,49 +6192,158 @@ class MiniMaxH3DirectorEditor {
         return this.isGlobalMode() || this.isR2vCommonEnabled();
     }
 
+    /** Shared params sit under the group toolbar, and stay hidden until expanded. */
+    _placeCommonParamsPanel(shared, bodyHidden) {
+        const panel = this.globalPanel;
+        if (!panel) return;
+        const split = this.root.querySelector(".bd-split");
+        const batch = this.batchPanel;
+        const notice = batch?.querySelector('[data-r="batch-i2v-notice"]');
+        if (shared && batch && notice) {
+            if (panel.parentElement !== batch || panel.nextElementSibling !== notice) {
+                batch.insertBefore(panel, notice);
+            }
+            panel.classList.toggle("hidden", !!bodyHidden);
+            return;
+        }
+        if (split && panel.parentElement !== split) {
+            const seg = split.querySelector('[data-r="segment-panel"]');
+            if (seg) split.insertBefore(panel, seg);
+            else split.appendChild(panel);
+        }
+        panel.classList.remove("hidden");
+    }
+
     syncR2vCommonCollapse() {
+        const shared = this.usesSharedParamsPanel();
         const r2v = this.usesR2vCommonPanel();
-        const on = this.isR2vCommonEnabled();
-        const folded = this.isR2vCommonCollapsed();
-        const bodyHidden = !on || folded;
-        this.globalPanel?.classList.toggle("bd-r2v-common-panel", r2v);
-        this.globalPanel?.classList.toggle("bd-r2v-common-collapsed", r2v && bodyHidden);
-        this.r2vCommonHint?.classList.toggle("hidden", !r2v || bodyHidden);
+        const on = this.isSharedParamsEnabled();
+        const mixed = this.getTaskKey?.() === "mixed";
+        const shellFolded = !!(this.timeline?.global?.commonCollapsed ?? this.timeline?.global?.common_collapsed);
+        const folded = mixed ? shellFolded : this.isR2vCommonCollapsed();
+        const bodyHidden = mixed ? shellFolded : (!on || folded);
+        const promptOnly = shared && !r2v;
+        const copy = promptOnly ? "t2v" : "r2v";
+        this.batchCommonSlot?.classList.toggle("hidden", !shared);
+        this._placeCommonParamsPanel(shared, bodyHidden);
+        this.globalPanel?.classList.toggle("bd-r2v-common-panel", shared);
+        this.globalPanel?.classList.toggle("bd-t2v-common-panel", promptOnly);
+        this.globalPanel?.classList.toggle("bd-mixed-unified", mixed && shared);
+        this.globalPanel?.classList.toggle("bd-r2v-common-collapsed", shared && bodyHidden);
+        this.r2vCommonHint?.classList.toggle("hidden", !shared || bodyHidden);
+        if (this.r2vCommonHint && shared) {
+            const hkey = mixed ? "panel.mixedCommonHint" : `panel.${copy}CommonHint`;
+            this.r2vCommonHint.textContent = t(hkey);
+            this.r2vCommonHint.setAttribute("data-i18n", hkey);
+        }
         if (this.r2vCommonFold) {
-            this.r2vCommonFold.classList.toggle("hidden", !r2v || !on);
-            if (r2v && on) {
+            this.r2vCommonFold.classList.toggle("hidden", mixed ? !shared : (!shared || !on));
+            if (shared && (mixed || on)) {
                 const fkey = folded ? "panel.r2vCommonExpand" : "panel.r2vCommonCollapse";
+                const tip = folded
+                    ? (mixed ? "tooltip.mixedCommonExpand" : `tooltip.${copy}CommonExpand`)
+                    : (mixed ? "tooltip.mixedCommonCollapse" : `tooltip.${copy}CommonCollapse`);
                 this.r2vCommonFold.textContent = t(fkey);
                 this.r2vCommonFold.setAttribute("data-i18n", fkey);
-                this.r2vCommonFold.title = t(
-                    folded ? "tooltip.r2vCommonExpand" : "tooltip.r2vCommonCollapse",
-                );
+                this.r2vCommonFold.title = t(tip);
             }
         }
         if (this.r2vCommonToggle) {
-            this.r2vCommonToggle.classList.toggle("on", on);
-            const key = on ? "panel.r2vCommonDisable" : "panel.r2vCommonEnable";
-            this.r2vCommonToggle.textContent = t(key);
-            this.r2vCommonToggle.setAttribute("data-i18n", key);
-            this.r2vCommonToggle.title = t(on ? "tooltip.r2vCommonDisable" : "tooltip.r2vCommonEnable");
+            this.r2vCommonToggle.classList.toggle("hidden", !!mixed);
+            if (!mixed) {
+                this.r2vCommonToggle.classList.toggle("on", on);
+                const key = on ? "panel.r2vCommonDisable" : "panel.r2vCommonEnable";
+                const tip = on ? `tooltip.${copy}CommonDisable` : `tooltip.${copy}CommonEnable`;
+                this.r2vCommonToggle.textContent = t(key);
+                this.r2vCommonToggle.setAttribute("data-i18n", key);
+                this.r2vCommonToggle.title = t(tip);
+            }
         }
         if (this.r2vCommonStatus) {
-            this.r2vCommonStatus.classList.toggle("on", on);
-            const skey = !on
-                ? "panel.r2vCommonOff"
-                : (folded ? "panel.r2vCommonOnCollapsed" : "panel.r2vCommonOn");
-            this.r2vCommonStatus.textContent = t(skey);
-            this.r2vCommonStatus.setAttribute("data-i18n", skey);
+            if (mixed) {
+                const t2vOn = !!this.ensureMixedT2vCommon()?.enabled;
+                const t2vLabel = t(t2vOn ? "panel.mixedFlagT2vOn" : "panel.mixedFlagT2vOff");
+                const r2vLabel = t(on ? "panel.mixedFlagR2vOn" : "panel.mixedFlagR2vOff");
+                this.r2vCommonStatus.classList.toggle("on", t2vOn || on);
+                this.r2vCommonStatus.textContent = `${t2vLabel} · ${r2vLabel}`;
+                this.r2vCommonStatus.removeAttribute("data-i18n");
+            } else {
+                this.r2vCommonStatus.classList.toggle("on", on);
+                const skey = on ? "panel.commonEnabled" : "panel.commonDisabled";
+                this.r2vCommonStatus.textContent = t(skey);
+                this.r2vCommonStatus.setAttribute("data-i18n", skey);
+            }
         }
-        if (r2v && this.globalPrompt) {
-            this.globalPrompt.placeholder = t("placeholder.r2vCommonPrompt");
-            this.globalPrompt.setAttribute("data-i18n-placeholder", "placeholder.r2vCommonPrompt");
+        if (this.globalPrompt) {
+            const pkey = mixed
+                ? "placeholder.mixedR2vCommonPrompt"
+                : (r2v
+                    ? "placeholder.r2vCommonPrompt"
+                    : (promptOnly ? "placeholder.t2vCommonPrompt" : "placeholder.globalPrompt"));
+            this.globalPrompt.placeholder = t(pkey);
+            this.globalPrompt.setAttribute("data-i18n-placeholder", pkey);
         }
         // Keep shared layout class in sync so image/audio slot chrome paints correctly.
         // Layout chrome follows enablement (not UI fold) so group inherit previews stay correct.
         if (r2v) {
             this.globalPromptLayout?.classList.toggle("bd-rv2v-layout", on);
             this.globalPanel?.classList.toggle("bd-rv2v-panel", on);
+        }
+        this.syncMixedT2vPanel();
+    }
+
+    /**
+     * Mixed mode keeps a prompt-only t2v common block, separate from r2v
+     * (global.prompt + refs / commonEnabled). First open copies the old shared
+     * prompt so existing graphs keep their t2v text until edited.
+     */
+    ensureMixedT2vCommon() {
+        if (this.getTaskKey?.() !== "mixed") return null;
+        const g = this.timeline.global = this.timeline.global || {};
+        const existing = sanitizeT2vCommon(g.t2vCommon || g.t2v_common);
+        if (existing) {
+            g.t2vCommon = existing;
+            return g.t2vCommon;
+        }
+        g.t2vCommon = {
+            enabled: !!(g.commonEnabled ?? g.common_enabled),
+            collapsed: !!(g.commonCollapsed ?? g.common_collapsed),
+            prompt: g.prompt || "",
+        };
+        this.scheduleTimelineSync?.();
+        return g.t2vCommon;
+    }
+
+    syncMixedT2vPanel() {
+        const mixed = this.getTaskKey?.() === "mixed" && !!this.usesSharedParamsPanel?.();
+        this.root?.querySelector(".bd-split")?.classList.toggle("bd-split-dual", mixed);
+        this.mixedStack?.classList.toggle("hidden", !mixed);
+        if (!mixed) {
+            this.globalPanel?.classList.remove("bd-mixed-r2v-off");
+            return;
+        }
+        const block = this.ensureMixedT2vCommon();
+        const t2vOn = !!block?.enabled;
+        const r2vOn = this.isSharedParamsEnabled();
+        this.mixedT2vSec?.classList.toggle("off", !t2vOn);
+        this.globalPanel?.classList.toggle("bd-mixed-r2v-off", !r2vOn);
+        const paintToggle = (btn, on, tipOn, tipOff) => {
+            if (!btn) return;
+            btn.classList.toggle("on", on);
+            const key = on ? "panel.mixedSecDisable" : "panel.mixedSecEnable";
+            btn.textContent = t(key);
+            btn.setAttribute("data-i18n", key);
+            btn.title = t(on ? tipOn : tipOff);
+        };
+        paintToggle(this.mixedT2vToggle, t2vOn, "tooltip.mixedT2vCommonDisable", "tooltip.mixedT2vCommonEnable");
+        paintToggle(this.mixedR2vToggle, r2vOn, "tooltip.mixedR2vCommonDisable", "tooltip.mixedR2vCommonEnable");
+        if (this.mixedT2vPrompt) {
+            const pkey = "placeholder.mixedT2vCommonPrompt";
+            this.mixedT2vPrompt.placeholder = t(pkey);
+            this.mixedT2vPrompt.setAttribute("data-i18n-placeholder", pkey);
+            if (document.activeElement !== this.mixedT2vPrompt) {
+                this.mixedT2vPrompt.value = block?.prompt || "";
+            }
         }
     }
 
@@ -6070,17 +6357,17 @@ class MiniMaxH3DirectorEditor {
 
     updateModeUI() {
         const global = this.isGlobalMode();
-        const r2vCommon = this.usesR2vCommonPanel();
+        const sharedCommon = this.usesSharedParamsPanel();
         const r2vOn = this.isR2vCommonEnabled();
-        this.globalPanel.style.display = (global || r2vCommon) ? "flex" : "none";
-        this.segmentPanel.style.display = (global || r2vCommon) ? "none" : "flex";
+        this.globalPanel.style.display = (global || sharedCommon) ? "flex" : "none";
+        this.segmentPanel.style.display = (global || sharedCommon) ? "none" : "flex";
         this.syncR2vCommonCollapse();
         this.updateReferenceImageVisibility({
             // Show shared ref chrome only when r2v common is enabled (expanded).
             hideTimeline: (this.isImageBatch() && !r2vOn) || this.isGenMode(),
             seg: (global || r2vOn) ? null : this.timeline.segments[this.selectedIndex],
         });
-        if (!global && !r2vCommon) this.updateSelectionUI();
+        if (!global && !sharedCommon) this.updateSelectionUI();
         else {
             this.updateSelectionUI();
             if (taskUsesReferenceVideo(this.getTaskKey())) this.renderRefVideoSlot();
@@ -6150,7 +6437,7 @@ class MiniMaxH3DirectorEditor {
             hideTimeline: (this.isImageBatch?.() && !r2vOn) || this.isGenMode?.(),
             seg: this.usesGlobalRefPanel?.() ? null : this.timeline?.segments?.[this.selectedIndex],
         });
-        if (this.usesGlobalRefPanel?.() && taskUsesReferenceImages(this.getTaskKey())) {
+        if (this.usesGlobalRefPanel?.() && this.showsGlobalReferenceImages()) {
             if (this.timeline?.global) this.timeline.global.refs = this.timeline.global.refs || [];
             this.renderRefSlots?.(this.timeline.global?.refs, this.globalRefsBox, true);
         } else if (!this.usesGlobalRefPanel?.()) {
@@ -6159,7 +6446,7 @@ class MiniMaxH3DirectorEditor {
                 this.renderRefSlots?.(seg.refs, this.segRefsBox, false);
             }
         }
-        if (taskUsesReferenceAudios(this.getTaskKey())) this.renderRefAudioSlots?.();
+        if (this.showsGlobalReferenceAudios()) this.renderRefAudioSlots?.();
         if (this.usesR2vCommonPanel?.()) this.renderR2vCommonVideoSlots?.();
         this.scheduleRender?.();
         this.node?.setDirtyCanvas?.(true, true);
@@ -6961,10 +7248,10 @@ class MiniMaxH3DirectorEditor {
         this.seekBar.max = Math.max(0, this.getTotalFrames() - 1);
         if (syncTimeline) this.scheduleTimelineSync();
         if (!skipRender) this.scheduleRender();
-        if (this.usesGlobalRefPanel() && taskUsesReferenceImages(this.getTaskKey())) {
+        if (this.usesGlobalRefPanel() && this.showsGlobalReferenceImages()) {
             this.renderRefSlots(this.timeline.global.refs, this.globalRefsBox, true);
         }
-        if (this.usesGlobalRefPanel() && taskUsesReferenceAudios(this.getTaskKey())) {
+        if (this.usesGlobalRefPanel() && this.showsGlobalReferenceAudios()) {
             this.renderRefAudioSlots();
         }
         if (this.isImageBatch()) this.renderImageBatchGroups();
@@ -9081,7 +9368,6 @@ class MiniMaxH3DirectorEditor {
         // in run-select mode; keeps hit type accurate for cursor / future hooks).
         if (this.isRunSelectEnabled() && this.getRunnableSegmentCount() >= 2 && y >= TRACK_Y && y <= trackBottom) {
             for (let i = segs.length - 1; i >= 0; i--) {
-                if (this.isFl2vMode() && !segs[i]?.isStartFrame) continue;
                 const g = this._runCheckGeometry(segs[i], width);
                 if (x >= g.hitX0 && x <= g.hitX1 && y >= g.hitY0 && y <= g.hitY1) {
                     return { type: "run-check", index: i };
@@ -9857,6 +10143,162 @@ class MiniMaxH3DirectorEditor {
         }
     }
 
+    /** Enable 上一组 / 下一组 only when that neighbor exists. */
+    syncGroupNavButtons() {
+        const fl2v = !!this.isFl2vMode?.();
+        const batch = !!this.isImageBatch?.();
+        const video = isVideoEditTaskKey(this.getTaskKey?.());
+        let count = 0;
+        if (fl2v) count = this.timeline?.shots?.length || 0;
+        else if (batch || video) count = this.timeline?.segments?.length || 0;
+        const index = this.selectedIndex ?? 0;
+        const atStart = count < 2 || index <= 0;
+        const atEnd = count < 2 || index >= count - 1;
+        const videoBlocked = video && !this.hasVideo?.();
+        const apply = (sel, disabled) => {
+            const btn = this.root?.querySelector(sel);
+            if (!btn || btn.classList.contains("hidden")) return;
+            btn.disabled = !!disabled;
+        };
+        apply('[data-a="batch-group-prev"]', atStart);
+        apply('[data-a="batch-group-next"]', atEnd);
+        apply('[data-a="fl2v-group-prev"]', atStart);
+        apply('[data-a="fl2v-group-next"]', atEnd);
+        apply('[data-a="video-group-prev"]', videoBlocked || atStart);
+        apply('[data-a="video-group-next"]', videoBlocked || atEnd);
+    }
+
+    _scrollFrameIntoView(frame) {
+        const vp = this.viewport;
+        if (!vp) return;
+        const x = this.frameToX(frame, this.getLayoutWidth());
+        if (!Number.isFinite(x)) return;
+        const pad = 24;
+        const left = vp.scrollLeft;
+        const right = left + vp.clientWidth;
+        if (x < left + pad || x > right - pad) {
+            vp.scrollLeft = Math.max(0, x - vp.clientWidth / 3);
+        }
+    }
+
+    /** Move the timeline highlight and playhead onto the selected group. */
+    _revealSelectedTimelineGroup() {
+        const seg = (this.timeline?.segments || [])[this.selectedIndex];
+        if (!seg) {
+            this.scheduleRender?.();
+            return;
+        }
+        const start = Math.max(0, parseInt(seg.start, 10) || 0);
+        const len = Math.max(1, parseInt(seg.length ?? seg.frameCount, 10) || 1);
+        const inside = this.currentFrame >= start && this.currentFrame < start + len;
+        if (!inside) this.seekToFrame(start);
+        else this.scheduleRender?.();
+        this._scrollFrameIntoView(inside ? this.currentFrame : start);
+    }
+
+    /** Step the current group in t2v / i2v / r2v / mixed, fl2v, v2v, and rv2v. */
+    stepSelectedGroup(delta) {
+        const step = delta < 0 ? -1 : 1;
+        if (this.isFl2vMode?.()) {
+            const shots = this.timeline?.shots || [];
+            if (shots.length < 2) return;
+            const cur = clamp(this.selectedIndex ?? 0, 0, shots.length - 1);
+            const next = clamp(cur + step, 0, shots.length - 1);
+            if (next === cur) return;
+            this.selectedIndex = next;
+            updateFl2vDetailUI(this);
+            this.updateVideoNameLabel?.();
+            this.fl2vUi?.shotsEl?.querySelector?.(".bd-fl2v-shot.selected")
+                ?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+            this._revealSelectedTimelineGroup();
+            this.syncGroupNavButtons();
+            return;
+        }
+        if (this.isImageBatch?.()) {
+            selectBatchGroup(this, (this.selectedIndex ?? 0) + step);
+            this._revealSelectedTimelineGroup();
+            return;
+        }
+        if (!isVideoEditTaskKey(this.getTaskKey?.()) || !this.hasVideo?.()) return;
+        const segs = this.timeline.segments || [];
+        if (segs.length < 2) return;
+        const cur = clamp(this.selectedIndex ?? 0, 0, segs.length - 1);
+        const next = clamp(cur + step, 0, segs.length - 1);
+        if (next === cur) return;
+        this._flushPromptTokenEditors?.();
+        if (!this.isGlobalMode() && this.segPrompt && segs[cur]) {
+            segs[cur].prompt = this.segPrompt.value || "";
+        }
+        const start = Math.max(0, parseInt(segs[next].start, 10) || 0);
+        this.seekToFrame(start, { fromUi: true });
+        this._scrollFrameIntoView(start);
+        this.syncGroupNavButtons();
+    }
+
+    /** v2v / rv2v: copy the selected range, its prompt, and its refs, inserted after it. */
+    duplicateSelectedVideoSegment() {
+        if (!isVideoEditTaskKey(this.getTaskKey())) return;
+        if (!this.hasVideo?.()) return;
+        this._flushPromptTokenEditors?.();
+        const segs = this.timeline.segments || [];
+        const index = clamp(this.selectedIndex ?? 0, 0, Math.max(0, segs.length - 1));
+        const src = segs[index];
+        if (!src) return;
+        if (!this.isGlobalMode() && this.segPrompt) src.prompt = this.segPrompt.value || "";
+        const start = Math.max(0, parseInt(src.start, 10) || 0);
+        const len = Math.max(0, parseInt(src.length ?? src.frameCount, 10) || 0);
+        if (len < 1) return;
+        if (!this.getFrameMap().length && this.getTotalFrames() > 0) this.materializeFrameMap();
+        const map = [...this.getFrameMap()];
+        if (start + len > map.length) return;
+        const slice = map.slice(start, start + len).map((entry) => (
+            entry && typeof entry === "object" ? { ...entry } : entry
+        ));
+        const frameAt = start + len;
+        map.splice(frameAt, 0, ...slice);
+        this.setFrameMap(map);
+        this._syncPrimaryVideoFromClips(map);
+        const copy = JSON.parse(JSON.stringify(src));
+        copy.id = uid();
+        copy.start = frameAt;
+        copy.length = len;
+        copy.frameCount = len;
+        delete copy.previewB64;
+        delete copy.previewFrames;
+        delete copy.previewMime;
+        delete copy.imageB64;
+        for (const seg of segs) {
+            if (seg !== src && (parseInt(seg.start, 10) || 0) >= frameAt) {
+                seg.start = (parseInt(seg.start, 10) || 0) + len;
+            }
+        }
+        segs.splice(index + 1, 0, copy);
+        if (Array.isArray(this.timeline.runSelection)) {
+            const sourceOn = this.timeline.runSelection.includes(index);
+            this.timeline.runSelection = this.timeline.runSelection.map((i) => (i >= index + 1 ? i + 1 : i));
+            if (this.timeline.runSelectEnabled && sourceOn) {
+                this.timeline.runSelection.push(index + 1);
+                this.timeline.runSelection.sort((a, b) => a - b);
+            }
+        }
+        this.selectedIndex = index + 1;
+        this.timeline.totalFrames = map.length;
+        if (this.totalFramesWidget) this.totalFramesWidget.value = map.length;
+        this.currentFrame = clamp(frameAt, 0, Math.max(0, map.length - 1));
+        if (this.seekBar) {
+            this.seekBar.max = Math.max(0, map.length - 1);
+            this.seekBar.value = this.currentFrame;
+        }
+        this.updateSelectionUI();
+        this.updateVideoNameLabel();
+        this._prefetchSegmentThumbs(0, Math.min(map.length, THUMB_PREFETCH_BATCH * 4));
+        this._syncStagePreview?.(this.currentFrame, { force: true });
+        this.scheduleRender();
+        this.commit(false, { syncTimeline: true });
+        this.updateRunSelectUI();
+        this.updateDomWidgetHeight?.();
+    }
+
     deleteSelectedSegment() {
         if (this.isGenMode()) {
             this.genDeleteSelectedSegment();
@@ -10567,11 +11009,10 @@ class MiniMaxH3DirectorEditor {
             const sel = showSegSel && i === this.selectedIndex;
             const running = i === this._runHighlightSeg;
             const runOn = this.isSegmentRunEnabled(i);
-            const fl2vStart = !this.isFl2vMode() || !!seg.isStartFrame;
             const visualRank = this._visualRankFromArrayIndex(i);
             const isDragSource = reordering && visualRank === dragFromRank;
             const isDropTarget = reordering && dropRank >= 0 && visualRank === dropRank && dropRank !== dragFromRank;
-            if (this.isRunSelectEnabled() && this.getRunnableSegmentCount() >= 2 && fl2vStart && !runOn) {
+            if (this.isRunSelectEnabled() && this.getRunnableSegmentCount() >= 2 && !runOn) {
                 this.ctx.globalAlpha = 0.32;
             } else if (isDragSource) {
                 this.ctx.globalAlpha = 0.28;
@@ -10646,7 +11087,6 @@ class MiniMaxH3DirectorEditor {
                 this.isRunSelectEnabled()
                 && this.getRunnableSegmentCount() >= 2
                 && pxW >= RUN_CHECK_SIZE + 8
-                && (!this.isFl2vMode() || seg.isStartFrame)
             ) {
                 const g = this._runCheckGeometry(seg, width);
                 this._drawSegmentRunCheck(g.boxX, g.boxY, runOn);
@@ -10843,11 +11283,11 @@ class MiniMaxH3DirectorEditor {
         const seg = this.usesGlobalRefPanel() ? null : this.timeline.segments[this.selectedIndex];
         this.updateReferenceImageVisibility({ hideTimeline, seg: seg || null });
 
-        if (this.usesGlobalRefPanel() && taskUsesReferenceImages(this.getTaskKey())) {
+        if (this.usesGlobalRefPanel() && this.showsGlobalReferenceImages()) {
             this.timeline.global.refs = this.timeline.global.refs || [];
             this.renderRefSlots(this.timeline.global.refs, this.globalRefsBox, true);
         }
-        if (this.usesGlobalRefPanel() && taskUsesReferenceAudios(this.getTaskKey())) {
+        if (this.usesGlobalRefPanel() && this.showsGlobalReferenceAudios()) {
             this.timeline.global.refAudios = this.timeline.global.refAudios || [];
             this.renderRefAudioSlots();
         }
@@ -10899,6 +11339,7 @@ class MiniMaxH3DirectorEditor {
             const fc = liveSeg.frameCount ?? liveSeg.length ?? defaultFrameCount(this.getTaskKey(), this.getFrameRate());
             if (this.genSegFc) this.genSegFc.value = fc;
         }
+        renderSegmentLoras(this, liveSeg);
         if (this.isFl2vMode()) updateFl2vDetailUI(this);
     }
 

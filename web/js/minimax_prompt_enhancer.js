@@ -735,7 +735,9 @@ export function mountPromptEnhancerPanel(editor, parentEl) {
         pe.setStatus(`正在扩写: ${label}…`, "loading");
         const result = await pe.callEnhanceApi(prompt, taskKey, block, cfg);
         if (result.ok) {
-            const text = taskKey === "fl2v" ? stripFl2vPromptBody(result.text) : result.text;
+            const text = (taskKey === "fl2v" || taskKey === "i2v")
+                ? stripFl2vPromptBody(result.text)
+                : result.text;
             pe.setPromptTextForBlock(text, segmentIndex);
             return { ok: true, chars: text.length, taskKey, result: { ...result, text } };
         }
@@ -769,7 +771,9 @@ export function mountPromptEnhancerPanel(editor, parentEl) {
                     pe.visionBadge.style.display = "none";
                 }
                 if (result.ok) {
-                    const text = taskKey === "fl2v" ? stripFl2vPromptBody(result.text) : result.text;
+                    const text = (taskKey === "fl2v" || taskKey === "i2v")
+                        ? stripFl2vPromptBody(result.text)
+                        : result.text;
                     pe.setActivePromptText(text);
                     pe.setStatus(formatEnhanceSuccessStatus(taskKey, { ...result, text }), "success");
                 } else {
@@ -879,7 +883,8 @@ export function mountPromptEnhancerPanel(editor, parentEl) {
     pe.handleServerEnhanced = (payload) => {
         if (!payload || String(payload.node) !== String(editor.node.id)) return;
         let text = payload.text || "";
-        if (editor.isFl2vMode?.() || resolveTaskKey(editor.getTaskKey?.() || "") === "fl2v") {
+        const peTask = resolveTaskKey(editor.getTaskKey?.() || "");
+        if (editor.isFl2vMode?.() || peTask === "fl2v" || peTask === "i2v") {
             text = stripFl2vPromptBody(text);
         }
         pe.setActivePromptText(text);

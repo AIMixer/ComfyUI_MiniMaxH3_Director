@@ -303,6 +303,7 @@ class MiniMaxH3Director:
         clear_vram_between_segments=True,
         clear_vram_before_refine=False,
         clear_vram_before_face_refine=False,
+        cache_frames_codec="raw",
         export_source_images=False,
         export_pre_face_refine=False,
         **kwargs,
@@ -326,6 +327,8 @@ class MiniMaxH3Director:
             refine=refine,
             face_refine=face_refine,
         )
+        codec = str(cache_frames_codec or "raw").strip().lower()
+        plan.cache_frames_codec = "ffv1" if codec == "ffv1" else "raw"
 
         try:
             combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, held_for_confirmation, pre_face_combined, pre_face_segments = (

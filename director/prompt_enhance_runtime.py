@@ -131,8 +131,8 @@ def maybe_enhance_segment_prompt(
         from ..lib.task_prompts import resolve_task_key
         from .fl2v_timeline import fl2v_prompt_body_only
 
-        # fl2v locks are injected at encode time 鈥?keep PE/UI storage as motion body only.
-        if resolve_task_key(task_type) == "fl2v":
+        # Official ImageToVideo uses the PE body as-is; strip leftover lock wraps.
+        if resolve_task_key(task_type) in {"fl2v", "i2v"}:
             enhanced = fl2v_prompt_body_only(enhanced) or enhanced
         log.info(
             "Director prompt enhanced (%s, %d chars, vision=%s)",
