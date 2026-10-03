@@ -205,6 +205,21 @@ function normalizeAudioMode(value) {
     return "generate";
 }
 
+/**
+ * 导出方式归一。早期版本有过第三档 "merge"（分段合并：逐段写盘 + 收尾 ffmpeg 合并出
+ * merged.mp4），现已取消 —— 合并成片改由「出片预览」统一提供（同一份时间轴条目、
+ * 逐字节相同的一个文件，可直接下载），不再单独产出一份。
+ *
+ * 「取消」必须做成归一而不是直接不认：老工作流里存的 exportMode 就是 "merge"，
+ * 直接落到 "all" 会静默切成「整条时间轴常驻内存」的导出模式（分段导出正是为规避它）。
+ * 后端 `_resolve_export_mode` 保留了同样的兼容别名，两侧必须一致。
+ */
+function normalizeExportMode(value) {
+    const raw = String(value || "all").trim().toLowerCase();
+    if (raw === "segments" || raw === "merge" || raw === "merged") return "segments";
+    return "all";
+}
+
 const CONTINUITY_FRAME_CHOICES = [5, 22, 39, 56];
 /** Official Motion Context baseline recommendation. */
 const DEFAULT_CONTINUITY_FRAMES = 22;
@@ -1487,7 +1502,7 @@ function videoRelativePath(upload) {
     return sub ? `${sub}/${name}` : name;
 }
 
-function inputViewUrl(relativePath, type = "input") {
+export function inputViewUrl(relativePath, type = "input") {
     const norm = String(relativePath || "").replace(/\\/g, "/");
     const slash = norm.lastIndexOf("/");
     const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
@@ -2037,7 +2052,7 @@ function parseTimeline(raw, totalFrames, fps) {
             width: data.output?.width ?? data.width ?? 864,
             height: data.output?.height ?? data.height ?? 480,
             maxExportFrames: data.output?.maxExportFrames ?? data.output?.max_export_frames ?? 0,
-            exportMode: data.output?.exportMode ?? data.output?.export_mode ?? "all",
+            exportMode: normalizeExportMode(data.output?.exportMode ?? data.output?.export_mode),
             audioMode: normalizeAudioMode(data.output?.audioMode ?? data.output?.audio_mode),
             exportSourceImages: data.output?.exportSourceImages === true
                 || data.output?.export_source_images === true,
@@ -2149,7 +2164,7 @@ function parseTimeline(raw, totalFrames, fps) {
     }
 }
 
-class MiniMaxH3DirectorEditor {
+export class MiniMaxH3DirectorEditor {
     constructor(node, container, domWidget) {
         this.node = node;
         this.container = container;
@@ -4356,7 +4371,7 @@ class MiniMaxH3DirectorEditor {
             this.runSelectSummary.style.color = "#aaa";
         } else {
             const nums = (this.timeline.runSelection || []).map((i) => i + 1).join(", ");
-            const exportHint = this.timeline.output?.exportMode === "segments"
+            const exportHint = normalizeExportMode(this.timeline.output?.exportMode) === "segments"
                 ? t("runSelect.exportOnlyChecked")
                 : t("runSelect.fillUnchecked");
             this.runSelectSummary.textContent = count === 1
@@ -6535,7 +6550,14 @@ class MiniMaxH3DirectorEditor {
         if (this.outW) this.outW.value = String(out.width ?? 864);
         if (this.outH) this.outH.value = String(out.height ?? 480);
         if (this.outMaxFrames) this.outMaxFrames.value = String(out.maxExportFrames ?? 0);
-        if (this.outExportMode) this.outExportMode.value = out.exportMode === "segments" ? "segments" : "all";
+        // 历史值 "merge" 在这里就地折成 "segments"（老工作流加载时会走到这）。
+        // 也要写回 timeline：下游（导出提示文案、预览后缀）读的是同一份 output。
+        const normExportMode = normalizeExportMode(out.exportMode);
+        if (out.exportMode !== normExportMode) {
+            out.exportMode = normExportMode;
+            this.timeline.output = { ...out };
+        }
+        if (this.outExportMode) this.outExportMode.value = normExportMode;
         if (this.outAudioMode) {
             const am = normalizeAudioMode(out.audioMode);
             this.outAudioMode.value = am;
@@ -6852,7 +6874,7 @@ class MiniMaxH3DirectorEditor {
 
     _exportPreviewSuffix() {
         const cap = this.getMaxExportFrames();
-        const exportMode = this.timeline.output?.exportMode === "segments"
+        const exportMode = normalizeExportMode(this.timeline.output?.exportMode) === "segments"
             ? t("output.preview.segmentExport")
             : "";
         const dur = this.getTimelineDurationSec().toFixed(2);
@@ -6926,7 +6948,7 @@ class MiniMaxH3DirectorEditor {
             const n = parseInt(value, 10);
             this.timeline.output.maxExportFrames = Number.isFinite(n) && n > 0 ? n : 0;
         } else if (key === "exportMode") {
-            this.timeline.output.exportMode = value === "segments" ? "segments" : "all";
+            this.timeline.output.exportMode = normalizeExportMode(value);
         } else if (key === "audioMode") {
             this.timeline.output.audioMode = normalizeAudioMode(value);
         } else if (key === "continuityEnabled") {

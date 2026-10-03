@@ -604,6 +604,384 @@ async def minimax_clear_segment_cache(request):
         return web.Response(status=500, text=str(exc))
 
 
+async def minimax_latest_seg_export(request=None):
+    """返回最近一次分段导出的目录与文件（供前端刷新页面后恢复出片预览）。
+
+    按目录 mtime 取最新一个 ``output/minimax_seg_export/<ts>/``。
+    只报每段的 ``seg_XXXX.mp4``；整片不在这里产出 —— 合并成片由出片预览统一提供
+    （``minimax_preview_cache/`` 下按内容指纹缓存，见 ``build_preview_file``）。
+    """
+    try:
+        base = os.path.join(folder_paths.get_output_directory(), "minimax_seg_export")
+        empty = {"run_dir": "", "files": [], "seg_indexes": []}
+        if not os.path.isdir(base):
+            return web.json_response(empty)
+        runs = sorted(
+            (os.path.join(base, name) for name in os.listdir(base)
+             if os.path.isdir(os.path.join(base, name))),
+            key=lambda p: os.path.getmtime(p),
+            reverse=True,
+        )
+        if not runs:
+            return web.json_response(empty)
+        run = runs[0]
+        files = sorted(
+            name for name in os.listdir(run)
+            if name.lower().endswith(".mp4") and os.path.isfile(os.path.join(run, name))
+        )
+        # 目录里有哪些段（按 seg_XXXX.mp4 文件名）——刷新后素材轴要据此复原，
+        # 否则「选择运行」过的时间轴会按全量段去画，播放头错位。
+        seg_indexes: list[int] = []
+        for name in files:
+            m = re.match(r"^seg_(\d{4})\.mp4$", name)
+            if m:
+                seg_indexes.append(int(m.group(1)))
+        return web.json_response({
+            "run_dir": os.path.basename(run),
+            "files": files,
+            "seg_indexes": sorted(seg_indexes),
+        })
+    except Exception as exc:
+        log.warning("MiniMax H3 Director latest_seg_export failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
+async def minimax_stitch_latest(request=None):
+    """出片预览恢复：返回「播放列表」条目（每段一条 /view 引用）。
+
+    预览已改为前端逐段连播、不再落盘拼接 merged_latest.mp4。本路由从任务表取
+    每段「最新登记」的有效片段，文件已删 / 0 字节的段用代码生成的占位片补位并标
+    missing —— 供前端「出片预览」整条时间轴恢复（删掉一段后刷新，那段仍在素材轴上）。
+    """
+    try:
+        from .segment_mp4_export import build_preview_playlist_from_manifests
+
+        entries = build_preview_playlist_from_manifests()
+        return web.json_response({"entries": entries})
+    except Exception as exc:
+        log.warning("MiniMax H3 Director stitch_latest failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
+async def minimax_preview_plan(request=None):
+    """出片预览恢复（首选路）：前端把**当前时间轴的段形状**送上来，后端按它展开播放列表。
+
+    body::
+
+        {"node_id": 12,
+         "task_type": "r2v — 参考主体生视频(Reference to Video)",
+         "frame_rate": 24, "width": 640, "height": 480,
+         "segments": [{"index": 0, "frames": 124}, ...]}
+
+    返回 ``{"entries": [...]}``：段号在该任务类型的任务表里有有效登记 → 真实片段；
+    手动「恢复素材」绑定过 → 绑定文件；其余 → 「第 N 段缺失」占位片（时长按时间轴帧数）。
+
+    为什么必须由前端给形状：后端在没有 plan 时**不知道当前时间轴有几段、每段多少帧**。
+    只读任务表 → 段数只等于登记过的段数（16 段的时间轴刷新后只剩 17 秒，缺段全没了）；
+    按段号扫盘补 → 会把别条时间轴的素材拼进来（实测 83.38s 被拼成 5:39）。浏览器端
+    手上就有这条时间轴，送上来最准，也不用任何猜测。
+
+    成功后顺带把列表记进本进程缓存 + 落盘快照，后续 ``/preview_file`` 直接复用。
+    """
+    try:
+        payload: dict = {}
+        if request is not None:
+            try:
+                payload = await request.json()
+            except Exception:
+                payload = {}
+        node_id = payload.get("node_id")
+        shape = payload.get("segments") or payload.get("shape") or []
+        if not isinstance(shape, list) or not shape:
+            return web.json_response({"entries": []})
+
+        def _num(v) -> float:
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+
+        from .segment_mp4_export import (
+            build_preview_playlist_for_shape,
+            compute_shape_key,
+            set_preview_items,
+        )
+
+        task_key = _resolve_task_key_from_payload(payload)
+        entries = await asyncio.to_thread(
+            build_preview_playlist_for_shape,
+            shape,
+            task_key=task_key,
+            fps=_num(payload.get("frame_rate") or payload.get("fps")),
+            width=int(_num(payload.get("width"))),
+            height=int(_num(payload.get("height"))),
+        )
+        if entries and node_id not in (None, ""):
+            try:
+                # 连同「工作流身份指纹」一起存：多工作流共用同一 node id 时，读的一方按
+                # 指纹校验，不会把别条时间轴的快照当成自己的（见 compute_shape_key）。
+                set_preview_items(
+                    str(node_id), entries, shape_key=compute_shape_key(shape, task_key=task_key)
+                )
+            except Exception:
+                pass
+        return web.json_response({"entries": entries, "task": task_key})
+    except Exception as exc:
+        log.warning("MiniMax H3 Director preview_plan failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
+async def minimax_preview_file(request=None):
+    """出片预览「预览文件」：整条时间轴的段（含缺失段占位片）拼成**一份可随机 seek 的
+    faststart mp4**，按内容指纹缓存在 ``output/minimax_preview_cache/``，返回它的
+    ``/view`` 引用（前端挂到 ``<video src>``）。
+
+    * 内容未变 → 命中既有文件（零 ffmpeg 开销）；改过任意一段 → 新 key → 新文件；
+    * 普通 mp4（非 fMP4）→ 浏览器走 HTTP range 随机 seek，**拖动毫秒级**，duration 正确；
+    * 落盘累积由 ``prune_preview_cache`` 兜住：TTL / 数量上限 / 总大小上限 / 半写残留，
+      每次构建前回收，且永不删除正在服务的那一份。
+
+    query：
+      * ``node_id`` —— 命中该节点的落盘快照（最近一次展开的播放列表）；
+      * ``shape``（``"0:124,1:124"``）/ ``task_type`` / ``frame_rate`` —— **当前时间轴的
+        段形状**，前端手上就有。有了它才算得出「工作流身份指纹」：多个工作流共用同一个
+        node id 时，别条时间轴的快照不会被复用（指纹不符 → 按形状重新展开）。
+        不带形状时退回旧行为（快照 → 任务表）。
+
+    取源统一走 ``resolve_preview_entries`` —— 页面预览与「整片产物」同一个函数、同一个
+    顺序，保证「页面播的」与「导出的」是同一个文件。
+    """
+    node_id = None
+    shape: list[dict] = []
+    task_key = ""
+    fps = 0.0
+    width = 0
+    height = 0
+    try:
+        if request is not None:
+            q = request.rel_url.query
+            node_id = q.get("node_id")
+            shape = _parse_shape_query(q.get("shape"))
+            if q.get("task") or q.get("task_type"):
+                task_key = _resolve_task_key_from_payload(
+                    {"task": q.get("task") or "", "task_type": q.get("task_type") or ""}
+                )
+            fps = _query_float(q.get("frame_rate") or q.get("fps"))
+            width = int(_query_float(q.get("width")))
+            height = int(_query_float(q.get("height")))
+    except Exception:
+        node_id, shape = None, []
+    try:
+        from .segment_mp4_export import build_preview_file, resolve_preview_entries
+
+        items, src = await asyncio.to_thread(
+            resolve_preview_entries,
+            node_id=node_id,
+            shape=shape,
+            task_key=task_key,
+            fps=fps,
+            width=width,
+            height=height,
+        )
+        if not items:
+            return web.json_response({"filename": "", "subfolder": "", "reason": "no_segment"})
+        # concat 可能要几秒（copy 模式通常 <1s）→ 丢线程池，别阻塞 aiohttp 事件循环。
+        path, name = await asyncio.to_thread(build_preview_file, items)
+        if not path or not name:
+            return web.json_response({"filename": "", "subfolder": "", "reason": "build_failed"})
+        return web.json_response({
+            "filename": name,
+            "subfolder": "minimax_preview_cache",
+            "source": src,
+        })
+    except Exception as exc:
+        log.warning("MiniMax H3 Director preview_file failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
+def _resolve_task_key_from_payload(payload: dict) -> str:
+    """请求体 → 任务键。前端送的是任务类型标签（如「r2v — 参考主体生视频」），
+    与后端登记侧共用 ``resolve_task_key``，避免两边切出不同的键名。"""
+    explicit = str(payload.get("task") or "").strip()
+    if explicit:
+        return explicit
+    label = str(payload.get("task_type") or payload.get("taskType") or "").strip()
+    if not label:
+        return ""
+    try:
+        from ..lib.task_prompts import resolve_task_key
+
+        return resolve_task_key(label)
+    except Exception:
+        return label.split(" — ", 1)[0].split(" - ", 1)[0].strip()
+
+
+def _query_float(value) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _parse_shape_query(raw) -> list[dict]:
+    """``shape`` 查询参数 → ``[{"index": i, "frames": n}, ...]``。
+
+    紧凑串（前端用，URL 短）::
+
+        "0:124,1:124,8:141"
+
+    也接受 JSON 数组（便于手工调试 / 旧调用方）::
+
+        '[{"index": 0, "frames": 124}, ...]'   或   '[[0, 124], ...]'
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    if text[0] in "[{":
+        try:
+            data = json.loads(text)
+        except Exception:
+            return []
+        out: list[dict] = []
+        for item in data if isinstance(data, list) else []:
+            if isinstance(item, dict):
+                out.append({"index": int(item.get("index", -1)), "frames": int(item.get("frames") or 0)})
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                out.append({"index": int(item[0]), "frames": int(item[1] or 0)})
+        return [e for e in out if e["index"] >= 0]
+    out = []
+    for chunk in text.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split(":")
+        if len(parts) != 2:
+            continue
+        try:
+            out.append({"index": int(parts[0]), "frames": int(float(parts[1]))})
+        except Exception:
+            continue
+    return [e for e in out if e["index"] >= 0]
+
+
+def _resolve_local_media(payload: dict) -> str | None:
+    """请求体 → 本机文件路径。支持 ``path``（本机绝对路径）或
+    ``filename`` + ``type`` + ``subfolder``（刚通过 upload_chunk 上传的文件）。"""
+    raw = str(payload.get("path") or "").strip()
+    if raw and os.path.isfile(raw):
+        return raw
+    name = _safe_basename(payload.get("filename"))
+    if not name:
+        return None
+    kind = str(payload.get("type") or "input").strip().lower()
+    if kind == "output":
+        base = folder_paths.get_output_directory()
+    elif kind == "temp":
+        base = folder_paths.get_temp_directory()
+    else:
+        base = folder_paths.get_input_directory()
+    sub = str(payload.get("subfolder") or "").strip().replace("\\", "/").strip("/")
+    if sub and (".." in sub.split("/")):
+        return None
+    cand = os.path.join(base, sub, name) if sub else os.path.join(base, name)
+    return cand if os.path.isfile(cand) else None
+
+
+async def minimax_recover_segment(request):
+    """标红段「恢复素材」：把一份现成的 mp4 绑定到时间轴第 N 段。
+
+    为什么需要：任务表按内容指纹（提示词 + 负向 + 参考素材 + 帧数）定位段，改过
+    时长/提示词的旧素材指纹必然对不上 —— 那些段在预览里全成了红斜纹占位片，而素材
+    其实还在。指纹证明不了的事由人担保：用户指定「这个文件就是第 N 段」。
+
+    body(JSON)：``index``（段号，0 基）、``task_type``（或 ``task``）、``node_id``（可选，
+    用于就地替换本进程已下发的播放列表）、来源二选一：``path``（本机绝对路径）
+    或 ``filename`` + ``type`` + ``subfolder``（upload_chunk 刚传上来的）。
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.Response(status=400, text="Invalid JSON body.")
+    if not isinstance(payload, dict):
+        return web.Response(status=400, text="Invalid JSON body.")
+    try:
+        idx = int(payload.get("index"))
+    except (TypeError, ValueError):
+        return web.Response(status=400, text="Missing segment index.")
+    if idx < 0:
+        return web.Response(status=400, text="Invalid segment index.")
+    task = _resolve_task_key_from_payload(payload)
+    if not task:
+        return web.Response(status=400, text="Missing task type.")
+    src = _resolve_local_media(payload)
+    if not src:
+        return web.Response(status=400, text="Media file not found.")
+    try:
+        from .segment_mp4_export import (
+            _entry_ok,
+            bind_segment_clip,
+            get_preview_items,
+            import_recovered_clip,
+            set_preview_items,
+        )
+
+        dest = await asyncio.to_thread(import_recovered_clip, src, idx)
+        if not dest:
+            return web.Response(status=500, text="Failed to import clip.")
+        record = await asyncio.to_thread(bind_segment_clip, task, idx, dest)
+        if not record:
+            return web.Response(status=500, text="Failed to bind clip.")
+        entry = _entry_ok(idx, int(record.get("frames") or 0), dest, source="bound")
+        # 本进程已下发的播放列表也换掉这一段 —— 否则 /preview_file 仍按旧列表拼，
+        # 用户会看到「红块变绿了但预览里还是占位片」。
+        node_id = payload.get("node_id")
+        items = get_preview_items(node_id)
+        if items:
+            for i, e in enumerate(items):
+                if int(e.get("index", -1)) == idx:
+                    items[i] = entry
+                    break
+            set_preview_items(node_id, items)
+        return web.json_response(
+            {
+                "ok": True,
+                "task": task,
+                "index": idx,
+                "frames": int(record.get("frames") or 0),
+                "filename": entry.get("filename") or "",
+                "subfolder": entry.get("subfolder") or "",
+            }
+        )
+    except Exception as exc:
+        log.warning("MiniMax H3 Director recover_segment failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
+async def minimax_unrecover_segment(request):
+    """撤销某段的「恢复素材」绑定（只删 ``bind#<idx>``，不动指纹登记）。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.Response(status=400, text="Invalid JSON body.")
+    if not isinstance(payload, dict):
+        return web.Response(status=400, text="Invalid JSON body.")
+    try:
+        idx = int(payload.get("index"))
+    except (TypeError, ValueError):
+        return web.Response(status=400, text="Missing segment index.")
+    task = _resolve_task_key_from_payload(payload)
+    if not task:
+        return web.Response(status=400, text="Missing task type.")
+    try:
+        from .segment_mp4_export import unbind_segment_clip
+
+        removed = await asyncio.to_thread(unbind_segment_clip, task, idx)
+        return web.json_response({"ok": True, "removed": bool(removed), "index": idx})
+    except Exception as exc:
+        log.warning("MiniMax H3 Director unrecover_segment failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
 def _register_route(routes, method: str, path: str, handler) -> None:
     if hasattr(routes, "add_route"):
         routes.add_route(method, path, handler)
@@ -655,6 +1033,16 @@ def register_routes() -> bool:
         "POST",
         "/minimax/director/clear_segment_cache",
         minimax_clear_segment_cache,
+    )
+    _register_route(routes, "GET", "/minimax/director/latest_seg_export", minimax_latest_seg_export)
+    _register_route(routes, "GET", "/minimax/director/stitch_latest", minimax_stitch_latest)
+    _register_route(routes, "POST", "/minimax/director/preview_plan", minimax_preview_plan)
+    _register_route(routes, "GET", "/minimax/director/preview_file", minimax_preview_file)
+    _register_route(
+        routes, "POST", "/minimax/director/recover_segment", minimax_recover_segment
+    )
+    _register_route(
+        routes, "POST", "/minimax/director/unrecover_segment", minimax_unrecover_segment
     )
     from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
 

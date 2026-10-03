@@ -155,6 +155,82 @@ def report_director_segment_preview(
         log.debug("Director preview send skipped: %s", exc)
 
 
+def report_director_video(
+    node_id: str | None,
+    *,
+    kind: str,
+    subfolder: str = "",
+    filename: str = "",
+    fps: float = 24.0,
+    frame_count: int = 0,
+    segment_index: int | None = None,
+    segments: list[dict[str, int]] | None = None,
+    track: list[dict] | None = None,
+    entries: list[dict] | None = None,
+) -> None:
+    """推送已导出的片段 / 完整视频播放列表，让导演台内嵌预览立即播放。
+
+    kind:
+      * ``"playlist"`` — 出片预览播放列表：``entries`` 为时间轴每段一条
+        ``{"index","frames","status","subfolder","filename"}``；missing 段用代码生成的
+        占位片补位。前端 <video> 逐段连播（不再拼 merged_latest.mp4 → 零磁盘累积）。
+      * ``"segment"`` — 单段刚写完（前端当成只有一条的播放列表）。
+    subfolder/filename 对应 output 目录下的 ``minimax_seg_export/<ts>/<file>``，
+    前端用 ``/view?filename=..&subfolder=..&type=output`` 播放。
+
+    ``segments`` = 该视频的实际构成 ``[{"index": 段序号, "frames": 帧数}]``。
+    ``track`` = 时间轴**每一段**的渲染状态（``status`` ∈ ``"ok"/"missing"``）。
+    ``entries`` = 完整播放列表（kind="playlist" 时使用，可独立成事件、无需 filename）。
+    """
+    if not node_id:
+        return
+    if not filename and not entries:
+        return
+    payload = {
+        "node_id": str(node_id),
+        "kind": str(kind),
+        "subfolder": str(subfolder),
+        "filename": str(filename),
+        "fps": float(fps or 24.0),
+        "frame_count": int(frame_count or 0),
+    }
+    if segment_index is not None:
+        payload["segment_index"] = int(segment_index)
+    if segments:
+        payload["segments"] = [
+            {"index": int(s.get("index", -1)), "frames": int(s.get("frames", 0) or 0)}
+            for s in segments
+        ]
+    if track:
+        payload["track"] = [
+            {
+                "index": int(t.get("index", -1)),
+                "frames": int(t.get("frames", 0) or 0),
+                "status": str(t.get("status", "ok") or "ok"),
+            }
+            for t in track
+        ]
+    if entries:
+        payload["entries"] = [
+            {
+                "index": int(e.get("index", -1)),
+                "frames": int(e.get("frames", 0) or 0),
+                "status": str(e.get("status", "ok") or "ok"),
+                "subfolder": str(e.get("subfolder") or ""),
+                "filename": str(e.get("filename") or ""),
+            }
+            for e in entries
+        ]
+    try:
+        from server import PromptServer
+
+        srv = PromptServer.instance
+        if srv:
+            srv.send_sync("minimax_director_video", payload, srv.client_id)
+    except Exception as exc:
+        log.debug("Director video event send skipped: %s", exc)
+
+
 def report_director_finish(node_id: str | None, segment_total: int) -> None:
     report_director_progress(
         node_id,

@@ -279,7 +279,9 @@ class DirectorPlan:
     raw: dict
     source_total_frames: int = 0
     export_max_frames: int = 0
-    export_mode: str = "all"  # "all" | "segments"
+    # "all" | "segments"。历史值 "merge"（分段合并）也归一到这里 —— 见
+    # ``_resolve_export_mode``：合并成片由出片预览统一提供，不再单独产出。
+    export_mode: str = "all"
     # Pixel-frame cache codec. "raw" = uint8 .pt; "ffv1" = lossless mkv.
     cache_frames_codec: str = "raw"
     run_indices: frozenset[int] | None = None  # None = run all segments
@@ -669,7 +671,12 @@ def _resolve_export_total(timeline: dict, source_total: int) -> int:
 
 def _resolve_export_mode(output_block: dict) -> str:
     mode = str(output_block.get("exportMode") or output_block.get("export_mode") or "all").lower()
-    if mode in ("segments", "segment", "per_segment", "by_segment"):
+    # 历史值 "merge"（「分段合并」，逐段写盘 + 收尾 concat 出 merged.mp4）**必须**继续
+    # 归一成 "segments"，不能让它掉进下面的 ``return "all"``：老工作流存的就是 "merge"，
+    # 落到 "all" 会静默切成「整条时间轴常驻内存」的导出模式（正是分段导出要规避的 OOM）。
+    # 合并成片现在由出片预览统一提供（同一份条目、同一个文件），不再单独产出一份。
+    if mode in ("segments", "segment", "per_segment", "by_segment",
+                "merge", "merged", "segments_merge", "segment_merge"):
         return "segments"
     return "all"
 
@@ -1174,8 +1181,9 @@ def plan_summary(plan: DirectorPlan) -> str:
             f"Export cap: {plan.total_frames}/{plan.source_total_frames} frames "
             f"(max {plan.export_max_frames})"
         )
-    export_label = "分段导出" if plan.export_mode == "segments" else "全部导出"
-    lines.append(f"Export mode: {export_label}")
+    lines.append(
+        f"Export mode: {'分段导出' if plan.export_mode == 'segments' else '全部导出'}"
+    )
     if plan.continuity_enabled:
         pinned = [
             seg.index + 1

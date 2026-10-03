@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import gc
 import logging
+import os
+import threading
 import time
 from typing import Any
 
@@ -57,7 +59,12 @@ from .plan import (
     usable_ref_audio_indices,
     drop_unusable_audio_prompt_tags,
 )
-from .progress import report_director_finish, report_director_progress, report_director_segment_preview
+from .progress import (
+    report_director_finish,
+    report_director_progress,
+    report_director_segment_preview,
+    report_director_video,
+)
 from .h3_motion_context import (
     DEFAULT_AUDIO_CONTEXT_FRAMES,
     apply_motion_context,
@@ -84,11 +91,16 @@ from .segment_cache import (
     save_segment_cache,
 )
 from .segment_mp4_export import (
+    build_preview_file,
+    build_segment_playlist,
     copy_segment_mp4_suffix,
     maybe_export_segment_mp4,
     maybe_export_segment_mp4s,
     mp4_export_kind,
     new_segment_mp4_run_dir,
+    segment_mp4_path,
+    set_preview_items,
+    shape_key_from_plan,
 )
 from .segment_continuity import (
     concat_continuous_chunks,
@@ -1632,6 +1644,20 @@ def execute_director_plan_core(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: "
                 f"{mp4_export_kind(mp4_path)} saved → {mp4_path}"
             )
+        # 「出片即时预览」：本段 mp4 一落盘就推给前端（只在分段导出模式下）。
+        if mp4_run_dir is not None:
+            final_mp4 = segment_mp4_path(mp4_run_dir, seg)
+            if final_mp4.is_file():
+                report_director_video(
+                    node_id,
+                    kind="segment",
+                    # /view 只认 output 下的相对路径，必须带上 minimax_seg_export/ 前缀。
+                    subfolder=f"minimax_seg_export/{mp4_run_dir.name}",
+                    filename=final_mp4.name,
+                    fps=float(plan.frame_rate or 24),
+                    frame_count=int(chunk.shape[0]),
+                    segment_index=int(seg.index),
+                )
 
         if clear_vram_between_segments and progress_index < seg_total - 1:
             cleanup_segment_vram(enabled=True)
@@ -1819,6 +1845,57 @@ def execute_director_plan_core(
         raise ValueError("Director plan produced no segments.")
 
     report_director_finish(node_id, seg_total)
+
+    # 时间轴条目（跨运行）：ok 段 → 本次 / 历次运行已登记的真实 seg_XXXX.mp4；
+    # missing 段 → 代码生成的占位片。出片预览与产物导出**共用这一份**，
+    # 保证两者都是**整条时间轴**、时长对齐。
+    #   * 旧实现里预览侧按段号扫盘取最新同名段 → 「选择运行」勾 1 段时播放列表塌成
+    #     一块；而导出侧又走另一条路 → 两处逻辑分叉（「页面看到的」与「导出的」对不上）。
+    #   * 现在统一：先按内容指纹建一次时间轴条目，再各取所需。
+    # 播放列表是**预览与产物共用的唯一取源**：任何导出模式下都必须构造。
+    #   旧实现把它关在 ``export_segments_mode`` 里 → 「全部导出」模式下前端收不到播放
+    #   列表 → 预览退回旧快照或降级路，于是「页面看到的」与「导出的」再次分叉。
+    timeline_entries: list[dict] = []
+    try:
+        timeline_entries = build_segment_playlist(plan)
+    except Exception as exc:
+        log.warning("Director timeline playlist skipped: %s", exc)
+
+    # 出片预览：下发「播放列表」（时间轴每段一条，缺段用代码生成的占位片补位）。
+    # 前端拿其中的 node_id 去请求 /preview_file —— 后端把整条时间轴拼成**一份可随机
+    # seek 的 faststart mp4**（fMP4 流式不可跳转，每次拖动要重拉 1–3s，已弃用）。
+    #   * 预览文件按内容指纹缓存：内容没变直接复用、不重拼；改过一段才生成新文件；
+    #   * 落盘累积由 prune_preview_cache 兜住（TTL / 数量 / 总大小 / 半写残留）；
+    #   * 缺一段也不黑屏 / 整块消失 —— 缺段用占位片补位，进度条始终对齐整条时间轴；
+    #   * 单文件 → 段与段之间没有换源，不会像前端逐段连播那样闪烁。
+    # 无论本次跑了几个段都要下发：单段运行时 run_dir 只有 1 段，
+    # 但任务表里已有本段 + 之前运行登记的有效片段，仍要给出完整播放列表——
+    # 否则前端最后只收到 kind="segment" 事件，进度条会塌缩成一块。
+    if timeline_entries:
+        try:
+            entries = timeline_entries
+            # 带绝对路径的条目缓存给 /preview_file 路由（本进程内），刷新后回退 manifest 重建。
+            # 存的时候一并记下「工作流身份指纹」：多个工作流常放同一个节点 id（都可能是 5），
+            # 读回的一方按指纹校验，才不会把**别条时间轴**的快照当成自己的用掉。
+            set_preview_items(node_id, entries, shape_key=shape_key_from_plan(plan))
+            report_director_video(
+                node_id,
+                kind="playlist",
+                fps=float(plan.frame_rate or 24),
+                entries=entries,
+            )
+            # 后台**预热**预览文件：前端随后请求通常直接命中 → 零等待。
+            # 守护线程 + 内容指纹锁（build_preview_file 内部）保证不会重复拼、
+            # 也不会拖慢节点执行。
+            threading.Thread(
+                target=build_preview_file,
+                args=(entries,),
+                name="mmx-preview-warm",
+                daemon=True,
+            ).start()
+        except Exception as exc:
+            log.warning("Director playlist event skipped: %s", exc)
+
     export_chunks = output_chunks if output_chunks else segment_outputs
     export_pre_chunks = output_pre_chunks if output_pre_chunks else segment_pre_refine
     export_pre_face_chunks = (
