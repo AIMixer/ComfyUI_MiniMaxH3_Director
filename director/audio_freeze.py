@@ -42,12 +42,44 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.audio_freeze")
 # repacks. Contains no tensors on purpose.
 AUDIO_FREEZE_MARK_KEY = "h3_audio_freeze_mark"
 
-FREEZE_VERSION = 1
+FREEZE_VERSION = 2
 
 # Audio-latent ticks per video frame when comfy's constant is unavailable
 # (40 ticks/s at 24 fps = 5/3 — matches FRAME_PER_TOKEN=4 * FRAME_RESCALE=5/3
 # in comfy.ldm.minimax.model).
 DEFAULT_FRAME_RESCALE = 5.0 / 3.0
+
+# Encoded segment audio by PCM signature, kept so the sampler can RESTORE the
+# frozen window content, not just its mask. Why the restore is needed: comfy's
+# noise_mask machinery treats ``latent["samples"]`` as the clean x0 — it
+# overrides the model's prediction with it (``out = out*mask + latent*(1-mask)``)
+# and reinjects it via ``scale_latent_inpaint`` at every step. The SelfLift /
+# refine resume path rewrites the whole AV latent into the sigma-resume
+# representation (``inverse_noise_scaling`` = ``x / (1 - sigma)`` ≈ x13 at
+# sigma≈0.92, with the low-res pass noise mixed in), so a mask-only refresh
+# would pin that mangled audio as the "clean" conditioning of every high-res
+# pass. Restoring the window content keeps the frozen track bit-identical
+# through every sampling stage. Small (≈0.4 MB per segment), CPU-resident.
+_Z_CACHE: dict[str, Any] = {}
+_Z_CACHE_MAX = 8
+
+
+def _cache_z(sig: str, z) -> None:
+    """Remember the encoded window for refresh-time content restore (LRU-ish)."""
+    try:
+        _Z_CACHE.pop(str(sig), None)
+        _Z_CACHE[str(sig)] = z
+        while len(_Z_CACHE) > _Z_CACHE_MAX:
+            _Z_CACHE.pop(next(iter(_Z_CACHE)))
+    except Exception:
+        pass
+
+
+def _cached_z(sig: str):
+    try:
+        return _Z_CACHE.get(str(sig))
+    except Exception:
+        return None
 
 
 def _env_enabled() -> bool:
@@ -400,6 +432,7 @@ def apply_first_pass_audio_freeze(
     )
     _install_noise_mask(latent, video, audio, offset=offset, covered=covered)
     sig = pcm_signature(pcm)
+    _cache_z(sig, z.detach().to("cpu"))
     latent[AUDIO_FREEZE_MARK_KEY] = {
         "offset_ticks": offset,
         "covered_ticks": covered,
@@ -415,13 +448,25 @@ def apply_first_pass_audio_freeze(
 
 
 def refresh_frozen_audio_mask(latent) -> str | None:
-    """Rebuild the keep-mask on a marked latent (no re-encode). Sampler entry.
+    """Rebuild keep-mask + frozen content on a marked latent. Sampler entry.
 
     Called at the top of every ``sample_single_stage``: refine AV re-joins,
     continue-mode locks and SelfLift repacks legitimately drop or rewrite the
     mask, but the freeze marker survives in the latent dict — rebuild from it
     so the frozen audio tokens stay clean through every sampling stage
     (first pass, refine passes, SelfLift, FaceRefine).
+
+    v2: also RESTORES the frozen window content. The SelfLift / refine resume
+    math re-expresses the whole AV latent in the sigma-resume representation
+    (``inverse_noise_scaling`` = ``x / (1 - sigma)``), which rewrites the audio
+    window too. comfy's mask machinery would then treat that mangled audio as
+    the clean x0 to preserve (prediction override + ``scale_latent_inpaint``
+    reinjection), so the high-res passes would condition on noise-dominated
+    audio. The encoded window is cached by PCM signature at apply time and
+    written back here whenever it drifted. No-op when the content already
+    matches (first entry, cache hits), and falls back to a mask-only refresh
+    when the cache is cold (e.g. latent loaded from disk cache — those carry
+    the clean window since v2).
     """
     if not isinstance(latent, dict):
         return None
@@ -431,13 +476,34 @@ def refresh_frozen_audio_mask(latent) -> str | None:
     av = _av_streams(latent)
     if av is None:
         return None
-    video, audio, _nested, _video_squeezed, _audio_squeezed = av
+    video, audio, _nested, video_squeezed, audio_squeezed = av
     audio_t = int(audio.shape[-1])
     offset = max(0, int(mark.get("offset_ticks") or 0))
     covered = max(0, int(mark.get("covered_ticks") or 0))
     if covered <= 0 or offset >= audio_t:
         return None
+    end = min(audio_t, offset + covered)
+    restored = False
+    if end > offset:
+        z = _cached_z(str(mark.get("sig") or ""))
+        if z is not None and int(z.shape[-1]) >= end - offset:
+            want = z[..., : end - offset].to(device=audio.device, dtype=audio.dtype)
+            if not torch.equal(audio[..., offset:end], want):
+                fresh = audio.clone()
+                fresh[..., offset:end] = want
+                _repack_samples(
+                    latent, video, fresh,
+                    video_squeezed=video_squeezed, audio_squeezed=audio_squeezed,
+                )
+                restored = True
     _install_noise_mask(latent, video, audio, offset=offset, covered=covered)
+    if restored:
+        log.info(
+            "Audio freeze: restored %d frozen ticks @+%d (resume transform "
+            "rewrote the audio stream).",
+            end - offset, offset,
+        )
+        return f"content restore + mask refresh {covered}/{audio_t} ticks @+{offset}"
     return f"mask refresh {covered}/{audio_t} ticks @+{offset}"
 
 
