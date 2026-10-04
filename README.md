@@ -132,7 +132,27 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 | UNET (r2v / v2v / rv2v) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
 | CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` |
 | Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
+| Video VAE（2X 高清，可选） | `MiniMax-H3-X2-Detail-v1.safetensors` | `models/vae/` |
 | Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` |
+
+### 2X 视频 VAE（可选）
+
+把 2X 类 VAE（如 `MiniMax-H3-X2-Detail-v1.safetensors`）接到节点的 `video_vae` 槽即可，
+**无需改动任何工作流接线**。导演台会在内部识别这类 VAE 的解码头并自动还原成 2 倍分辨率。
+
+它与原版 Video VAE 的唯一区别是解码投影层：原版输出 3 通道，2X 版输出 12 通道的
+打包子像素（2×2 PixelShuffle）。导演台会自动完成解包，因此：
+- 普通 VAE 走的是完全未改动的原路径，输出逐位一致
+- 2X VAE 的最终 `images` 为 2 倍边长（例如 864×480 → 1728×960）
+
+配套参考（社区节点，非必需）：`ComfyUI-MiniMaxH3_LatentUpscaler` 的
+`MiniMax H3 VAE Decode (fast)` 可在图外单独做 2X 解码，适合想保留原始 16X 版本
+同时再导出一份高清版本的场景 —— 做法与 `selflift-Avatar` 工作流相同：主采样仍用
+原版 Video VAE，末端分叉一路接 2X VAE 解码。
+
+> SelfLift 内部那道「解码 → 放大 → 再编码」的步骤始终按原版 16X 执行，
+> 以保证尺寸链闭合；2X 只作用于最终导出的帧。
+
 
 ## 快速开始
 
