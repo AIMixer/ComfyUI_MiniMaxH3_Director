@@ -567,6 +567,9 @@ function cacheStatusPayload(director, refine) {
     }
     return {
         node_id: String(director.id),
+        // 缓存目录名：导演台「缓存文件夹名」留空时后端回退节点 id。这里必须和
+        // 执行层用同一份取值，否则状态面板会去看另一个目录。
+        cache_name: String(directorValue(director, "cache_name", "")),
         // Keep the graph-wired external-group witness current: the status route
         // runs on the backend where i2v_groups / r2v_groups links are invisible.
         timeline_data: injectExternalGroupsWitness(
@@ -801,7 +804,11 @@ async function clearSegmentCache(node) {
         const response = await api.fetchApi("/minimax/director/clear_segment_cache", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ node_id: String(director.id), kind: "all" }),
+            body: JSON.stringify({
+                node_id: String(director.id),
+                cache_name: String(directorValue(director, "cache_name", "")),
+                kind: "all",
+            }),
         });
         const data = await response.json();
         if (!response.ok || data?.error) {

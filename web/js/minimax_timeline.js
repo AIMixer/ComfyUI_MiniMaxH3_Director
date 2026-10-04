@@ -528,6 +528,7 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
     clear_vram_before_refine: "widget.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.clearVramBeforeFaceRefine",
     cache_frames_codec: "widget.cacheFramesCodec",
+    cache_name: "widget.cacheName",
     export_source_images: "widget.exportSourceImages",
     export_pre_face_refine: "widget.exportPreFaceRefine",
     control_after_generate: "widget.controlAfterGenerate",
@@ -539,6 +540,7 @@ const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_before_refine: "widget.tooltip.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.tooltip.clearVramBeforeFaceRefine",
     cache_frames_codec: "widget.tooltip.cacheFramesCodec",
+    cache_name: "widget.tooltip.cacheName",
     export_source_images: "widget.tooltip.exportSourceImages",
     export_pre_face_refine: "widget.tooltip.exportPreFaceRefine",
 };
@@ -575,6 +577,35 @@ function findDirectorWidget(node, name) {
 }
 
 /**
+ * cache_name 被 widget 重排坑过一次：旧工作流里它抢到了 BDGROUP 分组标题
+ * （「性能」这类字符串）并被原样存进 widgets_values(_named)。分组标题不可能
+ * 是合法缓存目录名 → 命中就复位成默认值（空），让后端回退用节点 id。
+ */
+function sanitizeDirectorCacheName(node) {
+    const w = widgetByName(node, "cache_name");
+    if (!w) return false;
+    const raw = String(w.value ?? "");
+    if (!raw) return false;
+    const dirty = new Set([
+        "性能", "高级采样", "采样设置", "人脸检测", "人脸采样", "人脸贴回",
+        "自提升采样", "自提升", "自提升拼贴",
+    ]);
+    for (const g of node.widgets ?? []) {
+        if (!String(g?.name || "").startsWith("bd_grp_")) continue;
+        if (typeof g.value === "string" && g.value) dirty.add(g.value);
+        try {
+            const label = t(DIRECTOR_GROUP_LABEL_KEYS[g.name]);
+            if (label) dirty.add(label);
+        } catch {
+            /* ignore */
+        }
+    }
+    if (!dirty.has(raw)) return false;
+    w.value = w.options && w.options.default !== undefined ? w.options.default : "";
+    return true;
+}
+
+/**
  * ComfyUI applies widgets_values by index during configure(), before seed's
  * control_after_generate linked combo may exist — shifting optional widgets
  * (steps defaults back to 25). Re-apply saved values by name once widgets settle.
@@ -592,6 +623,18 @@ function restoreDirectorWidgetsFromSaved(node, data) {
                 const w = findDirectorWidget(node, name);
                 if (!w || w.serialize === false) continue;
                 w.value = value;
+            }
+            // ⛔ named 里**没有**的 widget = 保存这份工作流时还不存在的新控件。
+            //    configure 阶段 ComfyUI 是按**下标**塞 widgets_values 的，而本节点
+            //    运行期会重排 widget 顺序（性能组搬家），下标对不上就会把邻居的值
+            //    塞给新控件 —— 实测 cache_name 因此拿到了 BDGROUP「性能」的字符串。
+            //    这里按后端声明的默认值兜底，把新控件复位。
+            for (const w of node.widgets ?? []) {
+                if (!w?.name || w.serialize === false) continue;
+                if (w.name === DIRECTOR_DOM_WIDGET_NAME) continue;
+                if (Object.prototype.hasOwnProperty.call(named, w.name)) continue;
+                const def = w.options?.default;
+                if (def !== undefined) w.value = def;
             }
         } finally {
             node._mmxRestoringSampleWidgets = false;
@@ -619,7 +662,9 @@ function restoreDirectorWidgetsFromSaved(node, data) {
 function applyDirectorConfigureRestore(node, data) {
     if (!node) return false;
     finalizeDirectorWidgetOrder(node);
-    return restoreDirectorWidgetsFromSaved(node, data);
+    const ok = restoreDirectorWidgetsFromSaved(node, data);
+    sanitizeDirectorCacheName(node);
+    return ok;
 }
 
 function finishDirectorConfigureRestore(node) {
@@ -1712,6 +1757,10 @@ const PERF_WIDGET_ORDER = [
     "clear_vram_before_refine",
     "clear_vram_before_face_refine",
     "cache_frames_codec",
+    // cache_name 必须跟着性能组一起被搬（紧挨 cache_frames_codec）。漏掉它，
+    // configure 阶段按位置塞 widgets_values 时会整体错位一位 —— 实测它抢到了
+    // BDGROUP「性能」的值。
+    "cache_name",
 ];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {
