@@ -441,7 +441,7 @@ def execute_director_plan_core(
     list[torch.Tensor],
 ]:
     """Process every segment with MiniMax H3 conditioning + single-stage sampling."""
-    # 缓存目录 key：导演台「缓存文件夹名」填了就按它走，留空则回退节点 id（老工作流行为不变）。
+    # 缓存目录 key：填了「缓存文件夹名」用 <名字>_<节点id>，留空则只有节点 id（老工作流行为不变）。
     # 进度上报必须继续用真实节点 id —— 前端是按画布节点 id 认进度条的。
     progress_node_id = node_id
     node_id = resolve_segment_cache_key(cache_name, node_id)

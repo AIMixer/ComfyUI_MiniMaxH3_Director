@@ -37,10 +37,8 @@
 **可选：** `i2v_groups`（Image to Video 多组）/ `r2v_groups`（Reference to Video 多组）/ `semantic_bridge`（`MiniMax H3 Director Semantic Bridge`）/ `selflift`（`MiniMax H3 Director SelfLift`）/ `refine`（`MiniMax H3 Director Refine`）
 
 > **缓存文件夹名（`cache_name`，面板「性能」组最下方）**：分段缓存的目录名。
-> 填了就落到 `output/minimax_seg_cache/<名字>/`，**留空则沿用节点 id**（旧行为不变）。
-> 节点 id 只在单张图内唯一 —— 前端按「当前图最大 id + 1」分配，不同工作流各自从 1 开始，
-> 所以多个工作流里的导演台常常拿到同一个 id，缓存目录会互相覆盖、甚至被对方的
-> `prune` 当垃圾删掉。想隔离就**给每个工作流填一个自己的名字**。
+> 填了就落到 `output/minimax_seg_cache/<名字>_<节点id>/`，**留空则只有节点 id**（旧行为不变）。
+> 同一个名字配上不同节点 id 会分开。复制工作流后节点 id 通常还是原来的，名字也相同就会继续共用一个目录，要隔开就改名字。
 > 名字会自动过滤 `/ \ : * ? " < > |` 与 Windows 保留名（`CON`/`NUL`…），最长 64 字符。
 
 **输出：** `images` → `audio` → `fps` → `frame_count` → `source_images` → `report` → `images_pre_refine`

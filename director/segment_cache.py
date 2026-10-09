@@ -180,17 +180,20 @@ def normalize_cache_name(raw: Any) -> str:
 def resolve_segment_cache_key(cache_name: Any, node_id: Any) -> str:
     """Disk cache directory name.
 
-    ``cache_name`` (the Director's "缓存文件夹名" widget) wins when it normalises to
-    something usable; otherwise fall back to the node id — so old workflows keep
-    their existing directory untouched.
+    Empty ``cache_name`` keeps the legacy directory ``<node_id>``.
+    A usable name becomes ``<name>_<node_id>``: the same label on two Director
+    nodes stays split by node id. A copied workflow still shares the folder when
+    both the name and the node id match. Missing node id falls back to the name
+    alone so a cache can still be addressed.
     """
-    name = normalize_cache_name(cache_name)
-    if name:
-        return name
     try:
-        return str(node_id or "").strip()
+        node = str(node_id or "").strip()
     except Exception:
-        return ""
+        node = ""
+    name = normalize_cache_name(cache_name)
+    if name and node:
+        return f"{name}_{node}"
+    return node or name
 
 
 def _sanitize_dir_token(token: Any) -> str:

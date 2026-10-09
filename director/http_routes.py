@@ -526,8 +526,8 @@ async def minimax_first_pass_cache_status(request):
     if not re.fullmatch(r"\d+", node_id):
         return web.Response(status=400, text="Invalid Director node id.")
 
-    # Same key the executor uses: named cache dir when 缓存文件夹名 is filled,
-    # node id otherwise. Never trust the raw string as a path segment.
+    # Same key the executor uses: <cache_name>_<node_id> when 缓存文件夹名 is
+    # filled, node id otherwise. Never trust the raw string as a path segment.
     from .segment_cache import resolve_segment_cache_key
 
     cache_key = resolve_segment_cache_key(body.get("cache_name"), node_id)
