@@ -25,6 +25,13 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.h3_latent_upscale")
 LATENT_UPSCALE_FOLDER = "latent_upscale_models"
 MISSING_MODEL_LABEL = "(将 3D 权重放入 models/latent_upscale_models)"
 
+# Filename hints for the H3 3D latent-upscaler family. Newer checkpoints do not
+# always carry "3d" in the name (e.g. h3_upscaler_lms_v0.1_fp32.safetensors), so
+# match the family by any of these instead of the "3d" substring alone. Keep the
+# list specific to H3/Minimax so unrelated latent upscalers (e.g. the LTX one)
+# stay out of the preferred set.
+H3_LATENT_UPSCALER_HINTS = ("3d", "h3", "minimax", "lms")
+
 # Per-channel mean/std from LBH-123-AI H3 latent-upscaler training.
 LATENTS_MEAN = [
     0.858090341091156, -0.9606591463088989, 1.0661640167236328, -0.5090325474739075,
@@ -61,6 +68,18 @@ def ensure_latent_upscale_folder() -> str | None:
         return None
 
 
+def _looks_like_h3_latent_upscaler(name: str) -> bool:
+    """True when the filename carries any H3 latent-upscaler family hint."""
+    low = name.lower()
+    return any(hint in low for hint in H3_LATENT_UPSCALER_HINTS)
+
+
+def _h3_latent_upscaler_rank(name: str) -> tuple[int, str]:
+    """Sort key: explicit "3d" checkpoints first, then the other hints."""
+    low = name.lower()
+    return (0 if "3d" in low else 1, low)
+
+
 def list_h3_latent_upscale_models() -> list[str]:
     root = ensure_latent_upscale_folder()
     names: list[str] = []
@@ -78,8 +97,10 @@ def list_h3_latent_upscale_models() -> list[str]:
         except Exception:
             pass
     out = sorted({n for n in names if n and not n.startswith("(")})
-    preferred = [n for n in out if "3d" in n.lower()]
-    return preferred or out or [MISSING_MODEL_LABEL]
+    preferred = [n for n in out if _looks_like_h3_latent_upscaler(n)]
+    # Keep the folder usable when nothing matches the H3 family: fall back to
+    # every candidate so the user can still see and pick what they dropped in.
+    return sorted(preferred or out, key=_h3_latent_upscaler_rank) or [MISSING_MODEL_LABEL]
 
 
 def _norm_tensors(device, dtype):

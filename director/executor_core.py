@@ -82,6 +82,7 @@ from .segment_cache import (
     load_segment_handoff_meta,
     log_cache_run_summary,
     prune_segment_cache,
+    resolve_cache_key,
     resolve_project_id,
     save_first_pass_cache,
     save_segment_cache,
@@ -524,6 +525,7 @@ def execute_director_plan_core(
     plan: DirectorPlan,
     *,
     node_id: str | None = None,
+    cache_name: str | None = None,
     model,
     vae,
     audio_vae,
@@ -556,12 +558,14 @@ def execute_director_plan_core(
     list[torch.Tensor],
 ]:
     """Process every segment with MiniMax H3 conditioning + single-stage sampling."""
-    # Disk-cache key: timeline projectId (cleaned) when present, else node_id, so
-    # different projects never share segment cache. Progress/report still uses node_id.
-    cache_key = resolve_project_id(getattr(plan, "raw", None), node_id)
+    # 缓存目录 key：timeline projectId（清洗后）+ 可选「缓存文件夹名」组合成
+    # <名字>_<projectId>，缺项降级、都空回退节点 id（老工作流行为不变）。
+    # 进度上报必须继续用真实节点 id —— 前端是按画布节点 id 认进度条的。
+    progress_node_id = node_id
+    cache_key = resolve_cache_key(getattr(plan, "raw", None), cache_name, node_id)
     # Stamp the project id so the segment-export run folder can record its owner
     # (used by「合并成片」to keep runs from different projects apart).
-    plan.project_id = cache_key
+    plan.project_id = resolve_project_id(getattr(plan, "raw", None), node_id)
     plan.sample_seed = int(seed)
     plan.sample_cfg = float(cfg)
     plan.sample_steps = int(steps)
@@ -771,7 +775,7 @@ def execute_director_plan_core(
         }
 
         report_director_progress(
-            node_id, segment_index=progress_index, segment_total=seg_total,
+            progress_node_id, segment_index=progress_index, segment_total=seg_total,
             phase="prepare", phase_value=0, phase_max=1, **meta,
         )
 
@@ -825,7 +829,7 @@ def execute_director_plan_core(
             prev_from_this_run = prev_idx in resampled_this_run
             try:
                 prev_tail = resolve_prev_segment_output(
-                    plan, all_segments, seg.index, completed_outputs, node_id
+                    plan, all_segments, seg.index, completed_outputs, cache_key
                 )
             except ValueError as exc:
                 # No frame cache for prev (partial re-run, never rendered):
@@ -911,7 +915,7 @@ def execute_director_plan_core(
         assert_minimax_canvas(ctx_w, ctx_h)
 
         report_director_progress(
-            node_id, segment_index=progress_index, segment_total=seg_total,
+            progress_node_id, segment_index=progress_index, segment_total=seg_total,
             phase="prepare", phase_value=1, phase_max=1, **meta,
         )
 
@@ -958,7 +962,7 @@ def execute_director_plan_core(
             )
 
         report_director_progress(
-            node_id, segment_index=progress_index, segment_total=seg_total,
+            progress_node_id, segment_index=progress_index, segment_total=seg_total,
             phase="context_encode", phase_value=0, phase_max=1, **meta,
         )
 
@@ -1273,7 +1277,7 @@ def execute_director_plan_core(
             )
 
         report_director_progress(
-            node_id, segment_index=progress_index, segment_total=seg_total,
+            progress_node_id, segment_index=progress_index, segment_total=seg_total,
             phase="context_encode", phase_value=1, phase_max=1, **meta,
         )
 
@@ -1283,7 +1287,7 @@ def execute_director_plan_core(
 
         def _report_sample_phase(phase: str, value: float) -> None:
             report_director_progress(
-                node_id, segment_index=progress_index, segment_total=seg_total,
+                progress_node_id, segment_index=progress_index, segment_total=seg_total,
                 phase=phase, phase_value=value, phase_max=1, **meta,
             )
 
@@ -1306,7 +1310,7 @@ def execute_director_plan_core(
                 if not image_b64:
                     return
                 report_director_segment_preview(
-                    node_id,
+                    progress_node_id,
                     segment_index=ui_idx,
                     image_b64=image_b64,
                     width=width,
@@ -1406,7 +1410,7 @@ def execute_director_plan_core(
             else:
                 try:
                     report_director_progress(
-                        node_id, segment_index=progress_index, segment_total=seg_total,
+                        progress_node_id, segment_index=progress_index, segment_total=seg_total,
                         phase="decode", phase_value=0, phase_max=1, **meta,
                     )
                     first_pass_gpu, _ = _decode_av_latent(
@@ -1482,7 +1486,7 @@ def execute_director_plan_core(
             suffix = f"p{int(pass_i)}"
             try:
                 report_director_progress(
-                    node_id, segment_index=progress_index, segment_total=seg_total,
+                    progress_node_id, segment_index=progress_index, segment_total=seg_total,
                     phase="decode", phase_value=0, phase_max=1, **meta,
                 )
                 decoded_p, audio_p = _decode_av_latent(
@@ -1561,7 +1565,7 @@ def execute_director_plan_core(
         sample_s = time.perf_counter() - t_sample
 
         report_director_progress(
-            node_id, segment_index=progress_index, segment_total=seg_total,
+            progress_node_id, segment_index=progress_index, segment_total=seg_total,
             phase="decode", phase_value=0, phase_max=1, **meta,
         )
         t_decode = time.perf_counter()
@@ -1585,7 +1589,7 @@ def execute_director_plan_core(
             plan=plan,
         )
         report_director_progress(
-            node_id, segment_index=progress_index, segment_total=seg_total,
+            progress_node_id, segment_index=progress_index, segment_total=seg_total,
             phase="decode", phase_value=1, phase_max=1, **meta,
         )
 
@@ -2004,7 +2008,7 @@ def execute_director_plan_core(
     _monitor_note = end_run_monitor()
     if _monitor_note:
         reports.append(_monitor_note)
-    report_director_finish(node_id, seg_total)
+    report_director_finish(progress_node_id, seg_total)
     export_chunks = output_chunks if output_chunks else segment_outputs
     export_pre_chunks = output_pre_chunks if output_pre_chunks else segment_pre_refine
     export_pre_face_chunks = (

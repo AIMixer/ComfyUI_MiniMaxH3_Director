@@ -164,29 +164,118 @@ def resolve_project_id(timeline, node_id) -> str:
     return str(node_id or "")
 
 
-def _cache_dir(key: str | None, *, create: bool = False) -> Path | None:
-    """Segment-cache dir for a resolved key. Empty key → None.
+CACHE_ROOT_DIRNAME = "minimax_seg_cache"
+MAX_CACHE_NAME_LEN = 64
 
-    ``create=False`` (default) never touches the filesystem: callers that only
-    read / clean keep their ``is_dir()`` guard. ``create=True`` mkdirs and
-    degrades to None (with a warning) when the output dir is unavailable.
+# Characters Windows forbids in a path segment, plus control chars.
+_INVALID_DIR_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
+# Device names Windows reserves (case-insensitive, with or without extension).
+_RESERVED_DIR_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def normalize_cache_name(raw: Any) -> str:
+    """Turn a user-supplied cache name into a safe single path segment.
+
+    Empty / whitespace-only / all-illegal input returns "" so callers fall back
+    to the node id (legacy behaviour). Never raises.
     """
-    if not key:
+    try:
+        text = str(raw or "").strip()
+    except Exception:
+        return ""
+    if not text:
+        return ""
+    # Collapse runs of illegal chars / whitespace / dots into one underscore so
+    # ".." and "..." cannot survive as a path traversal fragment.
+    text = _INVALID_DIR_CHARS_RE.sub("_", text)
+    text = re.sub(r"[\s._]+", "_", text)
+    text = text.strip("_")
+    if not text:
+        return ""
+    stem = text.split(".")[0].upper()
+    if stem in _RESERVED_DIR_NAMES:
+        text = f"_{text}"
+    return text[:MAX_CACHE_NAME_LEN]
+
+
+def resolve_segment_cache_key(cache_name: Any, node_id: Any) -> str:
+    """Disk cache directory name.
+
+    Empty ``cache_name`` keeps the legacy directory ``<node_id>``.
+    A usable name becomes ``<name>_<node_id>``: the same label on two Director
+    nodes stays split by node id. A copied workflow still shares the folder when
+    both the name and the node id match. Missing node id falls back to the name
+    alone so a cache can still be addressed.
+    """
+    try:
+        node = str(node_id or "").strip()
+    except Exception:
+        node = ""
+    name = normalize_cache_name(cache_name)
+    if name and node:
+        return f"{name}_{node}"
+    return node or name
+
+
+def resolve_cache_key(timeline, cache_name, node_id) -> str:
+    """Combined disk-cache directory key: ``<缓存文件夹名>_<projectId>``.
+
+    Merges the two isolation schemes — the timeline projectId
+    (:func:`resolve_project_id`) and the user-supplied cache folder name
+    (:func:`resolve_segment_cache_key`). A missing part degrades to the other;
+    when both are absent this is the bare node id (legacy behaviour).
+    """
+    project = resolve_project_id(timeline, node_id)
+    name = normalize_cache_name(cache_name)
+    if name and project:
+        return f"{name}_{project}"
+    return project or name
+
+
+def _sanitize_dir_token(token: Any) -> str:
+    """Last-ditch guard for cache keys coming in from HTTP bodies.
+
+    Returns "" for anything that could escape (or blank) the cache root — the
+    caller must then refuse to touch disk rather than fall back to the root
+    directory itself.
+    """
+    text = str(token or "").strip()
+    if not text or "/" in text or "\\" in text or text in {".", ".."}:
+        return ""
+    # Control chars / Windows-forbidden chars would make a bogus directory name.
+    if _INVALID_DIR_CHARS_RE.search(text):
+        return ""
+    return text
+
+
+def _cache_dir(key: Any) -> Path:
+    """Absolute cache directory for one key. Raises ValueError on a blank/unsafe key."""
+    token = _sanitize_dir_token(key)
+    if not token:
+        raise ValueError(f"unsafe or empty segment cache key: {key!r}")
+    return Path(folder_paths.get_output_directory()) / CACHE_ROOT_DIRNAME / token
+
+
+def _cache_dir_or_none(key: Any) -> Path | None:
+    """Read-only variant: None instead of raising, so callers skip disk access."""
+    try:
+        return _cache_dir(key)
+    except ValueError:
         return None
-    root = Path(folder_paths.get_output_directory()) / "minimax_seg_cache" / str(key)
-    if create:
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            log.warning(
-                "Segment cache dir unavailable (%s); cache disabled for this run.", exc
-            )
-            return None
-    return root
 
 
 def _cache_root(node_id: str) -> Path | None:
-    return _cache_dir(node_id, create=True)
+    try:
+        root = _cache_dir(node_id)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    except (OSError, ValueError) as exc:
+        log.warning("Segment cache dir unavailable (%s); cache disabled for this run.", exc)
+        return None
 
 
 def _ref_audio_file_stamp(audio: Any, fallback_index: int) -> str:
@@ -1296,12 +1385,10 @@ def prune_segment_cache(node_id: str | None, valid_indices) -> None:
     """
     if not node_id:
         return
-    root = _cache_dir(node_id)
-    if root is None:
+    root = _cache_dir_or_none(node_id)
+    if root is None or not root.is_dir():
         return
     try:
-        if not root.is_dir():
-            return
         valid = {int(i) for i in valid_indices}
         removed = 0
         for path in root.iterdir():
@@ -1329,7 +1416,7 @@ def first_pass_cache_disk_signature(node_id: str | None) -> str:
     """
     if not node_id:
         return ""
-    root = _cache_dir(node_id)
+    root = _cache_dir_or_none(node_id)
     if root is None or not root.is_dir():
         return ""
     parts: list[str] = []
@@ -1507,7 +1594,7 @@ def _external_segment_diff(stored_record: Any, expected_record: Any) -> list[str
 
 def _count_final_segment_files(root: Path) -> int:
     """Number of ``seg_XXXX`` final-render frame payloads; never raises."""
-    if not root.is_dir():
+    if root is None or not root.is_dir():
         return 0
     try:
         return sum(
@@ -1559,7 +1646,7 @@ def _inspect_external_group_cache(
     if not node_id:
         return result
 
-    root = _cache_dir(node_id)
+    root = _cache_dir_or_none(node_id)
     if root is None:
         return result
     result["final_cached_count"] = _count_final_segment_files(root)
@@ -1773,7 +1860,7 @@ def inspect_first_pass_cache(
     if not node_id:
         return result
 
-    root = _cache_dir(node_id)
+    root = _cache_dir_or_none(node_id)
     if root is None:
         return result
     all_segments = list(getattr(plan, "segments", None) or [])
@@ -1912,7 +1999,7 @@ def clear_segment_cache(node_id: str | None, kind: str = "final") -> int:
         return 0
     if kind not in {"first_pass", "final", "all"}:
         raise ValueError("kind must be first_pass, final or all")
-    root = _cache_dir(node_id)
+    root = _cache_dir_or_none(node_id)
     if root is None or not root.is_dir():
         return 0
     try:

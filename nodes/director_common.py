@@ -192,6 +192,22 @@ def director_perf_inputs() -> dict:
                 ),
             },
         ),
+        # 必须追加在数组末尾：前端按**位置**恢复 widgets_values（本机
+        # Comfy.Workflow.NamedValuesRestore 默认关），插在中间会让旧工作流
+        # 后面所有控件的取值整体错位。
+        "cache_name": (
+            "STRING",
+            {
+                "default": "",
+                "tooltip": (
+                    "分段缓存目录：output/minimax_seg_cache/<这个名字>_<projectId>/。"
+                    "留空 = 只用 projectId（无项目时用节点 id，旧行为，已有缓存目录不变）。"
+                    "填了名字后，同一张图里的不同导演台、以及节点 id 不同的工作流会分开存放。"
+                    "复制工作流后节点 id 通常不变，名字也相同的话仍然共用一个目录；要隔开就改名字。"
+                    "非法字符 / \\ : * ? \" < > | 会自动替换成下划线。"
+                ),
+            },
+        ),
     }
 
 

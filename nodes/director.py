@@ -234,24 +234,27 @@ class MiniMaxH3Director:
         return True
 
     @classmethod
-    def IS_CHANGED(cls, unique_id=None, **kwargs):
+    def IS_CHANGED(cls, unique_id=None, cache_name=None, **kwargs):
         # Do not return NaN: that would re-run every Director queue even when
         # confirm_first_pass is off. Linked Refine is None here, so fingerprint
         # the .pre cache files that only the confirmation hold writes.
         from ..director.segment_cache import (
             first_pass_cache_disk_signature,
-            resolve_project_id,
+            resolve_cache_key,
         )
 
-        # Same key the run writes to: timeline projectId when present, else node_id.
+        # Must resolve the same directory the executor will read/write, otherwise
+        # the confirm-first-pass hold never sees its own written .pre cache.
+        # 组合键：<缓存文件夹名>_<projectId>，缺项降级，都空回退节点 id。
         timeline = kwargs.get("timeline_data")
         if isinstance(timeline, str) and timeline.strip():
             try:
                 timeline = json.loads(timeline)
             except Exception:
                 timeline = None
-        cache_key = resolve_project_id(timeline, unique_id)
-        return first_pass_cache_disk_signature(cache_key)
+        return first_pass_cache_disk_signature(
+            resolve_cache_key(timeline, cache_name, unique_id)
+        )
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "INT", "IMAGE", "STRING", "IMAGE", "IMAGE")
     RETURN_NAMES = (
@@ -321,6 +324,7 @@ class MiniMaxH3Director:
         cache_frames_codec="raw",
         export_source_images=False,
         export_pre_face_refine=False,
+        cache_name="",
         **kwargs,
     ):
         del kwargs
@@ -350,6 +354,7 @@ class MiniMaxH3Director:
                 execute_director_plan_core(
                     plan,
                     node_id=unique_id,
+                    cache_name=cache_name,
                     model=model,
                     vae=video_vae,
                     audio_vae=audio_vae,

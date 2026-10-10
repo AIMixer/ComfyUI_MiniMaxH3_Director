@@ -616,7 +616,11 @@ async def minimax_first_pass_cache_status(request):
     try:
         from .external_groups import external_witness_from_timeline_data
         from .plan import build_director_plan
-        from .segment_cache import inspect_first_pass_cache, resolve_project_id
+        from .segment_cache import (
+            inspect_first_pass_cache,
+            resolve_cache_key,
+            resolve_project_id,
+        )
 
         plan = build_director_plan(
             str(timeline_data),
@@ -652,13 +656,15 @@ async def minimax_first_pass_cache_status(request):
         witness = external_witness_from_timeline_data(timeline_data)
         if witness:
             plan.external_groups_witness = witness
-        # Different projects must not share segment cache; fall back to node_id
-        # when the timeline has no usable projectId (old workflows / parse failure).
-        cache_key = resolve_project_id(getattr(plan, "raw", None), node_id)
-        # Mirror the executor (executor_core.py sets plan.project_id = cache_key):
-        # projectId is part of the fingerprint, so the panel must stamp the same
-        # resolved key or every row would report a project diff.
-        plan.project_id = cache_key
+        # Same key the executor uses: <缓存文件夹名>_<projectId> 组合键，
+        # 缺项降级，都空回退节点 id。Never trust the raw string as a path segment.
+        cache_key = resolve_cache_key(
+            getattr(plan, "raw", None), body.get("cache_name"), node_id
+        )
+        # Mirror the executor (executor_core.py stamps plan.project_id): the
+        # fingerprint includes the project id, so the panel must stamp the same
+        # resolved project or every row would report a project diff.
+        plan.project_id = resolve_project_id(getattr(plan, "raw", None), node_id)
         status = inspect_first_pass_cache(cache_key, plan, external_groups=witness)
         if not status.get("matches"):
             # Name the reason in the log so a「不匹配」 report can be diagnosed
@@ -704,6 +710,7 @@ async def minimax_clear_segment_cache(request):
 
     # Optional project scoping: prefer timeline_data's projectId, then an explicit
     # project_id field, then fall back to node_id. Missing fields are not an error.
+    # Combined with the optional 缓存文件夹名: <缓存文件夹名>_<projectId>.
     timeline = body.get("timeline_data")
     timeline_dict = timeline if isinstance(timeline, dict) else None
     if timeline_dict is None and isinstance(timeline, str) and timeline.strip():
@@ -721,9 +728,13 @@ async def minimax_clear_segment_cache(request):
         key_source = None
 
     try:
-        from .segment_cache import clear_segment_cache, resolve_project_id
+        from .segment_cache import clear_segment_cache, resolve_cache_key
 
-        cache_key = resolve_project_id(key_source, node_id)
+        cache_key = resolve_cache_key(key_source, body.get("cache_name"), node_id)
+        if not cache_key:
+            return web.Response(status=400, text="Invalid segment cache name.")
+
+
         removed = clear_segment_cache(cache_key, kind=kind)
         return web.json_response({"removed": removed, "kind": kind})
     except Exception as exc:

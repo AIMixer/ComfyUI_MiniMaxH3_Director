@@ -36,6 +36,11 @@
 **输入：** `model` → `video_vae` → `audio_vae` → `clip`  
 **可选：** `i2v_groups`（Image to Video 多组）/ `r2v_groups`（Reference to Video 多组）/ `semantic_bridge`（`MiniMax H3 Director Semantic Bridge`）/ `selflift`（`MiniMax H3 Director SelfLift`）/ `refine`（`MiniMax H3 Director Refine`）
 
+> **缓存文件夹名（`cache_name`，面板「性能」组最下方）**：分段缓存的目录名。
+> 填了就落到 `output/minimax_seg_cache/<名字>_<节点id>/`，**留空则只有节点 id**（旧行为不变）。
+> 同一个名字配上不同节点 id 会分开。复制工作流后节点 id 通常还是原来的，名字也相同就会继续共用一个目录，要隔开就改名字。
+> 名字会自动过滤 `/ \ : * ? " < > |` 与 Windows 保留名（`CON`/`NUL`…），最长 64 字符。
+
 **输出：** `images` → `audio` → `fps` → `frame_count` → `source_images` → `report` → `images_pre_refine`
 
 > CLIP Loader 的 **type 必须选 `minimax`**（Qwen3-VL）。  
