@@ -18,6 +18,7 @@ from .selflift.pack import (
     selflift_will_run,
 )
 from .selflift.sample import sample_selflift_stage
+from .h3_x2_decode import decode_video_latent
 from .refine_pack import (
     confirm_first_pass_enabled,
     first_pass_sigmas_override,
@@ -136,14 +137,17 @@ def _unpack_node_output(out):
 
 
 def _decode_av_latent(samples, vae, audio_vae, *, decode_audio: bool = True):
-    """Same as official r2v: VAEDecode + VAEDecodeAudio both take the AV latent.
+    """Same as official r2v: video decode + VAEDecodeAudio both take the AV latent.
 
-    VAEDecode unbinds the video stream; VAEDecodeAudio unbinds the audio stream.
-    Official VAE already writes pixels to ``intermediate_device()`` (CPU by default).
+    The audio side unbinds the audio stream while the video side unbinds the
+    video stream. Official VAE already writes pixels to ``intermediate_device()``
+    (CPU by default).
+
+    Video decode goes through ``decode_video_latent`` so an X2-class H3 video
+    VAE (packed PixelShuffle head) is unpacked instead of emitting 12 channels.
+    A stock VAE takes the untouched ``VAEDecode`` path.
     """
-    from nodes import VAEDecode
-
-    images, = VAEDecode().decode(vae, samples)
+    images = decode_video_latent(vae, samples, context="director.main")
     if not decode_audio or audio_vae is None:
         return images, empty_audio_dict()
     try:
