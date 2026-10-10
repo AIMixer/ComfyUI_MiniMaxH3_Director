@@ -61,7 +61,9 @@ from .plan import (
 from .progress import report_director_finish, report_director_progress, report_director_segment_preview
 from .h3_motion_context import (
     DEFAULT_AUDIO_CONTEXT_FRAMES,
+    align_crop_to_reference,
     apply_motion_context,
+    av_head_dropped_px,
     continuity_export_len,
     describe_pin_window,
     generation_frame_budget,
@@ -906,6 +908,33 @@ def execute_director_plan_core(
             else:
                 # Pixel fallback: decoded export has no overshoot beyond the file.
                 prev_end_frame = None
+
+            # Disk-cached AV latents keep only the continuable tail
+            # (segment_cache crops via crop_av_tail_for_cache). Rebase the
+            # export-end coordinate into the cropped latent's own frame space;
+            # the video pin, audio pin and SelfLift low-carry pin all share
+            # this single coordinate.
+            prev_dropped_px = av_head_dropped_px(prev_av)
+            if prev_dropped_px > 0:
+                if prev_end_frame is not None:
+                    prev_end_frame -= prev_dropped_px
+                    if prev_end_frame <= 0:
+                        prev_end_frame = None
+                # Fallback pin sources (first-pass AV on canvas mismatch,
+                # SelfLift low carry) must share the cropped frame space.
+                aligned_first = align_crop_to_reference(prev_first_pass_av, prev_av)
+                if aligned_first is not prev_first_pass_av:
+                    prev_first_pass_av = aligned_first
+                    completed_first_pass_av[prev_idx] = aligned_first
+                aligned_low = align_crop_to_reference(prev_low_carry, prev_av)
+                if aligned_low is not prev_low_carry:
+                    prev_low_carry = aligned_low
+                    completed_low_carry[prev_idx] = aligned_low
+                reports.append(
+                    f"Segment {seg.index + 1}/{timeline_seg_total}: "
+                    f"上一段缓存为尾部裁剪版（头部已裁 {prev_dropped_px} 帧），"
+                    "引导坐标已重基"
+                )
 
         ctx_w = int(plan.width)
         ctx_h = int(plan.height)

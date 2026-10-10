@@ -26,7 +26,12 @@ import folder_paths
 
 from ..lib.frames_ffv1 import FRAMES_SUFFIX, decode_frames_ffv1, encode_frames_ffv1
 from .h3_latent_continue import CONTINUE_PIPELINE_ID, clamp_seam_min_mask
-from .h3_motion_context import CONTINUITY_PIPELINE_ID, trim_context_prefix, trim_export_tail
+from .h3_motion_context import (
+    CONTINUITY_PIPELINE_ID,
+    crop_av_tail_for_cache,
+    trim_context_prefix,
+    trim_export_tail,
+)
 from .plan import DirectorPlan, SegmentPlan, resolve_ref_image_size
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.cache")
@@ -639,6 +644,10 @@ def save_segment_cache(
         )
         if av_latent is not None and isinstance(av_latent, dict) and "samples" in av_latent:
             cpu_latent = _av_latent_to_cpu(av_latent)
+            # Keep only the continuable tail on disk (~50% smaller .av.pt);
+            # the loader rebases prev_end_frame via the recorded dropped
+            # frames (crop_av_tail_for_cache is idempotent for re-saves).
+            cpu_latent, _dropped_px = crop_av_tail_for_cache(cpu_latent)
             _write_via_temp(latent_path, lambda p: torch.save(cpu_latent, p))
         if handoff:
             _write_via_temp(
@@ -1190,6 +1199,10 @@ def save_first_pass_cache(
             _store_segment_frames(root, idx, payload, first_pass=True, plan=plan)
         if isinstance(low_carry, dict) and "samples" in low_carry:
             cpu_low = _av_latent_to_cpu(low_carry)
+            # Same tail crop as .av.pt — the low carry is only re-pinned as a
+            # tail window by the next segment's SelfLift stage. (.pre.av.pt
+            # stays full: refine samples from the complete first pass.)
+            cpu_low, _dropped_px = crop_av_tail_for_cache(cpu_low)
             _write_via_temp(low_path, lambda p: torch.save(cpu_low, p))
         elif low_path.is_file():
             _safe_unlink(low_path)
