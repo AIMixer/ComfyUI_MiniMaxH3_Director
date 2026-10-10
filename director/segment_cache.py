@@ -26,7 +26,12 @@ import folder_paths
 
 from ..lib.frames_ffv1 import FRAMES_SUFFIX, decode_frames_ffv1, encode_frames_ffv1
 from .h3_latent_continue import CONTINUE_PIPELINE_ID, clamp_seam_min_mask
-from .h3_motion_context import CONTINUITY_PIPELINE_ID, trim_context_prefix, trim_export_tail
+from .h3_motion_context import (
+    CONTINUITY_PIPELINE_ID,
+    crop_av_tail_for_cache,
+    trim_context_prefix,
+    trim_export_tail,
+)
 from .plan import DirectorPlan, SegmentPlan, resolve_ref_image_size
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.cache")
@@ -42,6 +47,16 @@ SOURCE_VIDEO_FP_KEY = "source_video"
 # The chain itself lives in ``timeline_data`` (status request and execute both
 # receive it) and is never persisted.
 EXTERNAL_SEGMENT_FP_KEY = "external_group"
+
+# Resolved project / cache key (timeline ``projectId``, else the node id) folded
+# into the segment identity. The cache directory is already keyed by it, so this
+# makes the project part of the fingerprint itself: a segment rendered under one
+# project can never be validated against another one.
+PROJECT_FP_KEY = "project"
+
+# Per-segment LoRA stack, folded into the segment identity so a segment rendered
+# with one stack can never be validated against a run that used another.
+LORAS_FP_KEY = "loras"
 
 # Fingerprint keys that come out of the executed group payloads (prompts,
 # durations, reference counts/slots, per-row continuity). The cache-status panel
@@ -139,6 +154,21 @@ def _reject_source_stale(
     return True
 
 
+def resolve_project_id(timeline, node_id) -> str:
+    """缓存键：优先 timeline 顶层 projectId（清洗后），否则回退 node_id。"""
+    raw = None
+    if isinstance(timeline, dict):
+        raw = timeline.get("projectId")
+        if raw is None:
+            raw = timeline.get("project_id")
+    if raw is not None:
+        cleaned = re.sub(r"[^0-9A-Za-z_-]+", "_", str(raw).strip())
+        cleaned = cleaned[:80].strip("_")
+        if cleaned:
+            return cleaned
+    return str(node_id or "")
+
+
 CACHE_ROOT_DIRNAME = "minimax_seg_cache"
 MAX_CACHE_NAME_LEN = 64
 
@@ -194,6 +224,21 @@ def resolve_segment_cache_key(cache_name: Any, node_id: Any) -> str:
     if name and node:
         return f"{name}_{node}"
     return node or name
+
+
+def resolve_cache_key(timeline, cache_name, node_id) -> str:
+    """Combined disk-cache directory key: ``<缓存文件夹名>_<projectId>``.
+
+    Merges the two isolation schemes — the timeline projectId
+    (:func:`resolve_project_id`) and the user-supplied cache folder name
+    (:func:`resolve_segment_cache_key`). A missing part degrades to the other;
+    when both are absent this is the bare node id (legacy behaviour).
+    """
+    project = resolve_project_id(timeline, node_id)
+    name = normalize_cache_name(cache_name)
+    if name and project:
+        return f"{name}_{project}"
+    return project or name
 
 
 def _sanitize_dir_token(token: Any) -> str:
@@ -259,6 +304,17 @@ def _ref_audio_file_stamp(audio: Any, fallback_index: int) -> str:
     return f"aud{index}:{name}:{stamp}"
 
 
+def _lora_fingerprint_value(rows: Any) -> list[list[Any]]:
+    """JSON-stable form of a segment's LoRA stack for fingerprint comparison.
+
+    Uses ``lora_signature`` so inactive / zero-strength rows are ignored — toggling
+    such a row off changes nothing in the render and must not invalidate a cache.
+    """
+    from .segment_loras import lora_signature
+
+    return [list(item) for item in lora_signature(rows)]
+
+
 def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str, Any]:
     """Identity that affects first-pass sampling (no Refine settings)."""
     ref_files = sorted(
@@ -285,6 +341,8 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         "prompt": seg.prompt,
         "negative": seg.negative_prompt,
         "task_key": seg.task_key,
+        PROJECT_FP_KEY: str(getattr(plan, "project_id", "") or ""),
+        LORAS_FP_KEY: _lora_fingerprint_value(getattr(seg, "loras", None)),
         "width": plan.width,
         "height": plan.height,
         "frame_rate": float(getattr(plan, "frame_rate", 24) or 24),
@@ -586,6 +644,10 @@ def save_segment_cache(
         )
         if av_latent is not None and isinstance(av_latent, dict) and "samples" in av_latent:
             cpu_latent = _av_latent_to_cpu(av_latent)
+            # Keep only the continuable tail on disk (~50% smaller .av.pt);
+            # the loader rebases prev_end_frame via the recorded dropped
+            # frames (crop_av_tail_for_cache is idempotent for re-saves).
+            cpu_latent, _dropped_px = crop_av_tail_for_cache(cpu_latent)
             _write_via_temp(latent_path, lambda p: torch.save(cpu_latent, p))
         if handoff:
             _write_via_temp(
@@ -629,6 +691,88 @@ def _fingerprint_diff_keys(stored: Any, expected: dict[str, Any]) -> list[str]:
     return [k for k in keys if stored.get(k) != expected.get(k)]
 
 
+def _fmt_fp_value(value: Any, *, limit: int = 160) -> str:
+    """Compact, log-safe rendering of one fingerprint value."""
+    try:
+        text = repr(value)
+    except Exception:
+        text = "<unrepr>"
+    text = text.replace("\n", "\\n")
+    if len(text) > limit:
+        text = text[: limit - 3] + "..."
+    return text
+
+
+def _fingerprint_diff_detail(
+    stored: Any,
+    expected: dict[str, Any],
+    *,
+    limit: int = 12,
+) -> list[str]:
+    """``key: stored -> expected`` for every mismatching key (values included).
+
+    Used only for diagnostics: lets the user see exactly which value drifted
+    instead of guessing from key names alone.
+    """
+    if not isinstance(stored, dict):
+        return ["<invalid-meta>"]
+    keys = sorted(set(stored) | set(expected))
+    out: list[str] = []
+    for k in keys:
+        sv = stored.get(k)
+        ev = expected.get(k)
+        if sv == ev:
+            continue
+        out.append(f"{k}: {_fmt_fp_value(sv)} -> {_fmt_fp_value(ev)}")
+        if len(out) >= limit:
+            out.append(f"... (+{len(keys) - len(out)} more keys)")
+            break
+    return out
+
+
+def log_cache_run_summary(
+    node_id: str | None,
+    plan: DirectorPlan,
+    segments,
+    run_indices=None,
+) -> None:
+    """One-shot diagnostic dump: what this run expects to hit vs what is on disk.
+
+    Never raises — diagnostics must not be able to abort a render.
+    """
+    try:
+        root = _cache_root(node_id) if node_id else None
+    except Exception:
+        root = None
+    seg_list = list(segments or [])
+    selected = "ALL" if run_indices is None else sorted(int(i) for i in run_indices)
+    log.info(
+        "Segment cache diagnostics: node_id=%s export_mode=%s segments=%d run=%s root=%s",
+        node_id,
+        getattr(plan, "export_mode", "?"),
+        len(seg_list),
+        selected,
+        root,
+    )
+    if root is None:
+        log.info("Segment cache diagnostics: cache disabled (no node_id or dir unavailable).")
+        return
+    for seg in seg_list:
+        try:
+            idx = int(getattr(seg, "index", 0))
+            log.info(
+                "Segment cache diagnostics: seg %d on disk pre(meta=%s, av=%s) "
+                "film(meta=%s, frames=%s)",
+                idx + 1,
+                (root / f"seg_{idx:04d}.pre.meta.json").is_file(),
+                (root / f"seg_{idx:04d}.pre.av.pt").is_file(),
+                (root / f"seg_{idx:04d}.meta.json").is_file(),
+                _frames_exist(root, idx, first_pass=False),
+            )
+        except Exception as exc:
+            log.debug("Segment cache diagnostics: seg row skipped (%s)", exc)
+
+
 def _inspect_drop_keys(plan, *, first_pass: bool = True) -> set[str]:
     """Keys the status panel cannot reconstruct (linked SIGMAS tensors)."""
     drop: set[str] = set()
@@ -642,6 +786,30 @@ def _inspect_drop_keys(plan, *, first_pass: bool = True) -> set[str]:
     return drop
 
 
+def _expected_for_stored(stored: Any, expected: dict[str, Any]) -> dict[str, Any]:
+    """Align ``expected`` with the revision of the meta found on disk.
+
+    Metas written before ``PROJECT_FP_KEY`` joined the fingerprint have no such
+    key. The cache directory is already keyed by the resolved project id, so such
+    a meta can never be a cross-project hit — dropping the key keeps those caches
+    reusable instead of forcing a full first-pass re-run.
+
+    ``LORAS_FP_KEY`` gets the same treatment *only* while the segment has no
+    effective LoRA: such an old latent was rendered without a stack, which is
+    exactly what the current setup would produce again. As soon as the segment
+    carries a LoRA the key is kept, so the missing value correctly invalidates
+    that segment instead of silently reusing a latent that had no LoRA.
+    """
+    if not isinstance(stored, dict):
+        return expected
+    out = expected
+    if PROJECT_FP_KEY in out and PROJECT_FP_KEY not in stored:
+        out = {k: v for k, v in out.items() if k != PROJECT_FP_KEY}
+    if LORAS_FP_KEY in out and LORAS_FP_KEY not in stored and not out[LORAS_FP_KEY]:
+        out = {k: v for k, v in out.items() if k != LORAS_FP_KEY}
+    return out
+
+
 def _cmp_inspect_fingerprints(
     stored: Any,
     expected: dict[str, Any],
@@ -650,6 +818,7 @@ def _cmp_inspect_fingerprints(
 ) -> tuple[bool, list[str]]:
     if not isinstance(stored, dict):
         return False, ["<invalid-meta>"]
+    expected = _expected_for_stored(stored, expected)
     stored_cmp = {k: v for k, v in stored.items() if k not in drop_keys}
     expected_cmp = {k: v for k, v in expected.items() if k not in drop_keys}
     return stored_cmp == expected_cmp, _fingerprint_diff_keys(stored_cmp, expected_cmp)
@@ -719,8 +888,8 @@ def load_segment_handoff_meta(
     if not meta_path.is_file() or not handoff_path.is_file():
         return None
     try:
-        expected = segment_cache_fingerprint(seg, plan)
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        expected = _expected_for_stored(stored, segment_cache_fingerprint(seg, plan))
         if stored != expected:
             if _reject_source_stale(stored, expected, seg_index=idx, quiet=True) or not allow_stale:
                 return None
@@ -778,7 +947,7 @@ def load_first_pass_av_latent(
     try:
         if meta_path.is_file():
             stored = json.loads(meta_path.read_text(encoding="utf-8"))
-            expected = first_pass_cache_fingerprint(seg, plan)
+            expected = _expected_for_stored(stored, first_pass_cache_fingerprint(seg, plan))
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
                     return None
@@ -814,7 +983,7 @@ def load_first_pass_low_carry(
     try:
         if meta_path.is_file():
             stored = json.loads(meta_path.read_text(encoding="utf-8"))
-            expected = first_pass_cache_fingerprint(seg, plan)
+            expected = _expected_for_stored(stored, first_pass_cache_fingerprint(seg, plan))
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
                     return None
@@ -849,7 +1018,7 @@ def load_segment_av_latent(
         return None
     try:
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
-        expected = segment_cache_fingerprint(seg, plan)
+        expected = _expected_for_stored(stored, segment_cache_fingerprint(seg, plan))
         if stored != expected:
             if _reject_source_stale(stored, expected, seg_index=idx, quiet=True) or not allow_stale:
                 return None
@@ -879,7 +1048,7 @@ def _fingerprint_matches(
         return False
     try:
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
-        expected = segment_cache_fingerprint(seg, plan)
+        expected = _expected_for_stored(stored, segment_cache_fingerprint(seg, plan))
         if stored == expected:
             return True
         if _reject_source_stale(stored, expected, seg_index=seg.index, quiet=True):
@@ -917,10 +1086,16 @@ def load_segment_cache(
         expected = segment_cache_fingerprint(seg, plan)
         if meta_path.is_file():
             stored = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected = _expected_for_stored(stored, expected)
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx):
                     return None
                 diff = _fingerprint_diff_keys(stored, expected)
+                log.info(
+                    "Segment %d cache diff detail (stored -> expected): %s",
+                    idx + 1,
+                    _fingerprint_diff_detail(stored, expected),
+                )
                 if not allow_stale:
                     log.info(
                         "Segment %d cache stale (diff=%s); re-run this segment to refresh.",
@@ -1024,6 +1199,10 @@ def save_first_pass_cache(
             _store_segment_frames(root, idx, payload, first_pass=True, plan=plan)
         if isinstance(low_carry, dict) and "samples" in low_carry:
             cpu_low = _av_latent_to_cpu(low_carry)
+            # Same tail crop as .av.pt — the low carry is only re-pinned as a
+            # tail window by the next segment's SelfLift stage. (.pre.av.pt
+            # stays full: refine samples from the complete first pass.)
+            cpu_low, _dropped_px = crop_av_tail_for_cache(cpu_low)
             _write_via_temp(low_path, lambda p: torch.save(cpu_low, p))
         elif low_path.is_file():
             _safe_unlink(low_path)
@@ -1140,10 +1319,18 @@ def load_first_pass_cache(
     handoff_path = root / f"seg_{idx:04d}.pre.handoff.json"
     low_path = root / f"seg_{idx:04d}.pre.low.pt"
     if not meta_path.is_file() or not latent_path.is_file():
+        log.info(
+            "Segment %d first-pass cache: no cache files under %s "
+            "(meta=%s, latent=%s); will sample first pass.",
+            idx + 1,
+            root,
+            meta_path.is_file(),
+            latent_path.is_file(),
+        )
         return None
     try:
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
-        expected = first_pass_cache_fingerprint(seg, plan)
+        expected = _expected_for_stored(stored, first_pass_cache_fingerprint(seg, plan))
         missing_external = (
             isinstance(stored, dict)
             and _plan_uses_external_groups(plan)
@@ -1153,6 +1340,10 @@ def load_first_pass_cache(
             if isinstance(stored, dict) and _reject_source_stale(
                 stored, expected, seg_index=idx, quiet=True,
             ):
+                log.info(
+                    "Segment %d first-pass cache miss: source video changed; will sample first pass.",
+                    idx + 1,
+                )
                 return None
             diff = _fingerprint_diff_keys(stored, expected) if isinstance(stored, dict) else ["<invalid-meta>"]
             if missing_external and "<unverified-external>" not in diff:
@@ -1161,6 +1352,11 @@ def load_first_pass_cache(
                 "Segment %d first-pass cache miss (diff=%s); will sample first pass.",
                 idx + 1,
                 diff[:8],
+            )
+            log.info(
+                "Segment %d first-pass cache miss detail (stored -> expected): %s",
+                idx + 1,
+                _fingerprint_diff_detail(stored, expected),
             )
             return None
         payload = torch.load(latent_path, map_location="cpu", weights_only=False)
@@ -1202,10 +1398,10 @@ def prune_segment_cache(node_id: str | None, valid_indices) -> None:
     """
     if not node_id:
         return
+    root = _cache_dir_or_none(node_id)
+    if root is None or not root.is_dir():
+        return
     try:
-        root = _cache_dir_or_none(node_id)
-        if root is None or not root.is_dir():
-            return
         valid = {int(i) for i in valid_indices}
         removed = 0
         for path in root.iterdir():
@@ -1544,8 +1740,13 @@ def _inspect_external_group_cache(
             unverified += 1
             diff = ["<unverified-external>"]
         else:
+            # Legacy metas predate PROJECT_FP_KEY; the cache dir already scopes the
+            # project, so the missing key is not a change (see _expected_for_stored).
+            legacy_skip = {PROJECT_FP_KEY} if PROJECT_FP_KEY not in stored else set()
             diff = [
-                key for key, value in expected_knobs.items() if stored.get(key) != value
+                key
+                for key, value in expected_knobs.items()
+                if key not in legacy_skip and stored.get(key) != value
             ]
             # This segment's own group is the only per-group input to reuse.
             # A peer group's edit is deliberately invisible here — that is what
