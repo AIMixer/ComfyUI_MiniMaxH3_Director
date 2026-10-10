@@ -8,6 +8,49 @@ import logging
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.vram")
 
 
+def release_director_plan_memory(plan) -> None:
+    """Drop execution-only source/reference tensors after Director returns."""
+    if plan is None:
+        return
+    cache = getattr(plan, "audio_decode_cache", None)
+    if isinstance(cache, dict):
+        cache.clear()
+    for item in getattr(plan, "global_ref_audios", None) or []:
+        if hasattr(item, "audio"):
+            item.audio = None
+    for item in getattr(plan, "global_refs", None) or []:
+        if hasattr(item, "tensor"):
+            item.tensor = None
+    for seg in getattr(plan, "segments", None) or []:
+        seg.source_clip = None
+        for item in getattr(seg, "refs", None) or []:
+            if hasattr(item, "tensor"):
+                item.tensor = None
+        for item in list(getattr(seg, "ref_videos", None) or []) + list(getattr(seg, "ref_video_audios", None) or []):
+            if hasattr(item, "tensor"):
+                item.tensor = None
+            if hasattr(item, "audio"):
+                item.audio = None
+        for item in getattr(seg, "ref_audios", None) or []:
+            if hasattr(item, "audio"):
+                item.audio = None
+    if hasattr(plan, "source_video"):
+        plan.source_video = None
+    raw = getattr(plan, "raw", None)
+    if isinstance(raw, dict):
+        raw.clear()
+    for name in ("refine", "face_refine", "selflift"):
+        value = getattr(plan, name, None)
+        if isinstance(value, dict):
+            value.clear()
+    if isinstance(getattr(plan, "segments", None), list):
+        plan.segments.clear()
+    if isinstance(getattr(plan, "global_refs", None), list):
+        plan.global_refs.clear()
+    if isinstance(getattr(plan, "global_ref_audios", None), list):
+        plan.global_ref_audios.clear()
+
+
 def _evict_dead_loaded_models() -> int:
     """Pop Comfy LoadedModel slots that ``free_memory`` will skip forever.
 
@@ -52,11 +95,16 @@ def cleanup_segment_vram(*, enabled: bool = True, unload_models: bool = True) ->
     try:
         import comfy.model_management as mm
 
+        reset_cast_buffers = getattr(mm, "reset_cast_buffers", None)
+        if callable(reset_cast_buffers):
+            reset_cast_buffers()
         mm.cleanup_models_gc()
         _evict_dead_loaded_models()
         if unload_models:
             mm.unload_all_models()
             mm.cleanup_models()
+            if callable(reset_cast_buffers):
+                reset_cast_buffers()
         _evict_dead_loaded_models()
         gc.collect()
         mm.soft_empty_cache()
