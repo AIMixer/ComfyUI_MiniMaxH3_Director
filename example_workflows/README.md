@@ -47,3 +47,33 @@ Refine 示例另把 `images_pre_refine` 接到第二路 `CreateVideo` / `SaveVid
 - 可选接 `refine_model`（二采 UNET）；不接则用导演台主模型
 - `upscale` 默认 `h3_latent`：在 Refine 节点 `upscale_method` 下方下拉选 3D 权重（`mode=latent_upscale` 时同样出现）。权重放 `ComfyUI/models/latent_upscale_models/`。`lanczos` 可另接 `upscale_model`（RealESRGAN 等），不接则纯插值；也可改 `nvidia_rtx_vsr`
 - fl2v 默认跳过二采；关掉 `skip_fl2v` 才会采首尾帧镜头
+
+## 本地 GGUF / AMD 适配版（`*_gguf.json`，10 个）
+
+面向 AMD Radeon（RX 7900 XTX 24GB，gfx1100，ROCm）的本地适配产物，与上面的官方模板**并存**（官方文件未改动）。差异：
+
+| 项 | 官方模板 | `*_gguf.json` |
+|---|---|---|
+| UNET | `UNETLoader` + `*_int8_convrot.safetensors` | `UnetLoaderGGUF` + `*_Q4_K_M.gguf` |
+| 文本编码器 | `CLIPLoader`（`qwen3vl_32b_..._nvfp4_awq`，type `minimax`） | `CCTechClipProjLoader`（`qwen3-vl-8b-heretic-1.3.0_fp8_e4m3fn` + `mmh3-8b-ClipProj-v3.1`，type `boogu`） |
+| SageAttention | 加速版 / external_groups_* / 二采_加速 含 Sage 节点 | 同位置节点 **已旁路**（mode=4） |
+
+对应 10 个文件：`t2v`、`i2v`、`r2v`、`multiseg_t2v`、`fl2v`、`v2v`、`rv2v`、`加速版`、`external_groups_i2v`、`external_groups_r2v`，命名均为 `<原名>_gguf.json`。`二采_加速` 未适配（24GB 易 OOM）。
+
+本地模型路径：
+
+| 用途 | 文件名 | 目录 |
+|------|--------|------|
+| UNET (fl2va) | `minimax_h3_fl2va_pruned-Q4_K_M.gguf` | `models/diffusion_models/` |
+| UNET (ref2va) | `minimax_h3_ref2va_pruned-Q4_K_M.gguf` | `models/diffusion_models/` |
+| 文本编码器 | `qwen3-vl-8b-heretic-1.3.0_fp8_e4m3fn.safetensors` | `models/text_encoders/` |
+| ClipProj | `mmh3-8b-ClipProj-v3.1.safetensors` | `models/text_encoders/` |
+| Video / Audio VAE | 同官方 | `models/vae/` |
+
+依赖与注意：
+
+- 必装 **ComfyUI-GGUF-Loader**（提供 `UnetLoaderGGUF` 与 `CCTechClipProjLoader`）。
+- `external_groups_r2v` 需 **ComfyUI-VideoHelperSuite**（`VHS_LoadVideo`）。
+- **SageAttention 节点一律旁路**：本机未装 sageattention；且其内核只支持 NVIDIA SM 架构（sm75/80/86/89/90/120/121），AMD 无实现，装了也无法运行。该节点在此类长片里的作用是**降低自注意力峰值显存**（非提速），旁路后请靠 `clear_vram_between_segments` + 减帧/降分辨率/减参考组防 OOM。
+- H3 生视频用带 `--use-ck-attention` 的启动脚本（扩散模型自注意力默认走 comfy_kitchen INT8）；CK 是进程级全局且同时影响生图，**生图请换无 CK 的脚本**。
+- 单段 5s 采样在本机约 8.5–9 分钟（ROCm + Q4 GGUF，无 flash-attn）。

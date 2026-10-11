@@ -125,6 +125,8 @@ This repo ships examples under `example_workflows/`:
 | `minimax_h3_director_external_groups_r2v.json` | r2v | **ref2va** | External Group×N → Combine → `r2v_groups` |
 | `minimax_h3_director_二采_加速.json` | r2v | **ref2va** | Refine second sample (SIGMAS + H3 latent); `images` and `images_pre_refine` each save a clip |
 
+> AMD/GGUF local-adapted workflows are also included (10 `*_gguf.json` files: GGUF UNET + heretic-8B encoder, Sage nodes bypassed) — see [`example_workflows/README.md`](example_workflows/README.md).
+
 ### Recommended model files
 
 | Role | Filename | Directory |
