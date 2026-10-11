@@ -58,7 +58,7 @@ Refine 示例另把 `images_pre_refine` 接到第二路 `CreateVideo` / `SaveVid
 | 文本编码器 | `CLIPLoader`（`qwen3vl_32b_..._nvfp4_awq`，type `minimax`） | `CCTechClipProjLoader`（`qwen3-vl-8b-heretic-1.3.0_fp8_e4m3fn` + `mmh3-8b-ClipProj-v3.1`，type `boogu`） |
 | SageAttention | 加速版 / external_groups_* / 二采_加速 含 Sage 节点 | 同位置节点 **已旁路**（mode=4） |
 
-对应 11 个文件：`t2v`、`i2v`、`r2v`、`multiseg_t2v`、`fl2v`、`v2v`、`rv2v`、`加速版`、`external_groups_i2v`、`external_groups_r2v`、`二采_加速`，命名均为 `<原名>_gguf.json`。其中 `二采_加速` 为两阶段（主 fl2va + 二采 ref2va），**依赖两个 turbo LoRA**（`minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16` / `minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16`，需放入 `models/loras/`）。
+对应 11 个文件：`t2v`、`i2v`、`r2v`、`multiseg_t2v`、`fl2v`、`v2v`、`rv2v`、`加速版`、`external_groups_i2v`、`external_groups_r2v`、`二采_加速`，命名均为 `<原名>_gguf.json`。其中 `二采_加速` 为两阶段（主 fl2va + 二采 ref2va），**本机缺 3 个依赖文件**：两个 turbo LoRA（`minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16` / `minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16` → `models/loras/`）与 `minimax_h3_latent_upscaler_3d_bf16.safetensors`（→ `models/latent_upscale_models/`）。其余 10 个引用的模型文件本机齐全。
 
 本地模型路径：
 
