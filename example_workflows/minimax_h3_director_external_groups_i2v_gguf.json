@@ -1,0 +1,1677 @@
+{
+  "id": "minimax-h3-director-external-groups-i2v-gguf",
+  "revision": 0,
+  "last_node_id": 36,
+  "last_link_id": 63,
+  "nodes": [
+    {
+      "id": 2,
+      "type": "CCTechClipProjLoader",
+      "pos": [
+        473.3126815332407,
+        -437.88888366050656
+      ],
+      "size": [
+        360,
+        106
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "localized_name": "CLIP",
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "title": "Text Encoder 8B (boogu + ClipProj)",
+      "properties": {
+        "Node name for S&R": "CLIPLoader",
+        "models": [
+          {
+            "name": "qwen3-vl-8b-heretic-1.3.0_fp8_e4m3fn.safetensors",
+            "directory": "text_encoders"
+          }
+        ]
+      },
+      "widgets_values": [
+        "qwen3-vl-8b-heretic-1.3.0_fp8_e4m3fn.safetensors",
+        "boogu",
+        "mmh3-8b-ClipProj-v3.1.safetensors"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "VAELoader",
+      "pos": [
+        473.3126815332407,
+        -277.8888836605067
+      ],
+      "size": [
+        360,
+        58
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "vae名称",
+          "name": "vae_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "vae_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            3
+          ]
+        }
+      ],
+      "title": "Video VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "minimax_h3_video_vae_fp16.safetensors",
+            "directory": "vae"
+          }
+        ]
+      },
+      "widgets_values": [
+        "minimax_h3_video_vae_fp16.safetensors"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "VAELoader",
+      "pos": [
+        473.3126815332407,
+        -157.8888836605067
+      ],
+      "size": [
+        360,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "vae名称",
+          "name": "vae_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "vae_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "title": "Audio VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "minimax_h3_audio_vae_fp32.safetensors",
+            "directory": "vae"
+          }
+        ]
+      },
+      "widgets_values": [
+        "minimax_h3_audio_vae_fp32.safetensors"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "CreateVideo",
+      "pos": [
+        1200,
+        200
+      ],
+      "size": [
+        280,
+        120
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "图像",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 5
+        },
+        {
+          "localized_name": "音频",
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 6
+        },
+        {
+          "localized_name": "帧率",
+          "name": "fps",
+          "type": "FLOAT",
+          "widget": {
+            "name": "fps"
+          },
+          "link": 7
+        },
+        {
+          "localized_name": "bit_depth",
+          "name": "bit_depth",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "bit_depth"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "视频",
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CreateVideo"
+      },
+      "widgets_values": [
+        24,
+        8
+      ]
+    },
+    {
+      "id": 8,
+      "type": "PreviewAny",
+      "pos": [
+        1200,
+        400
+      ],
+      "size": [
+        640,
+        200
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "源",
+          "name": "source",
+          "type": "*",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "字符串",
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "Director 运行报告",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 9,
+      "type": "PreviewAny",
+      "pos": [
+        1200,
+        640
+      ],
+      "size": [
+        210,
+        122
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "源",
+          "name": "source",
+          "type": "*",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "字符串",
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "fps",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 10,
+      "type": "PreviewAny",
+      "pos": [
+        1440,
+        640
+      ],
+      "size": [
+        210,
+        122
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "源",
+          "name": "source",
+          "type": "*",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "字符串",
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "title": "frame_count",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 19,
+      "type": "LoadImage",
+      "pos": [
+        -1480.17297591426,
+        528.7491062433338
+      ],
+      "size": [
+        270,
+        314.00000000000006
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "图像",
+          "name": "image",
+          "type": "COMBO",
+          "widget": {
+            "name": "image"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "选择文件上传",
+          "name": "upload",
+          "type": "IMAGEUPLOAD",
+          "widget": {
+            "name": "upload"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            31
+          ]
+        },
+        {
+          "localized_name": "遮罩",
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "0060.png",
+        "image"
+      ]
+    },
+    {
+      "id": 18,
+      "type": "LoadImage",
+      "pos": [
+        -1484.1880985020262,
+        170.749780808452
+      ],
+      "size": [
+        270,
+        314
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "图像",
+          "name": "image",
+          "type": "COMBO",
+          "widget": {
+            "name": "image"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "选择文件上传",
+          "name": "upload",
+          "type": "IMAGEUPLOAD",
+          "widget": {
+            "name": "upload"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            30
+          ]
+        },
+        {
+          "localized_name": "遮罩",
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "0059.png",
+        "image"
+      ]
+    },
+    {
+      "id": 28,
+      "type": "PathchSageAttentionKJ",
+      "pos": [
+        1165.8496454361762,
+        -479.38732507504255
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 4,
+      "inputs": [
+        {
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 40
+        },
+        {
+          "localized_name": "sage_attention",
+          "name": "sage_attention",
+          "type": "COMBO",
+          "widget": {
+            "name": "sage_attention"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "allow_compile",
+          "name": "allow_compile",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "allow_compile"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            39
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PathchSageAttentionKJ"
+      },
+      "widgets_values": [
+        "auto",
+        false
+      ]
+    },
+    {
+      "id": 1,
+      "type": "UnetLoaderGGUF",
+      "pos": [
+        473.3126815332407,
+        -577.8888836605066
+      ],
+      "size": [
+        360,
+        50
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            40
+          ]
+        }
+      ],
+      "title": "MiniMax H3 UNET (fl2va)",
+      "properties": {
+        "Node name for S&R": "UnetLoaderGGUF",
+        "models": [
+          {
+            "name": "minimax_h3_fl2va_pruned-Q4_K_M.gguf",
+            "directory": "diffusion_models"
+          }
+        ]
+      },
+      "widgets_values": [
+        "minimax_h3_fl2va_pruned-Q4_K_M.gguf"
+      ]
+    },
+    {
+      "id": 29,
+      "type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+      "pos": [
+        1468.2494578938695,
+        -455.4434652107706
+      ],
+      "size": [
+        320.323828125,
+        26
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 4,
+      "inputs": [
+        {
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 39
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            41
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3MemoryEfficientSageAttentionPatch"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 23,
+      "type": "MiniMaxH3DirectorGroupImageToVideo",
+      "pos": [
+        -1048.986306834216,
+        333.03324253710275
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "first_frame",
+          "name": "first_frame",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 30
+        },
+        {
+          "localized_name": "last_frame",
+          "name": "last_frame",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 31
+        },
+        {
+          "localized_name": "prompt",
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "duration_sec",
+          "name": "duration_sec",
+          "type": "FLOAT",
+          "widget": {
+            "name": "duration_sec"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "group",
+          "name": "group",
+          "type": "MMX_DIR_GROUP",
+          "links": [
+            48
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3DirectorGroupImageToVideo"
+      },
+      "widgets_values": [
+        "猴子在快速奔跑，过程中裤子掉了，仍然在跑",
+        5
+      ]
+    },
+    {
+      "id": 7,
+      "type": "SaveVideo",
+      "pos": [
+        1859.3131529889763,
+        216.73259057747958
+      ],
+      "size": [
+        320,
+        106
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "视频",
+          "name": "video",
+          "type": "VIDEO",
+          "link": 9
+        },
+        {
+          "localized_name": "文件名前缀",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "格式",
+          "name": "format",
+          "type": "COMBO",
+          "widget": {
+            "name": "format"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "编码器",
+          "name": "codec",
+          "type": "COMFY_DYNAMICCOMBO_V3",
+          "widget": {
+            "name": "codec"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "video/MiniMaxH3_Director_external_i2v",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 20,
+      "type": "LoadImage",
+      "pos": [
+        -1482.4673997983198,
+        899.5987464375529
+      ],
+      "size": [
+        270,
+        314
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "图像",
+          "name": "image",
+          "type": "COMBO",
+          "widget": {
+            "name": "image"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "选择文件上传",
+          "name": "upload",
+          "type": "IMAGEUPLOAD",
+          "widget": {
+            "name": "upload"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            63
+          ]
+        },
+        {
+          "localized_name": "遮罩",
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "0062.png",
+        "image"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "MiniMaxH3Director",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        1050,
+        1736
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 41
+        },
+        {
+          "localized_name": "video_vae",
+          "name": "video_vae",
+          "type": "VAE",
+          "link": 3
+        },
+        {
+          "localized_name": "audio_vae",
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 4
+        },
+        {
+          "localized_name": "clip",
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        },
+        {
+          "localized_name": "i2v_groups",
+          "name": "i2v_groups",
+          "shape": 7,
+          "type": "MMX_DIR_GROUP",
+          "link": 51
+        },
+        {
+          "localized_name": "r2v_groups",
+          "name": "r2v_groups",
+          "shape": 7,
+          "type": "MMX_DIR_GROUP",
+          "link": null
+        },
+        {
+          "localized_name": "task_type",
+          "name": "task_type",
+          "type": "COMBO",
+          "widget": {
+            "name": "task_type"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "global_prompt",
+          "name": "global_prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "global_prompt"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "bd_grp_sample",
+          "name": "bd_grp_sample",
+          "type": "BDGROUP",
+          "widget": {
+            "name": "bd_grp_sample"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cfg",
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "seed",
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "frame_rate",
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "width",
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "height",
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "ref_max_size",
+          "name": "ref_max_size",
+          "type": "INT",
+          "widget": {
+            "name": "ref_max_size"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "total_frames",
+          "name": "total_frames",
+          "type": "INT",
+          "widget": {
+            "name": "total_frames"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "timeline_data",
+          "name": "timeline_data",
+          "type": "STRING",
+          "widget": {
+            "name": "timeline_data"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "bd_grp_advanced",
+          "name": "bd_grp_advanced",
+          "shape": 7,
+          "type": "BDGROUP",
+          "widget": {
+            "name": "bd_grp_advanced"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "steps",
+          "name": "steps",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "sampler",
+          "name": "sampler",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "scheduler",
+          "name": "scheduler",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "shift_video",
+          "name": "shift_video",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "shift_video"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "shift_audio",
+          "name": "shift_audio",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "shift_audio"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "bd_grp_perf",
+          "name": "bd_grp_perf",
+          "shape": 7,
+          "type": "BDGROUP",
+          "widget": {
+            "name": "bd_grp_perf"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "clear_vram_between_segments",
+          "name": "clear_vram_between_segments",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "clear_vram_between_segments"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "export_source_images",
+          "name": "export_source_images",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "export_source_images"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "images",
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            5
+          ]
+        },
+        {
+          "localized_name": "audio",
+          "name": "audio",
+          "shape": 6,
+          "type": "AUDIO",
+          "links": [
+            6
+          ]
+        },
+        {
+          "localized_name": "fps",
+          "name": "fps",
+          "type": "FLOAT",
+          "links": [
+            7,
+            10
+          ]
+        },
+        {
+          "localized_name": "frame_count",
+          "name": "frame_count",
+          "type": "INT",
+          "links": [
+            11
+          ]
+        },
+        {
+          "localized_name": "source_images",
+          "name": "source_images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "localized_name": "report",
+          "name": "report",
+          "type": "STRING",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3Director"
+      },
+      "widgets_values": [
+        "fl2v — 首尾帧生视频(First-Last Frame)",
+        "",
+        "采样设置",
+        1,
+        258628207195851,
+        "randomize",
+        24,
+        576,
+        736,
+        736,
+        734,
+        "{\"version\":5,\"editMode\":\"segment\",\"timelineMode\":\"fl2v\",\"totalFrames\":734,\"frameRate\":24,\"width\":576,\"height\":736,\"refMaxSize\":736,\"output\":{\"mode\":\"fixed\",\"aspectRatio\":\"3:4 (竖版标准)\",\"megapixels\":0.4,\"multiple\":32,\"longEdge\":736,\"width\":576,\"height\":736,\"maxExportFrames\":0,\"exportMode\":\"all\",\"audioMode\":\"generate\",\"continuityEnabled\":false,\"continuityOverlapFrames\":9},\"videoClips\":[],\"video\":{\"fileName\":\"\",\"videoFile\":\"\",\"subfolder\":\"\",\"type\":\"input\",\"frames\":[],\"frameMap\":[],\"sourceFrameCount\":124,\"deletedSourceRanges\":[]},\"global\":{\"taskType\":\"fl2v — 首尾帧生视频(First-Last Frame)\",\"prompt\":\"\",\"refs\":[],\"referenceVideo\":{\"videoFile\":\"\",\"fileName\":\"\",\"type\":\"input\",\"subfolder\":\"\"},\"continuousReference\":false,\"genImage\":{\"imageFile\":\"\"},\"refAudios\":[]},\"segments\":[{\"id\":\"shot0\",\"start\":0,\"length\":124,\"frameCount\":124,\"durationSec\":5,\"prompt\":\"猴子在快速奔跑，过程中裤子掉了，仍然在跑\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":true,\"genImage\":{\"imageFile\":\"0059.png\",\"width\":0,\"height\":0},\"endImage\":{\"imageFile\":\"0060.png\",\"width\":0,\"height\":0},\"taskType\":\"\",\"refs\":[]},{\"id\":\"shot1\",\"start\":124,\"length\":124,\"frameCount\":124,\"durationSec\":5,\"prompt\":\"一个卡通猴子坐在岩石上给大家打招呼，说“你们好啊！”\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false,\"genImage\":{\"imageFile\":\"0062.png\",\"width\":0,\"height\":0},\"endImage\":null,\"taskType\":\"\",\"refs\":[]},{\"id\":\"msjtg4886omng\",\"start\":248,\"length\":124,\"frameCount\":124,\"durationSec\":5,\"prompt\":\"动漫风格，一个美女从房间走出去，剩下空挡的房间\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":true,\"genImage\":{\"imageFile\":\"Anima_00392_.png\",\"width\":0,\"height\":0},\"endImage\":{\"imageFile\":\"Anima_00392_.png\",\"width\":0,\"height\":0},\"taskType\":\"\",\"refs\":[]},{\"id\":\"msjvfxck73qcc\",\"start\":372,\"length\":362,\"frameCount\":362,\"durationSec\":15,\"prompt\":\"15秒，16:9横版视频。将实拍的办公室办公场景与手绘发光动画融合的影像。0-3秒：实拍镜头中，一只真实的人手在粗糙木纹桌面上随意滑动，指尖轻点，仿佛唤醒了潜伏在空气中的光影；一只由蜡笔质感构成的橘猫从画面右侧探出头，眼神清澈却带着几分呆萌，与周围略显模糊的电脑屏幕形成虚实交错的质感。3-6秒：橘猫突然向前一扑，身体在空气中拉长变形，蜡笔线条随之断裂又重组，它撞向桌角时激起一圈彩色的粉笔晕染，仿佛实体撞进了二维的画布里。6-10秒：镜头微微滞后半拍，橘猫顺势滚落至桌下，实拍背景中隐约可见的办公椅腿与手绘的猫身形成景深对比，猫在阴影里打了个滚，尾巴像根彩色铅笔一样在阴影中扫出长长的轨迹。10-13秒：光影开始流动，橘猫身上的蜡笔纹理逐渐晕染成一片柔和的粉彩，它伸了个懒腰，前爪悬空抓挠着空气，指尖滴落出几滴发光的颜料，像是从现实世界渗漏出的色彩。13-15秒：画面空间整体微微上提，仿佛猫把视角拉高，它猛地跳向镜头，用巨大的手绘瞳孔直视观众，随后在鼻尖点了一下，留下一个可爱的、像蜡笔涂鸦般的“喵”字，为这段生活感十足的办公时光画上俏皮的句点。全程保持手绘的粗粝感，拒绝过度的3DCG光泽，让每一帧都充满纸笔摩擦的生动气息。\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false,\"genImage\":{\"imageFile\":\"\",\"width\":0,\"height\":0},\"endImage\":null,\"taskType\":\"\",\"refs\":[]}],\"shots\":[{\"id\":\"shot0\",\"durationSec\":5,\"prompt\":\"猴子在快速奔跑，过程中裤子掉了，仍然在跑\",\"negativePrompt\":\"bad video\",\"startImage\":{\"imageFile\":\"0059.png\",\"width\":0,\"height\":0},\"endImage\":{\"imageFile\":\"0060.png\",\"width\":0,\"height\":0}},{\"id\":\"shot1\",\"durationSec\":5,\"prompt\":\"一个卡通猴子坐在岩石上给大家打招呼，说“你们好啊！”\",\"negativePrompt\":\"bad video\",\"startImage\":{\"imageFile\":\"0062.png\",\"width\":0,\"height\":0},\"endImage\":null},{\"id\":\"msjtg4886omng\",\"durationSec\":5,\"prompt\":\"动漫风格，一个美女从房间走出去，剩下空挡的房间\",\"negativePrompt\":\"bad video\",\"startImage\":null,\"endImage\":{\"imageFile\":\"Anima_00392_.png\",\"width\":0,\"height\":0}},{\"id\":\"msjvfxck73qcc\",\"durationSec\":15,\"prompt\":\"15秒，16:9横版视频。将实拍的办公室办公场景与手绘发光动画融合的影像。0-3秒：实拍镜头中，一只真实的人手在粗糙木纹桌面上随意滑动，指尖轻点，仿佛唤醒了潜伏在空气中的光影；一只由蜡笔质感构成的橘猫从画面右侧探出头，眼神清澈却带着几分呆萌，与周围略显模糊的电脑屏幕形成虚实交错的质感。3-6秒：橘猫突然向前一扑，身体在空气中拉长变形，蜡笔线条随之断裂又重组，它撞向桌角时激起一圈彩色的粉笔晕染，仿佛实体撞进了二维的画布里。6-10秒：镜头微微滞后半拍，橘猫顺势滚落至桌下，实拍背景中隐约可见的办公椅腿与手绘的猫身形成景深对比，猫在阴影里打了个滚，尾巴像根彩色铅笔一样在阴影中扫出长长的轨迹。10-13秒：光影开始流动，橘猫身上的蜡笔纹理逐渐晕染成一片柔和的粉彩，它伸了个懒腰，前爪悬空抓挠着空气，指尖滴落出几滴发光的颜料，像是从现实世界渗漏出的色彩。13-15秒：画面空间整体微微上提，仿佛猫把视角拉高，它猛地跳向镜头，用巨大的手绘瞳孔直视观众，随后在鼻尖点了一下，留下一个可爱的、像蜡笔涂鸦般的“喵”字，为这段生活感十足的办公时光画上俏皮的句点。全程保持手绘的粗粝感，拒绝过度的3DCG光泽，让每一帧都充满纸笔摩擦的生动气息。\",\"negativePrompt\":\"bad video\",\"startImage\":null,\"endImage\":null}],\"runSelectEnabled\":false,\"runSelection\":[],\"gen\":{\"defaultFrameCount\":124},\"liveTaePreview\":true,\"keyframes\":[{\"id\":\"shot0_s\",\"imageFile\":\"0059.png\",\"width\":0,\"height\":0,\"start\":0,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"猴子在快速奔跑，过程中裤子掉了，仍然在跑\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false},{\"id\":\"shot0_e\",\"imageFile\":\"0060.png\",\"width\":0,\"height\":0,\"start\":62,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"\",\"negativePrompt\":\"bad video\",\"isStartFrame\":false,\"isEndFrame\":true},{\"id\":\"shot1\",\"imageFile\":\"0062.png\",\"width\":0,\"height\":0,\"start\":124,\"length\":124,\"frameCount\":124,\"durationSec\":5,\"prompt\":\"一个卡通猴子坐在岩石上给大家打招呼，说“你们好啊！”\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false},{\"id\":\"msjtg4886omng_s\",\"imageFile\":\"\",\"width\":0,\"height\":0,\"start\":248,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"动漫风格，一个美女从房间走出去，剩下空挡的房间\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false},{\"id\":\"msjtg4886omng_e\",\"imageFile\":\"Anima_00392_.png\",\"width\":0,\"height\":0,\"start\":310,\"length\":62,\"frameCount\":62,\"durationSec\":5,\"prompt\":\"\",\"negativePrompt\":\"bad video\",\"isStartFrame\":false,\"isEndFrame\":true},{\"id\":\"msjvfxck73qcc\",\"imageFile\":\"\",\"width\":0,\"height\":0,\"start\":372,\"length\":362,\"frameCount\":362,\"durationSec\":15,\"prompt\":\"15秒，16:9横版视频。将实拍的办公室办公场景与手绘发光动画融合的影像。0-3秒：实拍镜头中，一只真实的人手在粗糙木纹桌面上随意滑动，指尖轻点，仿佛唤醒了潜伏在空气中的光影；一只由蜡笔质感构成的橘猫从画面右侧探出头，眼神清澈却带着几分呆萌，与周围略显模糊的电脑屏幕形成虚实交错的质感。3-6秒：橘猫突然向前一扑，身体在空气中拉长变形，蜡笔线条随之断裂又重组，它撞向桌角时激起一圈彩色的粉笔晕染，仿佛实体撞进了二维的画布里。6-10秒：镜头微微滞后半拍，橘猫顺势滚落至桌下，实拍背景中隐约可见的办公椅腿与手绘的猫身形成景深对比，猫在阴影里打了个滚，尾巴像根彩色铅笔一样在阴影中扫出长长的轨迹。10-13秒：光影开始流动，橘猫身上的蜡笔纹理逐渐晕染成一片柔和的粉彩，它伸了个懒腰，前爪悬空抓挠着空气，指尖滴落出几滴发光的颜料，像是从现实世界渗漏出的色彩。13-15秒：画面空间整体微微上提，仿佛猫把视角拉高，它猛地跳向镜头，用巨大的手绘瞳孔直视观众，随后在鼻尖点了一下，留下一个可爱的、像蜡笔涂鸦般的“喵”字，为这段生活感十足的办公时光画上俏皮的句点。全程保持手绘的粗粝感，拒绝过度的3DCG光泽，让每一帧都充满纸笔摩擦的生动气息。\",\"negativePrompt\":\"bad video\",\"isStartFrame\":true,\"isEndFrame\":false}],\"durationSec\":30}",
+        "高级采样",
+        25,
+        "res_multistep",
+        "simple",
+        12,
+        3,
+        "性能",
+        true,
+        false,
+        ""
+      ]
+    },
+    {
+      "id": 30,
+      "type": "LoadImage",
+      "pos": [
+        -1486.568980284755,
+        1286.4105332559018
+      ],
+      "size": [
+        270,
+        314.0000000000001
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "图像",
+          "name": "image",
+          "type": "COMBO",
+          "widget": {
+            "name": "image"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "选择文件上传",
+          "name": "upload",
+          "type": "IMAGEUPLOAD",
+          "widget": {
+            "name": "upload"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            60
+          ]
+        },
+        {
+          "localized_name": "遮罩",
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "Anima_00392_.png",
+        "image"
+      ]
+    },
+    {
+      "id": 35,
+      "type": "MiniMaxH3DirectorGroupImageToVideo",
+      "pos": [
+        -1039.9251115856644,
+        1018.0342677456002
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "first_frame",
+          "name": "first_frame",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "last_frame",
+          "name": "last_frame",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 60
+        },
+        {
+          "localized_name": "prompt",
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "duration_sec",
+          "name": "duration_sec",
+          "type": "FLOAT",
+          "widget": {
+            "name": "duration_sec"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "group",
+          "name": "group",
+          "type": "MMX_DIR_GROUP",
+          "links": [
+            61
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3DirectorGroupImageToVideo"
+      },
+      "widgets_values": [
+        "动漫风格，一个美女从房间走出去，剩下空挡的房间",
+        5
+      ]
+    },
+    {
+      "id": 31,
+      "type": "MiniMaxH3DirectorGroupImageToVideo",
+      "pos": [
+        -1075.483130035425,
+        1351.9259651460432
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "first_frame",
+          "name": "first_frame",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "last_frame",
+          "name": "last_frame",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "prompt",
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "duration_sec",
+          "name": "duration_sec",
+          "type": "FLOAT",
+          "widget": {
+            "name": "duration_sec"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "group",
+          "name": "group",
+          "type": "MMX_DIR_GROUP",
+          "links": [
+            62
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3DirectorGroupImageToVideo"
+      },
+      "widgets_values": [
+        "15秒，16:9横版视频。将实拍的办公室办公场景与手绘发光动画融合的影像。0-3秒：实拍镜头中，一只真实的人手在粗糙木纹桌面上随意滑动，指尖轻点，仿佛唤醒了潜伏在空气中的光影；一只由蜡笔质感构成的橘猫从画面右侧探出头，眼神清澈却带着几分呆萌，与周围略显模糊的电脑屏幕形成虚实交错的质感。3-6秒：橘猫突然向前一扑，身体在空气中拉长变形，蜡笔线条随之断裂又重组，它撞向桌角时激起一圈彩色的粉笔晕染，仿佛实体撞进了二维的画布里。6-10秒：镜头微微滞后半拍，橘猫顺势滚落至桌下，实拍背景中隐约可见的办公椅腿与手绘的猫身形成景深对比，猫在阴影里打了个滚，尾巴像根彩色铅笔一样在阴影中扫出长长的轨迹。10-13秒：光影开始流动，橘猫身上的蜡笔纹理逐渐晕染成一片柔和的粉彩，它伸了个懒腰，前爪悬空抓挠着空气，指尖滴落出几滴发光的颜料，像是从现实世界渗漏出的色彩。13-15秒：画面空间整体微微上提，仿佛猫把视角拉高，它猛地跳向镜头，用巨大的手绘瞳孔直视观众，随后在鼻尖点了一下，留下一个可爱的、像蜡笔涂鸦般的“喵”字，为这段生活感十足的办公时光画上俏皮的句点。全程保持手绘的粗粝感，拒绝过度的3DCG光泽，让每一帧都充满纸笔摩擦的生动气息。\n",
+        15
+      ]
+    },
+    {
+      "id": 24,
+      "type": "MiniMaxH3DirectorGroupImageToVideo",
+      "pos": [
+        -1054.3470290037533,
+        601.8182506160806
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "first_frame",
+          "name": "first_frame",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 63
+        },
+        {
+          "localized_name": "last_frame",
+          "name": "last_frame",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "localized_name": "prompt",
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "duration_sec",
+          "name": "duration_sec",
+          "type": "FLOAT",
+          "widget": {
+            "name": "duration_sec"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "group",
+          "name": "group",
+          "type": "MMX_DIR_GROUP",
+          "links": [
+            49
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3DirectorGroupImageToVideo"
+      },
+      "widgets_values": [
+        "一个卡通猴子坐在岩石上给大家打招呼，说“你们好啊！”",
+        5
+      ]
+    },
+    {
+      "id": 32,
+      "type": "MiniMaxH3DirectorGroupsCombine",
+      "pos": [
+        -409.96074611204114,
+        834.1118597345493
+      ],
+      "size": [
+        290.7515625,
+        126
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "group_0",
+          "localized_name": "groups.group_0",
+          "name": "groups.group_0",
+          "shape": 7,
+          "type": "MMX_DIR_GROUP",
+          "link": 48
+        },
+        {
+          "label": "group_1",
+          "localized_name": "groups.group_1",
+          "name": "groups.group_1",
+          "shape": 7,
+          "type": "MMX_DIR_GROUP",
+          "link": 49
+        },
+        {
+          "label": "group_2",
+          "localized_name": "groups.group_2",
+          "name": "groups.group_2",
+          "shape": 7,
+          "type": "MMX_DIR_GROUP",
+          "link": 61
+        },
+        {
+          "label": "group_3",
+          "localized_name": "groups.group_3",
+          "name": "groups.group_3",
+          "shape": 7,
+          "type": "MMX_DIR_GROUP",
+          "link": 62
+        },
+        {
+          "label": "group_4",
+          "localized_name": "groups.group_4",
+          "name": "groups.group_4",
+          "shape": 7,
+          "type": "MMX_DIR_GROUP",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "groups",
+          "name": "groups",
+          "type": "MMX_DIR_GROUP",
+          "links": [
+            51
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3DirectorGroupsCombine"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 36,
+      "type": "MarkdownNote",
+      "pos": [
+        -2166.7023180954156,
+        636.9910365466825
+      ],
+      "size": [
+        360,
+        320
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "导演台插件地址：",
+      "properties": {},
+      "widgets_values": [
+        "## MiniMax H3 Director — external_groups_i2v (GGUF)\n\n1. 确认 UnetLoaderGGUF / ClipProj / Video VAE / Audio VAE 文件名与本地一致\n2. 文本编码器用 `CCTechClipProjLoader`：`type` 选 `boogu`，projection 选 `mmh3-8b-ClipProj-v3.1.safetensors`\n3. 在导演台节点内编辑提示词与帧数（默认 124≈5s @24fps）\n4. Queue Prompt\n\n本地模型：\n- diffusion_models/`minimax_h3_fl2va_pruned-Q4_K_M.gguf`\n- text_encoders/`qwen3-vl-8b-heretic-1.3.0_fp8_e4m3fn.safetensors` + `mmh3-8b-ClipProj-v3.1.safetensors`\n- vae/`minimax_h3_video_vae_fp16.safetensors` / `minimax_h3_audio_vae_fp32.safetensors`\n"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    }
+  ],
+  "links": [
+    [
+      2,
+      2,
+      0,
+      5,
+      3,
+      "CLIP"
+    ],
+    [
+      3,
+      3,
+      0,
+      5,
+      1,
+      "VAE"
+    ],
+    [
+      4,
+      4,
+      0,
+      5,
+      2,
+      "VAE"
+    ],
+    [
+      5,
+      5,
+      0,
+      6,
+      0,
+      "IMAGE"
+    ],
+    [
+      6,
+      5,
+      1,
+      6,
+      1,
+      "AUDIO"
+    ],
+    [
+      7,
+      5,
+      2,
+      6,
+      2,
+      "FLOAT"
+    ],
+    [
+      8,
+      5,
+      5,
+      8,
+      0,
+      "*"
+    ],
+    [
+      9,
+      6,
+      0,
+      7,
+      0,
+      "VIDEO"
+    ],
+    [
+      10,
+      5,
+      2,
+      9,
+      0,
+      "*"
+    ],
+    [
+      11,
+      5,
+      3,
+      10,
+      0,
+      "*"
+    ],
+    [
+      30,
+      18,
+      0,
+      23,
+      0,
+      "IMAGE"
+    ],
+    [
+      31,
+      19,
+      0,
+      23,
+      1,
+      "IMAGE"
+    ],
+    [
+      39,
+      28,
+      0,
+      29,
+      0,
+      "MODEL"
+    ],
+    [
+      40,
+      1,
+      0,
+      28,
+      0,
+      "MODEL"
+    ],
+    [
+      41,
+      29,
+      0,
+      5,
+      0,
+      "MODEL"
+    ],
+    [
+      48,
+      23,
+      0,
+      32,
+      0,
+      "MMX_DIR_GROUP"
+    ],
+    [
+      49,
+      24,
+      0,
+      32,
+      1,
+      "MMX_DIR_GROUP"
+    ],
+    [
+      51,
+      32,
+      0,
+      5,
+      4,
+      "MMX_DIR_GROUP"
+    ],
+    [
+      60,
+      30,
+      0,
+      35,
+      1,
+      "IMAGE"
+    ],
+    [
+      61,
+      35,
+      0,
+      32,
+      2,
+      "MMX_DIR_GROUP"
+    ],
+    [
+      62,
+      31,
+      0,
+      32,
+      3,
+      "MMX_DIR_GROUP"
+    ],
+    [
+      63,
+      20,
+      0,
+      24,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "模型加载",
+      "bounding": [
+        433.3126815332408,
+        -617.8888836605067,
+        440,
+        560
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "MiniMax H3 Director",
+      "bounding": [
+        0,
+        0,
+        1120,
+        980
+      ],
+      "color": "#8A8",
+      "flags": {}
+    },
+    {
+      "id": 4,
+      "title": "输出",
+      "bounding": [
+        1160,
+        40,
+        1059.7917856131396,
+        826.9303623099186
+      ],
+      "color": "#b58",
+      "flags": {}
+    },
+    {
+      "id": 5,
+      "title": "加速模块（用就开启，不用可以关掉）",
+      "bounding": [
+        1118.3533322601147,
+        -576.6455810583501,
+        696.8626780790273,
+        222.74509026022088
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "frontendVersion": "1.23.0",
+    "note": "MiniMax H3 Director · external Image to Video groups",
+    "ds": {
+      "scale": 0.5259203606311121,
+      "offset": [
+        2797.6309950276045,
+        434.72308299937464
+      ]
+    }
+  },
+  "version": 0.4
+}
