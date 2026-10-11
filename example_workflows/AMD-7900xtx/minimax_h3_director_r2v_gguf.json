@@ -33,13 +33,13 @@
         "Node name for S&R": "UnetLoaderGGUF",
         "models": [
           {
-            "name": "minimax_h3_fl2va_pruned-Q4_K_M.gguf",
+            "name": "minimax_h3_ref2va_pruned-Q4_K_M.gguf",
             "directory": "diffusion_models"
           }
         ]
       },
       "widgets_values": [
-        "minimax_h3_fl2va_pruned-Q4_K_M.gguf"
+        "minimax_h3_ref2va_pruned-Q4_K_M.gguf"
       ]
     },
     {
@@ -422,8 +422,8 @@
         "Node name for S&R": "MiniMaxH3Director"
       },
       "widgets_values": [
-        "t2v — 文生视频(Text to Video)",
-        "Realistic live-action cinematic look: a post-rain dusk metropolis, anamorphic lens, shallow depth of field, film grain, city volumetric fog, flying-car traffic between towers.\n\nStoryboard:\n[0s-2s] High side angle: protagonist sprinting at a roof edge, wind catching their coat.\n[2s-3.5s] Leap across the gap between buildings, body stretching mid-air.\n[3.5s-5s] Landing and roll, low-angle shot, keep running into fog.\n\nAudio: wind, rapid footsteps, city ambience, low score with accent hits on each leap.\nNo text, logos or watermarks.",
+        "r2v — 参考主体生视频(Reference to Video)",
+        "<Picture 1> stands on a rooftop at dusk, wind in hair, turns to camera and smiles. Keep identity and outfit of <Picture 1>. Cinematic lighting, city skyline behind. Audio: soft wind and distant city ambience. No text or logos.",
         "采样设置",
         1.0,
         42,
@@ -433,7 +433,7 @@
         480,
         864,
         124,
-        "{\"version\": 4, \"editMode\": \"global\", \"timelineMode\": \"gen_blank\", \"totalFrames\": 124, \"frameRate\": 24.0, \"width\": 864, \"height\": 480, \"refMaxSize\": 864, \"output\": {\"mode\": \"fixed\", \"longEdge\": 864, \"width\": 864, \"height\": 480, \"maxExportFrames\": 0, \"exportMode\": \"all\", \"continuityEnabled\": false, \"continuityOverlapFrames\": 9}, \"videoClips\": [], \"video\": {\"fileName\": \"\", \"videoFile\": \"\", \"subfolder\": \"\", \"type\": \"input\", \"frames\": [], \"frameMap\": []}, \"global\": {\"taskType\": \"t2v — 文生视频(Text to Video)\", \"prompt\": \"Realistic live-action cinematic look: a post-rain dusk metropolis, anamorphic lens, shallow depth of field, film grain, city volumetric fog, flying-car traffic between towers.\\n\\nStoryboard:\\n[0s-2s] High side angle: protagonist sprinting at a roof edge, wind catching their coat.\\n[2s-3.5s] Leap across the gap between buildings, body stretching mid-air.\\n[3.5s-5s] Landing and roll, low-angle shot, keep running into fog.\\n\\nAudio: wind, rapid footsteps, city ambience, low score with accent hits on each leap.\\nNo text, logos or watermarks.\", \"refs\": [], \"referenceVideo\": {}, \"continuousReference\": false, \"genImage\": {\"imageFile\": \"\"}}, \"segments\": [{\"id\": \"s0\", \"start\": 0, \"length\": 124, \"frameCount\": 124, \"durationSec\": 5, \"prompt\": \"\", \"taskType\": \"\", \"refs\": [], \"referenceVideo\": {}, \"genImage\": {\"imageFile\": \"\"}, \"negativePrompt\": \"\"}], \"gen\": {\"defaultFrameCount\": 124}, \"runSelectEnabled\": false, \"runSelection\": []}",
+        "{\"version\": 4, \"editMode\": \"global\", \"timelineMode\": \"gen_blank\", \"totalFrames\": 124, \"frameRate\": 24.0, \"width\": 864, \"height\": 480, \"refMaxSize\": 864, \"output\": {\"mode\": \"fixed\", \"longEdge\": 864, \"width\": 864, \"height\": 480, \"maxExportFrames\": 0, \"exportMode\": \"all\", \"continuityEnabled\": false, \"continuityOverlapFrames\": 9}, \"videoClips\": [], \"video\": {\"fileName\": \"\", \"videoFile\": \"\", \"subfolder\": \"\", \"type\": \"input\", \"frames\": [], \"frameMap\": []}, \"global\": {\"taskType\": \"r2v — 参考主体生视频(Reference to Video)\", \"prompt\": \"<Picture 1> stands on a rooftop at dusk, wind in hair, turns to camera and smiles. Keep identity and outfit of <Picture 1>. Cinematic lighting, city skyline behind. Audio: soft wind and distant city ambience. No text or logos.\", \"refs\": [{\"index\": 0, \"imageFile\": \"h3ref00_seed203530148881139858_1_女孩.png\"}], \"referenceVideo\": {}, \"continuousReference\": false, \"genImage\": {\"imageFile\": \"\"}}, \"segments\": [{\"id\": \"s0\", \"start\": 0, \"length\": 124, \"frameCount\": 124, \"durationSec\": 5, \"prompt\": \"\", \"taskType\": \"r2v — 参考主体生视频(Reference to Video)\", \"refs\": [{\"index\": 0, \"imageFile\": \"h3ref00_seed203530148881139858_1_女孩.png\"}], \"referenceVideo\": {}, \"genImage\": {\"imageFile\": \"\"}, \"negativePrompt\": \"\"}], \"gen\": {\"defaultFrameCount\": 124}, \"runSelectEnabled\": false, \"runSelection\": []}",
         "高级采样 Advanced",
         25,
         "res_multistep",
@@ -677,10 +677,10 @@
       "mode": 0,
       "inputs": [],
       "outputs": [],
-      "title": "MiniMax H3 Director · t2v",
+      "title": "MiniMax H3 Director · r2v",
       "properties": {},
       "widgets_values": [
-        "## MiniMax H3 Director — 文生音视频 (t2v, GGUF)\n\n1. 确认 UnetLoaderGGUF / ClipProj / Video VAE / Audio VAE 文件名与本地一致\n2. 文本编码器用 `CCTechClipProjLoader`：`type` 选 `boogu`，projection 选 `mmh3-8b-ClipProj-v3.1.safetensors`\n3. 在导演台节点内编辑提示词与帧数（默认 124≈5s @24fps）\n4. Queue Prompt\n\n本地模型：\n- diffusion_models/`minimax_h3_fl2va_pruned-Q4_K_M.gguf`\n- text_encoders/`qwen3-vl-8b-heretic-1.3.0_fp8_e4m3fn.safetensors` + `mmh3-8b-ClipProj-v3.1.safetensors`\n- vae/`minimax_h3_video_vae_fp16.safetensors` / `minimax_h3_audio_vae_fp32.safetensors`\n\n注意力：本机以 `--use-ck-attention` 启动，扩散模型自注意力默认走 comfy_kitchen INT8（CK），本工作流未覆盖它。CK 是进程级全局，生图需换无 CK 的启动脚本。\n\n平台差异：NVIDIA 可直接用官方模板的 SageAttention / int8 / NVFP4；AMD(gfx1100) 无 SageAttention、无 FP8 计算、无 NVFP4、无 flash-attn，故本适配改用 GGUF + heretic-8B + CK INT8。详见 example_workflows/README.md。"
+        "## MiniMax H3 Director — 参考主体生视频 (r2v, GGUF)\n\n1. 确认 UnetLoaderGGUF / ClipProj / Video VAE / Audio VAE 文件名与本地一致\n2. 文本编码器用 `CCTechClipProjLoader`：`type` 选 `boogu`，projection 选 `mmh3-8b-ClipProj-v3.1.safetensors`\n3. 在导演台节点内编辑提示词与帧数（默认 124≈5s @24fps），并在素材槽上传参考图\n4. Queue Prompt\n\n本地模型：\n- diffusion_models/`minimax_h3_ref2va_pruned-Q4_K_M.gguf`（r2v 专用，本机已就位）\n- text_encoders/`qwen3-vl-8b-heretic-1.3.0_fp8_e4m3fn.safetensors` + `mmh3-8b-ClipProj-v3.1.safetensors`\n- vae/`minimax_h3_video_vae_fp16.safetensors` / `minimax_h3_audio_vae_fp32.safetensors`\n\n注意力：本机以 `--use-ck-attention` 启动，扩散模型自注意力默认走 comfy_kitchen INT8（CK），本工作流未覆盖它。CK 是进程级全局，生图需换无 CK 的启动脚本。\n\n平台差异：NVIDIA 可直接用官方模板的 SageAttention / int8 / NVFP4；AMD(gfx1100) 无 SageAttention、无 FP8 计算、无 NVFP4、无 flash-attn，故本适配改用 GGUF + heretic-8B + CK INT8。详见本目录 README.md。"
       ],
       "color": "#432",
       "bgcolor": "#653"

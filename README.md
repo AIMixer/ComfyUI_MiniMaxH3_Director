@@ -129,8 +129,6 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 | `minimax_h3_director_external_groups_r2v.json` | r2v | **ref2va** | 外部 Group×N → Combine → `r2v_groups` |
 | `minimax_h3_director_二采_加速.json` | r2v | **ref2va** | 外接 Refine 二采（SIGMAS + H3 latent）；`images` 与 `images_pre_refine` 各出一路成片 |
 
-> 另含面向 **AMD / GGUF** 的本地适配版工作流（10 个 `*_gguf.json`：GGUF UNET + heretic-8B 编码器，Sage 节点已旁路），说明见 [`example_workflows/README.md`](example_workflows/README.md)。
-
 ### 推荐模型文件
 
 | 用途 | 文件名 | 目录 |
