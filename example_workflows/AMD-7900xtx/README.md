@@ -95,3 +95,25 @@
 ## 采样参数 / 输出
 
 与官方模板一致，详见 [`../README.md`](../README.md)：默认 0.4MP 16:9（864×480）、5 秒 / 124 帧 @ 24fps、25 steps（`res_multistep` + `simple`，CFG 1.0），Sigma shift video 12 / audio 3。
+
+## 推荐配套工具：生成中实时帧预览（`preview_watch`）
+
+> 🔗 <https://github.com/happymy/MinimaxH3-7900xtx/tree/master/plan/bat/preview_watch>
+
+**在本机跑 H3 长片时强烈推荐**。它 = 一个 ComfyUI 内核补丁 + 一个旁路监视脚本：
+
+- **内核补丁**（`frame_preview_kernel.patch`，3 个文件 / 约 7KB）：采样中途用**工作流自己的 video VAE** 解码 latent，把**成片分辨率的真帧**（不是 34×60 的 `latent2rgb` 小图）落盘到 `%TEMP%\iw-preview-*`，并自动弹出资源管理器。触发点：`step 0` 首批，之后每 `total_steps // 4` 步一批，每批均匀取 6 帧。
+- **监视脚本**（`watch_h3_preview.py`，零侵入）：轮询 `GET /queue` 与 `%TEMP%\iw-preview-*`，实时打印帧；可 `--collect <dir>` 归档、`--once` 只盯当前队列。
+
+### 本机（RX 7900 XTX）实测结论
+
+1. **大部分情况下，采样到 `step 5` 的预览图就已足够判断是否符合生成意图** —— 不必等 8–9 分钟出片，几十秒就能看出跑没跑偏、要不要中断重跑。
+2. **附带效果：提前卸载 DiT，显著降低显存压力。** `step 0` 首批预览要做一次 video VAE decode，这次 decode 自带的 `free_memory` 会在采样最早期就把 DiT 卸到低水位、之后按需换回；在 `--enable-dynamic-vram` 下，这一步让峰值显存明显下降。
+3. **由此让长片成为可能**：`0.4 Mpx / 20 step` 下约 **2 分钟生成 1 秒视频**，**20 秒长片**可以跑通，且**耗时仅为原来的 1/3**（不提前卸载时显存被顶爆，数据退到内存 / 页面文件走，那一段渲染会非常慢）。
+
+### 使用要点
+
+- 补丁是对着 **ComfyUI v0.39.2** 生成的，需 `git apply` 到**同版本**的官方源码树（版本不同会因行偏移失败，按补丁手工落 3 处改动亦可）。
+- 脚本为 Windows 路径（`os.startfile` / 资源管理器 / `%TEMP%`）。
+- 全局开关：`ComfyUI\user\iw-preview-flag.txt`（由 `watch_h3_preview.py --preview on/off` 写入）；置 `off` 时既不落帧、也不提前卸载 DiT。
+- 内核逻辑与计算后端**无关**：CUDA / NVIDIA 同样适用（那边 DynamicVRAM 默认就是开启的）；本节数据为本机 7900 XTX 的实测结果。
