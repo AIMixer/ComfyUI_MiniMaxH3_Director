@@ -677,10 +677,10 @@
       "mode": 0,
       "inputs": [],
       "outputs": [],
-      "title": "MiniMax H3 Director · t2v",
+      "title": "MiniMax H3 Director · i2v",
       "properties": {},
       "widgets_values": [
-        "## MiniMax H3 Director — 文生音视频 (t2v, GGUF)\n\n1. 确认 UnetLoaderGGUF / ClipProj / Video VAE / Audio VAE 文件名与本地一致\n2. 文本编码器用 `CCTechClipProjLoader`：`type` 选 `boogu`，projection 选 `mmh3-8b-ClipProj-v3.1.safetensors`\n3. 在导演台节点内编辑提示词与帧数（默认 124≈5s @24fps）\n4. Queue Prompt\n\n本地模型：\n- diffusion_models/`minimax_h3_fl2va_pruned-Q4_K_M.gguf`\n- text_encoders/`qwen3vl_8b_fp8_scaled.safetensors` + `mmh3-8b-ClipProj-v3.1.safetensors`\n- vae/`minimax_h3_video_vae_fp16.safetensors` / `minimax_h3_audio_vae_fp32.safetensors`\n"
+        "## MiniMax H3 Director — 图生视频 (i2v, GGUF)\n\n1. 确认 UnetLoaderGGUF / ClipProj / Video VAE / Audio VAE 文件名与本地一致\n2. 文本编码器用 `CCTechClipProjLoader`：`type` 选 `boogu`，projection 选 `mmh3-8b-ClipProj-v3.1.safetensors`\n3. 在导演台节点内编辑提示词与帧数（默认 124≈5s @24fps），首帧素材槽上传起始图\n4. Queue Prompt\n\n本地模型：\n- diffusion_models/`minimax_h3_fl2va_pruned-Q4_K_M.gguf`\n- text_encoders/`qwen3vl_8b_fp8_scaled.safetensors` + `mmh3-8b-ClipProj-v3.1.safetensors`\n- vae/`minimax_h3_video_vae_fp16.safetensors` / `minimax_h3_audio_vae_fp32.safetensors`\n"
       ],
       "color": "#432",
       "bgcolor": "#653"
@@ -817,7 +817,7 @@
   "config": {},
   "extra": {
     "frontendVersion": "1.23.0",
-    "note": "MiniMax H3 Director · t2v",
+    "note": "MiniMax H3 Director · i2v",
     "ds": {
       "scale": 0.85,
       "offset": [
