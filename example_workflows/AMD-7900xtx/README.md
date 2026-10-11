@@ -129,3 +129,17 @@
 - 脚本为 Windows 路径（`os.startfile` / 资源管理器 / `%TEMP%`）。
 - 全局开关：`ComfyUI\user\iw-preview-flag.txt`（由 `watch_h3_preview.py --preview on/off` 写入）；置 `off` 时既不落帧、也不提前卸载 DiT。
 - 内核逻辑与计算后端**无关**：CUDA / NVIDIA 同样适用（那边 DynamicVRAM 默认就是开启的）；本节数据为本机 7900 XTX 的实测结果。
+
+## 来源与致谢
+
+本目录（以及本 README）的**部分数据、代码与脚本来自
+[`happymy/MinimaxH3-7900xtx`](https://github.com/happymy/MinimaxH3-7900xtx)**，借用 / 参考的部分包括：
+
+| 内容 | 出处 |
+|---|---|
+| 显存清理工具 `/free`（`free_vram.py` / `free_vram.bat`） | [`plan/bat/free_vram`](https://github.com/happymy/MinimaxH3-7900xtx/tree/master/plan/bat/free_vram) |
+| 生成中实时帧预览（内核补丁 + 监视脚本） | [`plan/bat/preview_watch`](https://github.com/happymy/MinimaxH3-7900xtx/tree/master/plan/bat/preview_watch) |
+| 连续生成性能下降、`step 0` 预览提前卸载 DiT 等**实测数据与结论** | 该仓库 `plan/README.md`、[`plan/bat`](https://github.com/happymy/MinimaxH3-7900xtx/tree/master/plan/bat) |
+| AMD / ROCm 平台适配经验（启动脚本、`--enable-dynamic-vram` 等） | 该仓库 [`README.md`](https://github.com/happymy/MinimaxH3-7900xtx/blob/master/README.md) |
+
+本目录 `example_workflows/AMD-7900xtx/` 是在上述基础上做的 **GGUF / RX 7900 XTX 适配归档**；官方模板未做改动。
