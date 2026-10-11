@@ -3,16 +3,33 @@
 本目录是 [ComfyUI_MiniMaxH3_Director](../../README.md) 的 **AMD Radeon（RX 7900 XTX 24GB / gfx1100 / ROCm）本地适配产物**。
 与仓库 `example_workflows/` 下的官方模板**并存**，官方文件未做任何改动（本目录为独立的归档目录）。
 
+> [!CAUTION]
+> ## ⚠️ CK 使用警告（生图禁用）
+>
+> `--use-ck-attention` **只能用于 MiniMax H3 生视频，绝不能用于生图（Qwen-Image 2.1 等）**。
+> 该 flag 会把扩散模型自注意力**全局无条件覆盖**为 comfy_kitchen INT8；在此后端下 Qwen-Image 2.1 只要文本流跨过
+> **64 token** 即**输出严重损坏**（绿/紫伪影、纹理破碎、结构崩坏），**且不抛任何异常**，极易误判为模型/提示词问题。
+> 这是 comfy-kitchen **0.2.36** 的回归（#207/#208 重写 masked attention），**PyPI 无修复版本**（0.2.37 不存在）。
+> H3 生视频已双向确认安全（文本编码器 + DiT 主干），可继续用 CK。详见《CK 注意力回归问题调查报告》。
+>
+> | 用途 | 启动脚本 | CK |
+> |---|---|---|
+> | **生图**（Qwen-Image 2.1 等） | `run_amd_gpu_no_ck_attention.bat` | ❌ 必须关 |
+> | **生视频**（MiniMax H3） | `run_amd_gpu_enable_dynamic_vram.bat` | ✅ 开 |
+>
+> 两个脚本**除 ck 开关外完全一致**。CK 是**进程级全局**开关，切换用途**必须先完全关掉旧实例再重启**。
+> 启动日志自查：出现 `Using Comfy Kitchen attention` 才是 CK 生效；**不应**出现 `Using sage attention`。
+
 ## 与官方模板的差异
 
 | 项 | 官方模板 | 本目录（`*_gguf.json`） |
 |---|---|---|
 | UNET | `UNETLoader` + `*_int8_convrot.safetensors` | `UnetLoaderGGUF` + `*_Q4_K_M.gguf` |
 | 文本编码器 | `CLIPLoader`（`qwen3vl_32b_minimax_h3_nvfp4_awq`，type `minimax`） | `CCTechClipProjLoader`（`qwen3-vl-8b-heretic-1.3.0_fp8_e4m3fn` + `mmh3-8b-ClipProj-v3.1`，type `boogu`） |
-| SageAttention | 加速版 / external_groups_* / 二采_加速 内含 Sage 节点 | 同位置节点 **已旁路**（`mode=4`） |
+| SageAttention | 加速版 / external_groups_i2v / external_groups_r2v 内含 Sage 节点 | 同位置节点 **已旁路**（`mode=4`） |
 | 其他（VAE / Director / 连线 / 采样参数） | — | 原样保留 |
 
-## 工作流清单（11 个）
+## 工作流清单（10 个）
 
 | 文件 | 任务 | UNET | Sage | 额外依赖 |
 |---|---|---|---|---|
@@ -26,7 +43,6 @@
 | `minimax_h3_director_加速版_gguf.json` | 加速版（243 帧） | ref2va | 旁路 ×2 | — |
 | `minimax_h3_director_external_groups_i2v_gguf.json` | external i2v（734 帧） | fl2va | 旁路 ×2 | — |
 | `minimax_h3_director_external_groups_r2v_gguf.json` | external r2v（1210 帧） | ref2va | 旁路 ×2 | ComfyUI-VideoHelperSuite + **自备参考视频** |
-| `minimax_h3_director_二采_加速_gguf.json` | 两阶段二采（367 帧） | fl2va + ref2va | 旁路 ×4 | 2 个 turbo LoRA + latent upscaler（**本机缺**） |
 
 命名规则 = 官方 `<原名>` + `_gguf.json`；逐一对应 `../` 下的同名官方文件。
 
@@ -41,13 +57,15 @@
 | Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
 | Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` |
 
-`minimax_h3_director_二采_加速_gguf.json` 另需以下 3 个文件（**本机当前缺失，须先下载放入**，否则 Queue 报错）：
+以上模型文件本机齐全。
 
-- `models/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors`
-- `models/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors`
-- `models/latent_upscale_models/minimax_h3_latent_upscaler_3d_bf16.safetensors`
+## 已移除：二采_加速（显存不足）
 
-其余 10 个工作流引用的模型文件本机齐全。
+`minimax_h3_director_二采_加速_gguf.json` 曾在本目录内，因**显存占用超出本机 24GB** 已移除，不再纳入归档。
+
+它是两阶段管线（一采 `fl2va` + 二采 `ref2va` + 3D latent 放大），采样峰值显存需求在所有工作流里最高；而 AMD 用不了 SageAttention——该节点在 NVIDIA 上的作用正是**压低自注意力峰值显存**，旁路后失去这层保护，峰值进一步抬高。RX 7900 XTX 的 24GB 承载不了。
+
+（它同时也是唯一需要额外 2 个 turbo LoRA + 1 个 latent upscaler 的工作流，那些文件本机也没有。）
 
 ## 平台差异（NVIDIA vs AMD）
 
@@ -55,7 +73,7 @@
 
 | 能力 | NVIDIA | AMD RDNA3（本机） | 对本适配的影响 |
 |---|---|---|---|
-| SageAttention（KJ 两个节点） | 支持（SM 75/80/86/89/90/120/121），降自注意力峰值显存 + 提速 | **无实现**（无 gfx 分支） | 必须旁路（长片 3 个 ×2 + 二采 ×4，共 10 个节点） |
+| SageAttention（KJ 两个节点） | 支持（SM 75/80/86/89/90/120/121），降自注意力峰值显存 + 提速 | **无实现**（无 gfx 分支） | 必须旁路（加速版 / external_groups_i2v / external_groups_r2v，共 6 个节点） |
 | FP8 运算（E4M3/E5M2） | Ada/Hopper/Blackwell 原生 | **不支持**（RDNA3 无 float8 计算，本机 `SUPPORT_FP8_OPS=False`） | fp8 权重能加载但按 bf16 计算 → 更慢更占显存 |
 | NVFP4 量化 | Blackwell/Ada 专有 4-bit 浮点块量化 | **不可用** | 官方 `qwen3vl_32b_..._nvfp4_awq` 编码器换成本地 `heretic-8B` |
 | INT8（`int8_convrot` / comfy_kitchen） | 支持 | **支持**（RDNA3 原生 int8） | `--use-ck-attention` 的 INT8 注意力在 AMD 可用 |
@@ -71,7 +89,7 @@
 - 必装 **ComfyUI-GGUF-Loader**（提供 `UnetLoaderGGUF` 与 `CCTechClipProjLoader`）。
 - `external_groups_r2v_gguf.json` 需 **ComfyUI-VideoHelperSuite**（`VHS_LoadVideo` 节点），并把参考视频换成自己的文件放进 `ComfyUI/input/`。
 - **SageAttention 节点一律旁路**：本机未装 sageattention；其内核只支持 NVIDIA SM 架构，AMD 无实现，装了也无法运行。该节点在此类长片里的作用是**降低自注意力峰值显存**（非提速），旁路后请靠 `clear_vram_between_segments` + 减帧 / 降分辨率 / 减参考组防 OOM。
-- H3 生视频用带 `--use-ck-attention` 的启动脚本（`run_amd_gpu_enable_dynamic_vram.bat`，扩散模型自注意力默认走 comfy_kitchen INT8）；CK 是进程级全局且同时影响生图，**生图请换无 CK 的脚本**（`run_amd_gpu_no_ck_attention.bat`）。
+- CK 使用见**顶部警告**：生视频用 `run_amd_gpu_enable_dynamic_vram.bat`（含 `--use-ck-attention`）；**生图必须**用 `run_amd_gpu_no_ck_attention.bat`（CK 是进程级全局开关，切换须重启）。
 - 单段 5s 采样在本机约 8.5–9 分钟（ROCm + Q4 GGUF，无 flash-attn）。
 
 ## 采样参数 / 输出
