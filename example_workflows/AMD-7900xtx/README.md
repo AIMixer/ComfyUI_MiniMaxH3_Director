@@ -20,6 +20,18 @@
 > 两个脚本**除 ck 开关外完全一致**。CK 是**进程级全局**开关，切换用途**必须先完全关掉旧实例再重启**。
 > 启动日志自查：出现 `Using Comfy Kitchen attention` 才是 CK 生效；**不应**出现 `Using sage attention`。
 
+> [!WARNING]
+> ## ⚠️ 连续生成会越跑越慢（**不是 H3 特有**：生视频 / 生图 / TTS 生音频 **都有**）
+>
+> `--enable-dynamic-vram` 下，**残留物理页随任务累积**：同一条工作流**跑得越多越慢**，十几分钟的活能被拖成几小时。
+> **经本机实测，这不是生视频独有的问题——生图（Qwen-Image 2.1）、TTS 生音频一样会逐次退化**，凡是连续出活都要防。
+>
+> **缓解办法：调 ComfyUI 的 `/free`**（卸载模型 + 清 Dynamic VRAM 残留）。
+> - **任务之间**：多段脚本已在段间内置 `POST /free`；段外手动清理、以及**批跑期间的周期清理**用
+>   [`plan/bat/free_vram`](https://github.com/happymy/MinimaxH3-7900xtx/tree/master/plan/bat/free_vram)（`free_vram.bat` / `python free_vram.py`；`--status` 只看状态、`--interval 60` 挂旁边每 60s 清一次、`--no-verify` 发完即走）。
+> - **`/free` 是异步 flag 端点**：**HTTP 200 ≠ 已释放**，真正卸载由 prompt worker 在**当前任务结束后**执行；要确认释放，须看 `/system_stats` 的 `vram_free` 上升（工具默认会轮询验证）。
+> - **生成中调用是安全的**（只挂 flag，不打断当前 prompt），但它**救不了「单个任务内部越跑越慢」**——那种只能**重启 ComfyUI**。
+
 ## 与官方模板的差异
 
 | 项 | 官方模板 | 本目录（`*_gguf.json`） |
