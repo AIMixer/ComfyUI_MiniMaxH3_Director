@@ -45,7 +45,13 @@ def _evict_dead_loaded_models() -> int:
 
 
 def cleanup_segment_vram(*, enabled: bool = True, unload_models: bool = True) -> None:
-    """Release segment GPU memory: gc, optional unload of ComfyUI models, empty CUDA cache."""
+    """Release segment GPU memory: gc, optional unload of ComfyUI models, empty CUDA cache.
+
+    Also drops ComfyUI prefetch queues. Those are normally cleared once, in the
+    per-node finally, but this node loops every segment inside one execution.
+    Leaving the queues pinned makes later segments fault back to host-to-device
+    copies. Model unload policy is unchanged.
+    """
     if not enabled:
         return
     gc.collect()
@@ -59,6 +65,12 @@ def cleanup_segment_vram(*, enabled: bool = True, unload_models: bool = True) ->
             mm.cleanup_models()
         _evict_dead_loaded_models()
         gc.collect()
+        try:
+            import comfy.model_prefetch
+
+            comfy.model_prefetch.cleanup_prefetch_queues()
+        except Exception as exc:
+            log.debug("cleanup_prefetch_queues skipped: %s", exc)
         mm.soft_empty_cache()
     except Exception as exc:
         log.warning("Segment VRAM cleanup failed: %s", exc)
