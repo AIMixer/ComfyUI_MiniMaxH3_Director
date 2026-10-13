@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
+from .audio_freeze import AUDIO_FREEZE_MARK_KEY, refresh_frozen_audio_mask
+
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.core_sampling")
 
 PhaseCallback = Callable[[str, float], None]
@@ -151,6 +153,15 @@ def sample_single_stage(
             on_phase(phase, value)
 
     notify(phase_name, 0)
+    if isinstance(latent, dict) and latent.get(AUDIO_FREEZE_MARK_KEY):
+        # Frozen-audio latent (audioMode=source lipsync): refine joins,
+        # continue locks and SelfLift repacks may drop or rewrite the
+        # per-stream keep-mask — rebuild it from the freeze marker so the
+        # pinned audio tokens stay clean through every sampling stage.
+        try:
+            refresh_frozen_audio_mask(latent)
+        except Exception as exc:
+            log.debug("Audio freeze mask refresh skipped: %s", exc)
     model_use = model
     if apply_shift:
         if shift_cache is not None:

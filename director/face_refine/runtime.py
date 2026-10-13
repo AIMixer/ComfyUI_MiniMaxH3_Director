@@ -108,6 +108,21 @@ def apply_segment_face_refine(
         ref_image_size=size_arg,
     )
     latent = inject_video_latent(latent, crop_in, vae)
+    # audioMode=source: the face-crop re-pass also denoises audio tokens via
+    # joint AV attention — freeze them to the same segment audio so the
+    # refined mouth stays on beat (the re-pass itself is video-only, but its
+    # audio stream feeds the attention).
+    from ..audio_freeze import apply_first_pass_audio_freeze
+
+    apply_first_pass_audio_freeze(
+        plan,
+        seg,
+        latent=latent,
+        audio_vae=audio_vae,
+        ref_audios=ref_audios,
+        ref_video_audios=None,
+        trim_frames=0,
+    )
     sigma_t = None
     if pack.get("has_sigmas_tensor") and pack.get("sigmas_tensor") is not None:
         sigma_t = pack.get("sigmas_tensor")
