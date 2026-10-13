@@ -941,8 +941,19 @@ def load_first_pass_av_latent(
             expected = _expected_for_stored(stored, first_pass_cache_fingerprint(seg, plan))
             if stored != expected:
                 if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
+                    log.info(
+                        "Segment %d first-pass AV latent: rejected (source video changed).",
+                        idx + 1,
+                    )
                     return None
                 if not allow_stale:
+                    log.info(
+                        "Segment %d first-pass AV latent: fingerprint mismatch "
+                        "(diff=%s; stored -> expected: %s).",
+                        idx + 1,
+                        _fingerprint_diff_keys(stored, expected)[:8],
+                        _fingerprint_diff_detail(stored, expected),
+                    )
                     return None
         payload = torch.load(latent_path, map_location="cpu", weights_only=False)
         if not isinstance(payload, dict) or "samples" not in payload:
@@ -1011,8 +1022,28 @@ def load_segment_av_latent(
         stored = json.loads(meta_path.read_text(encoding="utf-8"))
         expected = _expected_for_stored(stored, segment_cache_fingerprint(seg, plan))
         if stored != expected:
-            if _reject_source_stale(stored, expected, seg_index=idx, quiet=True) or not allow_stale:
+            if _reject_source_stale(stored, expected, seg_index=idx, quiet=True):
+                log.info(
+                    "Segment %d AV latent: rejected (source video changed); "
+                    "continuity pin lost for the next segment.",
+                    idx + 1,
+                )
                 return None
+            if not allow_stale:
+                log.info(
+                    "Segment %d AV latent: fingerprint mismatch "
+                    "(diff=%s; stored -> expected: %s).",
+                    idx + 1,
+                    _fingerprint_diff_keys(stored, expected)[:8],
+                    _fingerprint_diff_detail(stored, expected),
+                )
+                return None
+            log.warning(
+                "Segment %d AV latent: using stale cache for continuity "
+                "(diff=%s).",
+                idx + 1,
+                _fingerprint_diff_keys(stored, expected)[:8],
+            )
         payload = torch.load(latent_path, map_location="cpu", weights_only=False)
         if not isinstance(payload, dict) or "samples" not in payload:
             return None

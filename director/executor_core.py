@@ -100,6 +100,7 @@ from .segment_continuity import (
     concat_continuous_chunks,
     is_continue_mode,
     is_continuity_active,
+    is_continuity_lead_segment,
     match_export_opening_grade,
     resolve_prev_segment_output,
 )
@@ -582,6 +583,12 @@ def execute_director_plan_core(
     # When off: skip step TAE and the post-sample full-segment JPEG playback encode.
     raw_live = (plan.raw or {}).get("liveTaePreview", (plan.raw or {}).get("live_tae_preview", False))
     live_tae_preview = raw_live in (True, 1, "1", "true", "True", "on")
+    # UI toggle「复用缓存续跑」（timeline.reuseCacheResume）；默认关。
+    # 开启后：选中的段若成片缓存指纹完全命中，直接复用磁盘缓存不重采样，
+    # 从首个缺失/改动的段继续生成（断点续跑）。
+    reuse_cache_resume = (plan.raw or {}).get("reuseCacheResume") in (
+        True, 1, "1", "true", "True", "on",
+    )
 
     all_segments = plan.segments
     # Drop caches for deleted/shortened timelines. Use every segment index (not
@@ -674,6 +681,11 @@ def execute_director_plan_core(
         reports.append(
             f"Run selection: {len(run_list)}/{len(all_segments)} segment(s) "
             f"(indices {[i + 1 for i in run_list]}; skipped {skipped or 'none'})"
+        )
+    if reuse_cache_resume:
+        reports.append(
+            "Run mode: 复用缓存续跑 — 已生成且参数未变的选中段直接复用成片缓存，"
+            "只补采缺失/改动的段（seed 已由前端固定，保证指纹命中）。"
         )
 
     if plan.continuity_enabled:
@@ -1463,7 +1475,17 @@ def execute_director_plan_core(
             target_len=target_len,
             keep_tail=bool(getattr(plan, "continuity_keep_tail", True)),
         )
-        if (will_refine or continuity_active or run_face_refine or selflift_enabled(plan)) and not skip_first_sample:
+        # Lead segment of a continuity run: is_continuity_active is False for
+        # index 0 by design (nothing to pin), but its first-pass AV must still
+        # hit disk — otherwise段1 never gets a first-pass cache and can never
+        # skip 一采 for a later 二采 run (every re-run re-samples from scratch).
+        if (
+            will_refine
+            or continuity_active
+            or is_continuity_lead_segment(plan, seg)
+            or run_face_refine
+            or selflift_enabled(plan)
+        ) and not skip_first_sample:
             save_first_pass_cache(
                 cache_key,
                 seg,
@@ -1812,6 +1834,72 @@ def execute_director_plan_core(
 
     log_cache_run_summary(cache_key, plan, all_segments, run_indices)
 
+    def _reuse_cached_segment(seg, progress_index: int) -> bool:
+        """「复用缓存续跑」：选中段成片缓存指纹完全命中 → 复用磁盘结果不重采样。
+
+        Only an exact ``segment_cache_fingerprint`` match reuses (any changed
+        param → miss → normal sampling). completed_* are hydrated so later
+        continuity pins and the export patch loop behave exactly like a
+        freshly sampled segment. Returns True when the segment was reused.
+        """
+        cached = load_segment_cache(cache_key, seg, plan)
+        if cached is None:
+            return False
+        cached = cached.float()
+        completed_outputs[seg.index] = cached
+        pre_fill = load_first_pass_frames_stale(
+            cache_key, seg, plan, match_len=int(cached.shape[0])
+        )
+        completed_pre_refine[seg.index] = pre_fill if pre_fill is not None else cached
+        completed_pre_face[seg.index] = cached
+        cached_audio = load_segment_audio(cache_key, seg, plan)
+        if cached_audio is not None:
+            completed_audios[seg.index] = cached_audio
+        cached_av = load_segment_av_latent(cache_key, seg, plan)
+        if cached_av is not None:
+            completed_av_latents[seg.index] = cached_av
+        cached_first = load_first_pass_av_latent(
+            cache_key, seg, plan, allow_stale=True
+        )
+        if cached_first is not None:
+            completed_first_pass_av[seg.index] = cached_first
+        cached_low = load_first_pass_low_carry(
+            cache_key, seg, plan, allow_stale=True
+        )
+        if cached_low is not None:
+            completed_low_carry[seg.index] = cached_low
+        cached_handoff = load_segment_handoff_meta(cache_key, seg, plan)
+        if cached_handoff is not None:
+            completed_av_handoff[seg.index] = cached_handoff
+        # Keep segment_outputs aligned with progress_pos (run_list order) so the
+        # stale-release machinery posters reused slots exactly like sampled ones.
+        segment_outputs.append(cached)
+        segment_pre_refine.append(completed_pre_refine[seg.index])
+        segment_pre_face.append(cached)
+        segment_audios.append(cached_audio or {})
+        segment_export_lengths[seg.index] = int(cached.shape[0])
+        if plan.export_mode == "all":
+            output_chunks.append(cached)
+            output_pre_chunks.append(completed_pre_refine[seg.index])
+            output_pre_face_chunks.append(cached)
+            output_segments.append(seg)
+        audio_note = ", +audio" if cached_audio is not None else ""
+        reports.append(
+            f"Segment {seg.index + 1}/{timeline_seg_total}: 复用缓存续跑 — "
+            f"参数未变，复用成片缓存（{int(cached.shape[0])} 帧{audio_note}），未重采样"
+        )
+        meta = {
+            "frames_label": frames_label(seg),
+            "task_key": seg.task_key,
+            "timeline_segment_index": seg.timeline_index,
+            "timeline_segment_total": timeline_seg_total,
+        }
+        report_director_progress(
+            progress_node_id, segment_index=progress_index, segment_total=seg_total,
+            phase="prepare", phase_value=1, phase_max=1, **meta,
+        )
+        return True
+
     # Background sampler: measures each phase's real RAM footprint so the
     # boundaries below can act on a measured prediction instead of a hand-tuned
     # percent. Tier behaviour is unchanged when the prediction is 0 (first
@@ -1848,6 +1936,10 @@ def execute_director_plan_core(
                         segment_pre_face=segment_pre_face,
                     )
         if seg.index in run_indices:
+            if reuse_cache_resume and _reuse_cached_segment(
+                seg, progress_pos[seg.index]
+            ):
+                continue
             if clear_vram_between_segments and segment_outputs:
                 cleanup_segment_vram(enabled=True)
             # The window has not been reset yet, so the prediction is exactly the

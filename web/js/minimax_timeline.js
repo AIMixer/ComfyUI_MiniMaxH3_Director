@@ -2107,6 +2107,7 @@ function parseTimeline(raw, totalFrames, fps) {
         runSelectEnabled: false,
         runSelection: [],
         liveTaePreview: false,
+        reuseCacheResume: false,
         batchDetailMode: "solo",
         segments: [{ id: uid(), start: 0, length: total, prompt: "", taskType: "", refs: [], refAudios: [], referenceVideo: {} }],
     };
@@ -2216,6 +2217,8 @@ function parseTimeline(raw, totalFrames, fps) {
         data.runSelection = Array.isArray(data.runSelection) ? data.runSelection.map((i) => parseInt(i, 10)).filter((i) => i >= 0) : [];
         // Default off when missing. Explicit true keeps in-node TAE + segment playback.
         data.liveTaePreview = data.liveTaePreview === true || data.live_tae_preview === true;
+        // 复用缓存续跑：默认关。开启后选中段命中成片缓存即复用、不换种子。
+        data.reuseCacheResume = data.reuseCacheResume === true || data.reuse_cache_resume === true;
         const detailMode = data.batchDetailMode ?? data.batch_detail_mode;
         data.batchDetailMode = detailMode === "all" ? "all" : "solo";
         if (data.timelineMode === "fl2v" || resolveTaskKey(data.global?.taskType || "") === "fl2v") {
@@ -3287,6 +3290,7 @@ class MiniMaxH3DirectorEditor {
                         <button type="button" data-a="mode-segment" data-i18n="toolbar.modeSegment">分段模式</button>
                     </div>
                     <button type="button" class="bd-btn" data-a="run-select-toggle" data-i18n="toolbar.runSelect" data-i18n-title="tooltip.runSelect">选择运行</button>
+                    <button type="button" class="bd-btn" data-a="reuse-cache-resume" data-i18n="toolbar.reuseCacheResume" data-i18n-title="tooltip.reuseCacheResume">复用缓存续跑</button>
                     <label class="bd-run-select-all-wrap hidden" data-r="run-select-all-wrap" data-i18n-title="tooltip.runSelectAll">
                         <input type="checkbox" data-r="run-select-all-cb">
                         <span data-i18n="toolbar.selectAll">全选</span>
@@ -3882,9 +3886,11 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="play"]', () => this.togglePlay());
         bind('[data-a="loop"]', () => this.toggleLoop());
         bind('[data-a="live-tae-preview"]', () => this.toggleLiveTaePreview());
+        bind('[data-a="reuse-cache-resume"]', () => this.toggleReuseCacheResume());
         bind('[data-a="frame-prev"]', () => this.stepFrame(-1));
         bind('[data-a="frame-next"]', () => this.stepFrame(1));
         this.refreshLiveTaePreviewButton();
+        this.refreshReuseCacheResumeButton();
         this.updateLiveSamplePanel();
 
         this.seekBar.oninput = () => {
@@ -12517,6 +12523,47 @@ class MiniMaxH3DirectorEditor {
         syncDirectorNodeSize(this.node, this);
     }
 
+    isReuseCacheResumeEnabled() {
+        return this.timeline?.reuseCacheResume === true;
+    }
+
+    toggleReuseCacheResume() {
+        this.timeline.reuseCacheResume = !this.isReuseCacheResumeEnabled();
+        this.refreshReuseCacheResumeButton();
+        this.applyReuseCacheSeedControl();
+        this.scheduleTimelineSync();
+    }
+
+    refreshReuseCacheResumeButton() {
+        const btn = this.root?.querySelector('[data-a="reuse-cache-resume"]');
+        if (!btn) return;
+        const on = this.isReuseCacheResumeEnabled();
+        btn.classList.toggle("active", on);
+        btn.title = on ? t("tooltip.reuseCacheResumeOn") : t("tooltip.reuseCacheResumeOff");
+        btn.setAttribute("data-i18n", "toolbar.reuseCacheResume");
+        btn.removeAttribute("data-i18n-title");
+    }
+
+    /** 复用缓存续跑：seed 控制切到 fixed，避免每次 Queue 随机种子导致指纹永不命中。 */
+    applyReuseCacheSeedControl() {
+        const seed = (this.node?.widgets || []).find((w) => w?.name === "seed");
+        const combo = (seed?.linkedWidgets || []).find((w) =>
+            /control/i.test(String(w?.name || w?.label || "")));
+        if (!combo) return;
+        if (this.isReuseCacheResumeEnabled()) {
+            if (combo.value !== "fixed") {
+                this._reuseCachePrevSeedControl = combo.value;
+                combo.value = "fixed";
+                try { combo.callback?.("fixed"); } catch (_) { /* best effort */ }
+            }
+        } else if (this._reuseCachePrevSeedControl && combo.value === "fixed") {
+            const prev = this._reuseCachePrevSeedControl;
+            this._reuseCachePrevSeedControl = null;
+            combo.value = prev;
+            try { combo.callback?.(prev); } catch (_) { /* best effort */ }
+        }
+    }
+
     refreshLiveTaePreviewButton() {
         const btn = this.root?.querySelector('[data-a="live-tae-preview"]');
         if (!btn) return;
@@ -13739,7 +13786,12 @@ app.registerExtension({
         const flushDirectors = () => {
             const graph = app.graph ?? app.canvas?.graph;
             for (const node of graph?._nodes ?? graph?.nodes ?? []) {
-                node._minimaxEditor?.flushTimelineSync?.();
+                const editor = node._minimaxEditor;
+                editor?.flushTimelineSync?.();
+                // 复用缓存续跑：Queue 前兜底固定 seed（控件懒加载时 toggle 可能没套上）。
+                if (editor?.isReuseCacheResumeEnabled?.()) {
+                    editor.applyReuseCacheSeedControl?.();
+                }
             }
         };
         if (app.queuePrompt && !app.queuePrompt._minimaxPatched) {
