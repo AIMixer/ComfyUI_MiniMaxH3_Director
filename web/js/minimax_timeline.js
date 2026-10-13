@@ -3442,6 +3442,10 @@ class MiniMaxH3DirectorEditor {
             </span>
             <span class="bd-continuous-ref hidden" data-r="segment-continuity-wrap" hidden aria-hidden="true" title="">
                 <label><input type="checkbox" data-r="segment-continuity-cb"><span data-i18n="output.segmentContinuity">段间引导</span></label>
+                <label data-r="segment-continuity-all-wrap" hidden data-i18n-title="tooltip.continuityGuideAll">
+                    <input type="checkbox" data-r="segment-continuity-all">
+                    <span data-i18n="output.continuityGuideAll">全部引导</span>
+                </label>
                 <span class="bd-meta" data-i18n="output.continuityOverlap">上下文帧数</span>
                 <select class="bd-num" data-r="segment-continuity-overlap" style="width:64px">
                     <option value="5">5</option>
@@ -3800,6 +3804,8 @@ class MiniMaxH3DirectorEditor {
         this.outExportMode = this.root.querySelector('[data-r="out-export-mode"]');
         this.segmentContinuityWrap = this.root.querySelector('[data-r="segment-continuity-wrap"]');
         this.segmentContinuityCb = this.root.querySelector('[data-r="segment-continuity-cb"]');
+        this.segmentContinuityAllWrap = this.root.querySelector('[data-r="segment-continuity-all-wrap"]');
+        this.segmentContinuityAllCb = this.root.querySelector('[data-r="segment-continuity-all"]');
         this.segmentContinuityOverlap = this.root.querySelector('[data-r="segment-continuity-overlap"]');
         this.segmentContinuityModeWrap = this.root.querySelector('[data-r="segment-continuity-mode-wrap"]');
         this.segmentContinuityMode = this.root.querySelector('[data-r="segment-continuity-mode"]');
@@ -4162,6 +4168,25 @@ class MiniMaxH3DirectorEditor {
             this.segmentContinuityCb.onchange = () => {
                 this.onOutputField("continuityEnabled", this.segmentContinuityCb.checked);
                 this.updateSegmentContinuityUI();
+            };
+        }
+        if (this.segmentContinuityAllCb) {
+            this.segmentContinuityAllCb.onchange = () => {
+                const segs = this.timeline?.segments || [];
+                const on = !!this.segmentContinuityAllCb.checked;
+                let changed = false;
+                for (let i = 1; i < segs.length; i++) {
+                    const seg = segs[i];
+                    if (!seg) continue;
+                    if (isSegmentContinuityFromPrev(seg, i) !== on) {
+                        seg.continuityFromPrev = on;
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    this.commit(true);
+                    this.updateSegmentContinuityUI();
+                }
             };
         }
         if (this.segmentContinuityOverlap) {
@@ -7091,6 +7116,22 @@ class MiniMaxH3DirectorEditor {
             const keepTail = isContinuityKeepTail(this.timeline.output);
             this.segmentContinuityKeepTail.checked = keepTail;
             this.timeline.output.continuityKeepTail = keepTail;
+        }
+        if (this.segmentContinuityAllWrap) {
+            this.segmentContinuityAllWrap.hidden = !masterOn;
+            this.segmentContinuityAllWrap.setAttribute("aria-hidden", masterOn ? "false" : "true");
+            this.segmentContinuityAllWrap.title = masterOn ? t("tooltip.continuityGuideAll") : "";
+        }
+        if (this.segmentContinuityAllCb) {
+            const segs = this.timeline?.segments || [];
+            let allOn = segs.length > 1;
+            for (let i = 1; i < segs.length; i++) {
+                if (!isSegmentContinuityFromPrev(segs[i], i)) {
+                    allOn = false;
+                    break;
+                }
+            }
+            this.segmentContinuityAllCb.checked = allOn;
         }
         this.syncSegmentContinuityFromPrevUI();
         this.syncSegmentRefImageSizeUI();
