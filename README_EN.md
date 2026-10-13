@@ -133,7 +133,32 @@ This repo ships examples under `example_workflows/`:
 | UNET (r2v / v2v / rv2v) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
 | CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` |
 | Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
+| Video VAE (2X, optional) | `MiniMax-H3-X2-Detail-v1.safetensors` | `models/vae/` |
 | Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` |
+
+### 2X video VAE (optional)
+
+Connect a 2X-class VAE (e.g. `MiniMax-H3-X2-Detail-v1.safetensors`) to the node's
+`video_vae` slot — **no workflow rewiring needed**. Director detects the packed
+decode head internally and unpacks it back to double resolution.
+
+The only difference from the stock video VAE is the decoder projection: stock
+emits 3 channels, the 2X head emits 12 packed subpixel channels (2×2 PixelShuffle).
+Director handles the unpacking, so:
+- a stock VAE takes the completely untouched original path (bit-identical output)
+- a 2X VAE yields `images` at twice the edge length (e.g. 864×480 → 1728×960)
+
+Companion node (community, not required):
+`MiniMax H3 VAE Decode (fast)` from `ComfyUI-MiniMaxH3_LatentUpscaler` can perform
+the 2X decode outside the graph, which is useful when you want to keep the native
+16X result and additionally export a high-resolution version. The pattern is the
+same as the `selflift-Avatar` workflow: keep the plain video VAE for sampling, then
+fork one extra branch that decodes with the 2X VAE.
+
+> SelfLift's internal "decode → upscale → re-encode" step always runs at the stock
+> 16X ratio so the size chain stays closed; the 2X head only affects the final
+> exported frames.
+
 
 ## Quick start
 
