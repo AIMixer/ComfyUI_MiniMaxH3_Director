@@ -1126,6 +1126,7 @@ const STYLES = `
 .bd-media-meta{display:flex;flex-direction:column;gap:4px;color:#9a9a9a;font-size:10px;line-height:1.45;word-break:break-all}
 .bd-media-view-toggle{display:inline-flex;gap:4px}
 .bd-media-view-toggle .bd-btn.active{border-color:#4fff8f;color:#4fff8f}
+.bd-toolbar [data-a="reuse-cache-resume"].active{border-color:#4fff8f;color:#4fff8f}
 .bd-media-gallery{display:none;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:max-content;align-content:start;align-items:start;gap:8px;width:100%;height:min(48vh,320px);min-height:180px;flex:0 1 auto;overflow-y:scroll;overflow-x:hidden;padding:8px;box-sizing:border-box;background:#141414;border:1px solid #333;border-radius:6px;scrollbar-width:auto;scrollbar-color:#687783 #151515}
 .bd-media-gallery .bd-media-empty-row{grid-column:1/-1}
 .bd-media-left.is-thumbs .bd-media-table{display:none}
