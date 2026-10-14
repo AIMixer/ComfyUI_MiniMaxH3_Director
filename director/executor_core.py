@@ -1226,13 +1226,25 @@ def execute_director_plan_core(
                             )
                             mp4_paths = [pre_path] if pre_path else []
                         else:
+                            # Mirror the initial export's gating (pre_frames only
+                            # when Refine ran): trimming creates a fresh tensor
+                            # object, and the exporter's distinctness check is
+                            # object-identity, so an ungated pre_frames would
+                            # redundantly rewrite a byte-identical _pre.mp4.
+                            prev_had_refine = bool(
+                                completed_refine_passes.get(prev_idx)
+                            )
                             mp4_paths = maybe_export_segment_mp4s(
                                 mp4_run_dir,
                                 plan,
                                 prev_seg,
                                 prev_chunk,
                                 completed_audios.get(prev_idx),
-                                pre_frames=completed_pre_refine.get(prev_idx),
+                                pre_frames=(
+                                    completed_pre_refine.get(prev_idx)
+                                    if prev_had_refine
+                                    else None
+                                ),
                                 pre_face_frames=(
                                     completed_pre_face.get(prev_idx)
                                     if export_pre_face_refine
