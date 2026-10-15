@@ -350,15 +350,26 @@ function applyBatchSegmentDuration(editor, index, rawSec) {
 /**
  * Resolve a live segment from a batch card control.
  * Prefer segment id — after splice/reorder, DOM indices no longer match the array.
+ * But ids are only authoritative when unique: imported timelines (e.g. script
+ * injection) can carry the SAME id on every segment, and findIndex would then
+ * always resolve to segments[0], overwriting the first segment's prompt with
+ * whatever card the user edited. Ambiguous (0 or 2+ hits) → fall back to the
+ * element's render-time index, which matches array order until a re-render.
  */
 function liveBatchSegmentFromEl(editor, el, indexAttr) {
     const segs = editor?.timeline?.segments;
     if (!el || !Array.isArray(segs) || !segs.length) return null;
     const id = el.getAttribute("data-batch-seg-id");
     if (id) {
-        const index = segs.findIndex((s) => s?.id && s.id === id);
-        if (index >= 0) return { seg: segs[index], index };
-        return null;
+        let hits = 0;
+        let hitIndex = -1;
+        for (let i = 0; i < segs.length; i++) {
+            if (segs[i]?.id === id) {
+                hits += 1;
+                if (hitIndex < 0) hitIndex = i;
+            }
+        }
+        if (hits === 1) return { seg: segs[hitIndex], index: hitIndex };
     }
     const index = parseInt(el.getAttribute(indexAttr), 10);
     if (!Number.isFinite(index) || index < 0 || index >= segs.length) return null;
@@ -873,6 +884,19 @@ export function ensureImageBatchTimeline(editor) {
 }
 
 export function normalizeImageBatchSegments(editor) {
+    // Dedupe segment ids BEFORE flushing textarea drafts: id-based lookups
+    // (data-batch-seg-id → findIndex) resolve duplicate ids to segments[0],
+    // which would overwrite the first segment's prompt with another card's
+    // draft. Imported timelines can carry one shared id on every segment.
+    const preSegs = editor?.timeline?.segments;
+    if (Array.isArray(preSegs) && preSegs.length > 1) {
+        const seenIds = new Set();
+        for (const seg of preSegs) {
+            if (!seg) continue;
+            if (!seg.id || seenIds.has(seg.id)) seg.id = newBatchSegment().id;
+            seenIds.add(seg.id);
+        }
+    }
     // Keep textarea drafts on the live segment objects before touching them.
     flushBatchPromptInputs(editor);
     const taskKey = resolveTaskKey(editor.getTaskKey?.() || editor.taskTypeWidget?.value);
