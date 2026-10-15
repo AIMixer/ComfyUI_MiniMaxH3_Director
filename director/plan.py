@@ -248,6 +248,10 @@ class SegmentPlan:
     ref_image_size: str = "match"
     # Per-segment LoRA stack: [{name, strength, active}]. Empty = the node's model.
     loras: list = field(default_factory=list)
+    # Finished-video source: when set, this segment's pixels and latents are
+    # seeded from that video instead of being sampled (see seed_from_video.py).
+    # Shape: {"videoFile": str, "type": "input", "subfolder": str}
+    source_video: dict = field(default_factory=dict)
 
     @property
     def frame_count(self) -> int:
@@ -257,6 +261,26 @@ class SegmentPlan:
     def timeline_index(self) -> int:
         """Index used for UI preview / highlight (timeline card)."""
         return int(self.index if self.ui_index is None else self.ui_index)
+
+
+def _parse_source_video(raw: dict | None) -> dict:
+    """Read a segment's ``sourceVideo`` / ``source_video`` entry.
+
+    Returns {} when the segment has none, so the Director samples it normally.
+    Shape when present: {"videoFile": str, "type": "input", "subfolder": str}
+    """
+    if not isinstance(raw, dict):
+        return {}
+    for key in ("sourceVideo", "source_video"):
+        entry = raw.get(key)
+        if isinstance(entry, dict) and (entry.get("videoFile") or entry.get("fileName")):
+            out = dict(entry)
+            if not out.get("videoFile"):
+                out["videoFile"] = out.get("fileName") or ""
+            out.setdefault("type", "input")
+            out.setdefault("subfolder", "")
+            return out
+    return {}
 
 
 @dataclass
@@ -725,6 +749,13 @@ def _parse_run_selection(timeline: dict, segment_count: int) -> frozenset[int] |
         return None
     indices = {int(i) for i in raw if 0 <= int(i) < segment_count}
     if not indices:
+        # Assemble mode: nothing is selected ON PURPOSE -- every segment is served
+        # from its cache (finished videos), so the sampler must not fire at all.
+        if timeline.get("assembleOnly") or timeline.get("assemble_only"):
+            log.info(
+                "Assemble mode: empty run selection is intentional -> no segment will be sampled"
+            )
+            return frozenset()
         raise ValueError(
             "MiniMax H3 Director: 「选择运行」已开启但未勾选任何片段/提示词组。请至少勾选一组再执行。"
         )
@@ -925,6 +956,7 @@ def build_director_plan(
                 reference_video_meta=seg_ref_video,
                 reference_video_start_frame=ref_start,
                 loras=seg_loras,
+                source_video=_parse_source_video(seg_data),
             )
         )
 

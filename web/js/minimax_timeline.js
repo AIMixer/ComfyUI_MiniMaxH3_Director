@@ -1232,6 +1232,10 @@ const STYLES = `
 .bd-seg-refsize select{max-width:132px}
 .bd-seg-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
 .bd-seg-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
+.bd-src-video-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 8px;
+  padding:7px 10px;border:1px solid #3a3a3a;border-radius:8px;background:#191919}
+.bd-src-video-bar>.bd-label{color:#e8e8e8;font-size:12px;font-weight:600;white-space:nowrap}
+.bd-src-video-name{color:#8fd89a;font-size:12px;min-width:180px}
 .bd-seg-head .bd-meta,.bd-panel.bd-v2v-panel .bd-seg-head .bd-meta,.bd-panel.bd-rv2v-panel .bd-seg-head .bd-meta{color:#8a8a8a;font-size:11px;line-height:1.45;padding:0;min-width:0}
 .bd-prompt-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(110px,38%);gap:8px;align-items:stretch}
 .bd-prompt-layout>.bd-prompt-col{order:1}
@@ -3129,6 +3133,13 @@ class MiniMaxH3DirectorEditor {
                         <b data-r="global-panel-title" data-i18n="panel.globalPromptAndRefs">全局提示词 & 参考图 (图片1–9)</b>
                     </div>
                 </div>
+                <div class="bd-src-video-bar" data-r="g-src-video-bar">
+                    <span class="bd-label">现成视频当某一段（不重新生成；后续片段从它续写）</span>
+                    <select class="bd-select" data-r="g-src-video-seg" style="max-width:190px"></select>
+                    <button type="button" class="bd-r2v-pick-existing" data-r="g-src-video-pick">选已有视频</button>
+                    <button type="button" class="bd-r2v-pick-existing" data-r="g-src-video-clear">清除</button>
+                    <span class="bd-meta bd-src-video-name" data-r="g-src-video-name"></span>
+                </div>
                 <div class="bd-r2v-common-body" data-r="r2v-common-body">
                     <div class="bd-meta bd-r2v-common-hint hidden" data-r="r2v-common-hint" data-i18n="panel.r2vCommonHint">公共参考图/视频/音频供各组读取；公共提示词会与每组提示词拼接成完整提示词。同槽位以组内素材优先。</div>
                     <div class="bd-mixed-stack hidden" data-r="mixed-stack">
@@ -3223,6 +3234,12 @@ class MiniMaxH3DirectorEditor {
                             <option value="max" data-i18n="output.refImageSize.max">max</option>
                         </select>
                     </label>
+                </div>
+                <div class="bd-src-video-bar" data-r="seg-src-video-col">
+                    <span class="bd-label">现成视频当这一段（不重新生成；后续片段从它续写）</span>
+                    <button type="button" class="bd-r2v-pick-existing" data-r="seg-src-video-pick">选已有视频</button>
+                    <button type="button" class="bd-r2v-pick-existing" data-r="seg-src-video-clear">清除</button>
+                    <span class="bd-meta bd-src-video-name" data-r="seg-src-video-name"></span>
                 </div>
                 <div class="bd-prompt-layout" data-r="seg-prompt-layout">
                     <div class="bd-refs-col" data-r="seg-refs-col">
@@ -3390,6 +3407,11 @@ class MiniMaxH3DirectorEditor {
         this.segRefVideoCol = this.root.querySelector('[data-r="seg-ref-video-col"]');
         this.segRefVideo = this.root.querySelector('[data-r="seg-ref-video"]');
         this.segRefVideoNameEl = this.root.querySelector('[data-r="seg-ref-video-name"]');
+        this.segSrcVideoCol = this.root.querySelector('[data-r="seg-src-video-col"]');
+        this.segSrcVideoNameEl = this.root.querySelector('[data-r="seg-src-video-name"]');
+        this.gSrcVideoBar = this.root.querySelector('[data-r="g-src-video-bar"]');
+        this.gSrcVideoSeg = this.root.querySelector('[data-r="g-src-video-seg"]');
+        this.gSrcVideoNameEl = this.root.querySelector('[data-r="g-src-video-name"]');
         this.continuousRefWrap = this.root.querySelector('[data-r="continuous-ref-wrap"]');
         this.continuousRefCb = this.root.querySelector('[data-r="continuous-ref-cb"]');
         this.genGlobalImg = this.root.querySelector('[data-r="gen-global-img"]');
@@ -3824,6 +3846,23 @@ class MiniMaxH3DirectorEditor {
             stopDomEvent(e);
             void this.pickExistingRef(false);
         });
+        this.root.querySelector('[data-r="seg-src-video-pick"]')?.addEventListener("click", (e) => {
+            stopDomEvent(e);
+            void this.pickSegmentSourceVideo();
+        });
+        this.root.querySelector('[data-r="seg-src-video-clear"]')?.addEventListener("click", (e) => {
+            stopDomEvent(e);
+            this.clearSegmentSourceVideo();
+        });
+        this.root.querySelector('[data-r="g-src-video-pick"]')?.addEventListener("click", (e) => {
+            stopDomEvent(e);
+            void this.pickGlobalSourceVideo();
+        });
+        this.root.querySelector('[data-r="g-src-video-clear"]')?.addEventListener("click", (e) => {
+            stopDomEvent(e);
+            this.clearGlobalSourceVideo();
+        });
+        this.gSrcVideoSeg?.addEventListener("change", () => { this._refreshGSourceVideoBar(); });
         this.root.querySelector('[data-r="global-videos-pick"]')?.addEventListener("click", (e) => {
             stopDomEvent(e);
             void this.pickExistingR2vCommonVideo();
@@ -7857,6 +7896,124 @@ class MiniMaxH3DirectorEditor {
         }
     }
 
+    /** Current segment's finished-video source, or null. */
+    _segSourceVideo() {
+        const seg = this.timeline?.segments?.[this.selectedIndex];
+        const sv = seg?.sourceVideo;
+        return sv && (sv.videoFile || sv.fileName) ? sv : null;
+    }
+
+    /** Refresh the segment panel's source-video status line. */
+    _refreshSegSourceVideoLabel(seg = null) {
+        const el = this.segSrcVideoNameEl;
+        if (!el) return;
+        const target = seg || this.timeline?.segments?.[this.selectedIndex];
+        const sv = target?.sourceVideo;
+        el.textContent = sv && (sv.videoFile || sv.fileName)
+            ? `✓ 本片段直接采用：${sv.videoFile || sv.fileName}（不采样）`
+            : "（未设置：本片段正常生成）";
+        el.style.color = sv && (sv.videoFile || sv.fileName) ? "#7fd18a" : "";
+    }
+
+    /** Fill the global bar's segment picker and its status text. */
+    _refreshGSourceVideoBar() {
+        const sel = this.gSrcVideoSeg;
+        if (!sel) return;
+        const segs = this.timeline?.segments || [];
+        const keep = sel.value;
+        if (sel.options.length !== segs.length) {
+            sel.innerHTML = "";
+            segs.forEach((s, i) => {
+                const o = document.createElement("option");
+                o.value = String(i);
+                const sv = s?.sourceVideo;
+                const mark = sv && (sv.videoFile || sv.fileName) ? " ★" : "";
+                o.textContent = `片段 ${i + 1}${mark}`;
+                sel.appendChild(o);
+            });
+        }
+        const want = keep && keep !== "" ? keep : String(this.selectedIndex ?? 0);
+        if (sel.value !== want && sel.querySelector(`option[value="${want}"]`)) sel.value = want;
+        const seg = segs[Number(sel.value) || 0];
+        const sv = seg?.sourceVideo;
+        if (this.gSrcVideoNameEl) {
+            this.gSrcVideoNameEl.textContent = sv && (sv.videoFile || sv.fileName)
+                ? `✓ 片段 ${Number(sel.value) + 1} 直接采用：${sv.videoFile || sv.fileName}（不采样）`
+                : `（片段 ${(Number(sel.value) || 0) + 1} 未设置：正常生成）`;
+            this.gSrcVideoNameEl.style.color = sv && (sv.videoFile || sv.fileName) ? "#7fd18a" : "";
+        }
+    }
+
+    /** Pick an existing video for the segment chosen in the global bar. */
+    async pickGlobalSourceVideo() {
+        const idx = Number(this.gSrcVideoSeg?.value || 0);
+        const seg = this.timeline?.segments?.[idx];
+        if (!seg) return;
+        try {
+            const picked = await this.chooseVideoInput({
+                title: t("mediaPicker.pickVideo"),
+                currentValue: seg.sourceVideo?.videoFile || "",
+            });
+            if (!picked?.relPath) return;
+            const name = picked.fileName || picked.relPath;
+            seg.sourceVideo = {
+                videoFile: name, fileName: name,
+                type: picked.type || "input", subfolder: picked.subfolder || "",
+            };
+            this.commit();
+            this._refreshGSourceVideoBar();
+            this._refreshSegSourceVideoLabel(seg);
+        } catch (err) {
+            console.error("[MiniMax H3Director] source video pick failed:", err);
+        }
+    }
+
+    /** Clear the chosen segment's source video. */
+    clearGlobalSourceVideo() {
+        const idx = Number(this.gSrcVideoSeg?.value || 0);
+        const seg = this.timeline?.segments?.[idx];
+        if (!seg || !seg.sourceVideo) return;
+        delete seg.sourceVideo;
+        this.commit();
+        this._refreshGSourceVideoBar();
+        this._refreshSegSourceVideoLabel(seg);
+    }
+
+    /** Pick an existing video and use it AS this segment (no sampling). */
+    async pickSegmentSourceVideo() {
+        const seg = this.timeline?.segments?.[this.selectedIndex];
+        if (!seg) return;
+        try {
+            const picked = await this.chooseVideoInput({
+                title: t("mediaPicker.pickVideo"),
+                currentValue: seg.sourceVideo?.videoFile || "",
+            });
+            if (!picked?.relPath) return;
+            const name = picked.fileName || picked.relPath;
+            seg.sourceVideo = {
+                videoFile: name,
+                fileName: name,
+                type: picked.type || "input",
+                subfolder: picked.subfolder || "",
+            };
+            this.commit();
+            this._refreshSegSourceVideoLabel(seg);
+            this.scheduleRender?.();
+        } catch (err) {
+            console.error("[MiniMax H3Director] source video pick failed:", err);
+        }
+    }
+
+    /** Drop the segment's source video so it is generated normally again. */
+    clearSegmentSourceVideo() {
+        const seg = this.timeline?.segments?.[this.selectedIndex];
+        if (!seg || !seg.sourceVideo) return;
+        delete seg.sourceVideo;
+        this.commit();
+        this._refreshSegSourceVideoLabel(seg);
+        this.scheduleRender?.();
+    }
+
     pickAppendVideoFile() {
         if (!this.hasVideo()) {
             this.showBdMessage(
@@ -9699,6 +9856,8 @@ class MiniMaxH3DirectorEditor {
             }
         }
         this.segInfo.textContent = info;
+        this._refreshSegSourceVideoLabel(seg);
+        this._refreshGSourceVideoBar();
     }
 
     onMouseUp() {

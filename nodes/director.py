@@ -5,6 +5,10 @@ from __future__ import annotations
 import comfy.samplers
 
 from ..director.executor_core import execute_director_plan_core
+from ..director.seed_from_video import (
+    enable_assemble_mode_when_nothing_selected,
+    seed_segments_from_source_videos,
+)
 from .director_common import (
     finalize_director_outputs,
     prepare_director_plan,
@@ -318,6 +322,15 @@ class MiniMaxH3Director:
     ):
         del kwargs
 
+        # 全部片段都是现成视频 → 走拼接：先把时间线标成全跑，避免空选择报错，
+        # 之后每段都命中播种缓存，采样器一次都不会触发。
+        try:
+            timeline_data, _assembling = enable_assemble_mode_when_nothing_selected(timeline_data)
+            if _assembling:
+                print("[MiniMax H3 Director] 未勾选任何片段 → 直接拼接已有内容，不走模型生成")
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[MiniMax H3 Director] 拼接模式判定跳过：{_exc}")
+
         plan = prepare_director_plan(
             timeline_data=timeline_data,
             task_type=task_type,
@@ -337,6 +350,20 @@ class MiniMaxH3Director:
         )
         codec = str(cache_frames_codec or "raw").strip().lower()
         plan.cache_frames_codec = "ffv1" if codec == "ffv1" else "raw"
+
+        # Video-as-segment: any segment declaring ``sourceVideo`` gets its cache
+        # (pixels + AV latent + export audio) written from that finished video, so
+        # the segment is not sampled and the next segment continues from it.
+        # Never fatal — an unseeded segment simply falls back to normal sampling.
+        try:
+            seeded = seed_segments_from_source_videos(plan, unique_id, video_vae, audio_vae)
+            if seeded:
+                print(
+                    f"[MiniMax H3 Director] 视频播种：{seeded} 段直接取自 sourceVideo"
+                    f"（不采样，后续段从它续写）"
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[MiniMax H3 Director] 视频播种跳过：{exc}")
 
         try:
             combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, held_for_confirmation, pre_face_combined, pre_face_segments = (
