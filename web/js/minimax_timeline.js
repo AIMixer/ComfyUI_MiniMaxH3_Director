@@ -4092,7 +4092,7 @@ class MiniMaxH3DirectorEditor {
                 this.scheduleTimelineSync();
             };
         }
-        this.segPrompt.oninput = () => this.onSegField("prompt", this.segPrompt.value);
+        this.segPrompt.oninput = () => this.onSegField("prompt", this.segPrompt.value, this._segPromptOwnerIndex);
         this.globalNegative.oninput = () => this.onNegativePrompt(this.globalNegative.value);
         this.segNegative.oninput = () => this.onNegativePrompt(this.segNegative.value);
 
@@ -11705,6 +11705,10 @@ class MiniMaxH3DirectorEditor {
         this.syncSegmentRefImageSizeUI();
         this._updateSegInfoFromSegment(liveSeg);
         this.segPrompt.value = liveSeg.prompt || "";
+        // Snapshot which segment this editor content belongs to, so later
+        // programmatic input events (token editor sync) write back to the
+        // same segment even if selectedIndex moved on.
+        this._segPromptOwnerIndex = this.selectedIndex;
         if (taskUsesReferenceImages(segKey)) {
             this.renderRefSlots(liveSeg.refs, this.segRefsBox, false);
         }
@@ -12513,8 +12517,14 @@ class MiniMaxH3DirectorEditor {
         }, 160);
     }
 
-    onSegField(field, value) {
-        const seg = this.timeline.segments[this.selectedIndex];
+    onSegField(field, value, ownerIndex) {
+        // Write back to the segment the editor content belongs to — NOT to
+        // whatever index is selected at input time. Token-editor syncs can
+        // fire programmatic input events after selectedIndex was reset
+        // (e.g. mid-run stop), which used to paste segment N's prompt into
+        // segment 0. The owner snapshot is set wherever segPrompt is filled.
+        const idx = Number.isInteger(ownerIndex) ? ownerIndex : this.selectedIndex;
+        const seg = this.timeline.segments[idx];
         if (!seg) return;
         seg[field] = value;
         this.scheduleTimelineSync();
