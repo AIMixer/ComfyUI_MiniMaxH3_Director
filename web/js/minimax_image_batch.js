@@ -1472,6 +1472,41 @@ async function uploadSegVideo(editor, index, slot) {
     });
 }
 
+/** Video-as-segment: use a finished video AS this group's clip (no sampling). */
+async function pickSourceVideoForGroup(editor, index) {
+    const seg = editor.timeline.segments[index];
+    if (!seg) return;
+    try {
+        const picked = await editor.chooseVideoInput({
+            title: t("mediaPicker.pickReferenceVideo"),
+            currentValue: seg.sourceVideo?.videoFile || "",
+        });
+        if (!picked?.relPath) return;
+        const live = editor.timeline.segments[index];
+        if (!live) return;
+        live.sourceVideo = {
+            videoFile: picked.relPath,
+            fileName: picked.fileName || picked.relPath,
+            type: picked.type || "input",
+            subfolder: picked.subfolder || "",
+        };
+        editor.renderImageBatchGroups();
+        editor.commit();
+    } catch (err) {
+        console.error("[MiniMax H3Director] source video pick failed:", err);
+        alert(t("upload.refVideoBatchFailed", { err: err?.message || err }));
+    }
+}
+
+/** Drop the group's finished-video source so it is generated normally again. */
+function clearSourceVideoForGroup(editor, index) {
+    const seg = editor.timeline.segments[index];
+    if (!seg || !seg.sourceVideo) return;
+    delete seg.sourceVideo;
+    editor.renderImageBatchGroups();
+    editor.commit();
+}
+
 async function pickExistingSegVideo(editor, index, offset, slots) {
     const seg = editor.timeline.segments[index];
     if (!seg) return;
@@ -2095,6 +2130,38 @@ function appendR2vMediaSections(card, seg, index, editor) {
         videoSection.appendChild(videos);
     }
     assets.appendChild(videoSection);
+
+    // ---- 现成视频当这一段（video-as-segment）----
+    // 本段像素/潜变量直接取自该视频、不重新生成；后面段从它续写。
+    {
+        const srcSeg = editor.timeline.segments[index];
+        const srcRef = srcSeg?.sourceVideo;
+        const srcName = srcRef && (srcRef.videoFile || srcRef.fileName)
+            ? (srcRef.videoFile || srcRef.fileName) : "";
+        const srcSection = createR2vSection(
+            "现成视频当这一段 / Finished video AS this clip",
+            srcName ? "✓ 已设置" : "未设置",
+            { onPickExisting: () => { void pickSourceVideoForGroup(editor, index); } },
+        );
+        const srcRow = document.createElement("div");
+        srcRow.className = "bd-meta";
+        srcRow.style.cssText = "padding:6px 8px;font-size:11px;line-height:1.6;"
+            + "word-break:break-all;color:" + (srcName ? "#7fd18a" : "#8a8a8a");
+        srcRow.textContent = srcName
+            ? `✓ 本段直接采用：${srcName}　（不采样；后续段从它续写）`
+            : "未设置：本段正常生成。设置后本段不采样、直接采用该视频，后面段从它续写。";
+        if (srcName) {
+            const clr = document.createElement("button");
+            clr.type = "button";
+            clr.className = "bd-r2v-pick-existing";
+            clr.textContent = "清除 / Clear";
+            clr.style.marginLeft = "10px";
+            clr.onclick = (ev) => { ev.stopPropagation(); clearSourceVideoForGroup(editor, index); };
+            srcRow.appendChild(clr);
+        }
+        srcSection.appendChild(srcRow);
+        assets.appendChild(srcSection);
+    }
 
     const groupAudTitle = audOffset > 0
         ? t("batch.r2v.sectionAudiosFrom", { n: audOffset + 1 })
