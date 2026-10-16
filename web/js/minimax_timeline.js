@@ -1,3 +1,4 @@
+import { mergeDirectorValues, lostDirectorFrontendEdits, prepareDirectorSubmission, canonicalDirectorMergeState, formatDirectorMismatches, restoreDirectorWorkspaces } from "./minimax_mcp_merge.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
@@ -657,6 +658,14 @@ function restoreDirectorWidgetsFromSaved(node, data) {
         node._mmxRestoringSampleWidgets = false;
     }
     return true;
+}
+
+// [MMX-MCP-MERGE] A newer write supersedes all delayed work from an older configure.
+function invalidateDirectorConfigureRestore(node) {
+    if (!node) return;
+    node._mmxConfigureEpoch = (node._mmxConfigureEpoch || 0) + 1;
+    node._mmxPendingConfigureRestore = false;
+    node._mmxSavedConfigureData = null;
 }
 
 function applyDirectorConfigureRestore(node, data) {
@@ -2254,6 +2263,9 @@ class MiniMaxH3DirectorEditor {
         this.frameRateWidget = this.widget("frame_rate");
         this.taskTypeWidget = this.widget("task_type");
         this.globalPromptWidget = this.widget("global_prompt");
+        // [MMX-EXT] Local patch: external callers opt in through the setters below.
+        this._mmxExternalPrompt = null;
+        this._mmxExternalPromptStamp = 0;
         this.negativePromptWidget = null;
         this.widthWidget = this.widget("width");
         this.heightWidget = this.widget("height");
@@ -3128,6 +3140,8 @@ class MiniMaxH3DirectorEditor {
                     <div class="bd-r2v-common-titles">
                         <b data-r="global-panel-title" data-i18n="panel.globalPromptAndRefs">全局提示词 & 参考图 (图片1–9)</b>
                     </div>
+                    <!-- [MMX-EXT] Local patch: manual release of external prompt ownership. -->
+                    <button type="button" class="bd-btn bd-btn-primary hidden" data-r="release-external-prompt" data-i18n="button.releaseExternalPrompt" hidden>解除外部锁定</button>
                 </div>
                 <div class="bd-r2v-common-body" data-r="r2v-common-body">
                     <div class="bd-meta bd-r2v-common-hint hidden" data-r="r2v-common-hint" data-i18n="panel.r2vCommonHint">公共参考图/视频/音频供各组读取；公共提示词会与每组提示词拼接成完整提示词。同槽位以组内素材优先。</div>
@@ -3356,6 +3370,7 @@ class MiniMaxH3DirectorEditor {
         this.r2vCommonToggle = this.root.querySelector('[data-r="r2v-common-toggle"]');
         this.segmentPanel = this.root.querySelector('[data-r="segment-panel"]');
         this.globalPrompt = this.root.querySelector('[data-r="global-prompt"]');
+        this.externalPromptReleaseButton = this.root.querySelector('[data-r="release-external-prompt"]');
         this.globalNegative = this.root.querySelector('[data-r="global-negative"]');
         this.globalPromptLayout = this.root.querySelector('[data-r="global-prompt-layout"]');
         this.segPromptLayout = this.root.querySelector('[data-r="seg-prompt-layout"]');
@@ -3616,6 +3631,11 @@ class MiniMaxH3DirectorEditor {
         }
         this.globalTask.onchange = () => this.onGlobalField("taskType", this.globalTask.value);
         this.globalPrompt.oninput = () => this.onGlobalField("prompt", this.globalPrompt.value);
+        // [MMX-EXT] Local patch; normal prompt input handling remains unchanged.
+        this.externalPromptReleaseButton.onclick = (e) => {
+            stopDomEvent(e);
+            this.clearExternalGlobalPrompt();
+        };
         if (this.mixedT2vPrompt) {
             this.mixedT2vPrompt.oninput = () => {
                 if (this.getTaskKey() !== "mixed") return;
@@ -7088,7 +7108,15 @@ class MiniMaxH3DirectorEditor {
     syncFromWidgets() {
         this.timeline.global = this.timeline.global || { refs: [], referenceVideo: {}, continuousReference: false };
         this.timeline.global.taskType = this.globalTask?.value || this.taskTypeWidget?.value || "";
-        this.timeline.global.prompt = this.globalPrompt?.value ?? this.globalPromptWidget?.value ?? "";
+        // [MMX-MCP-MERGE] Setters hydrate the DOM synchronously. A later DOM change
+        // is a frontend draft, even while externally latched; never reapply the old lock.
+        const promptDraft = this.globalPrompt?.value ?? this.globalPromptWidget?.value
+            ?? this.timeline.global.prompt ?? "";
+        if (this._mmxExternalPrompt !== null && promptDraft !== this._mmxExternalPrompt) {
+            this._mmxExternalPrompt = promptDraft;
+            this._mmxExternalPromptStamp = Math.max(Date.now(), this._mmxExternalPromptStamp + 1);
+        }
+        this.timeline.global.prompt = promptDraft;
         if (this.continuousRefCb) {
             this.timeline.global.continuousReference = !!this.continuousRefCb.checked;
         }
@@ -7180,7 +7208,15 @@ class MiniMaxH3DirectorEditor {
         this.updateRunSelectUI();
         this.updateSegmentContinuityUI();
         if (this.taskTypeWidget) this.taskTypeWidget.value = this.timeline.global.taskType;
-        if (this.globalPromptWidget) this.globalPromptWidget.value = this.timeline.global.prompt;
+        if (this.globalPromptWidget) {
+            // [MMX-EXT] Do not silently undo an externally latched prompt.
+            if (this._mmxExternalPrompt === null) {
+                this.globalPromptWidget.value = this.timeline.global.prompt;
+            } else {
+                this.timeline.global.prompt = this._mmxExternalPrompt;
+                this.globalPromptWidget.value = this._mmxExternalPrompt;
+            }
+        }
         if (this.negativePromptWidget) {
             const neg = this.globalNegative?.value ?? this.segNegative?.value ?? this.negativePromptWidget.value ?? "";
             this.negativePromptWidget.value = neg;
@@ -7202,6 +7238,206 @@ class MiniMaxH3DirectorEditor {
         }
         if (this.isImageBatch()) this.renderImageBatchGroups();
         else this.updateSelectionUI();
+    }
+
+    // [MMX-EXT] Local patch: explicit setters activate ownership; raw widget writes do not.
+    updateExternalPromptLock() {
+        const button = this.externalPromptReleaseButton;
+        if (!button) return;
+        // Keep release reachable even when shared parameters are disabled or folded.
+        const toolbar = this.usesSharedParamsPanel?.()
+            ? this.r2vCommonToggle?.parentElement
+            : this.r2vCommonHead;
+        if (toolbar && button.parentElement !== toolbar) toolbar.appendChild(button);
+        const latched = this._mmxExternalPrompt !== null;
+        button.hidden = !latched;
+        button.classList.toggle("hidden", !latched);
+    }
+
+    // A read snapshot is scoped to this editor instance, bounded, and single-use.
+    // It is never saved in the workflow. Returning the token inside the read JSON
+    // lets the existing MCP value transport carry it without a backend schema change.
+    _captureExternalWriteState() {
+        clearTimeout(this._syncTimer);
+        this._syncTimer = null;
+        // Unlike flushTimelineSync(), harvest drafts BEFORE updating checkbox UI.
+        this._writeTimelineWidget();
+        return JSON.parse(this.timelineWidget.value);
+    }
+
+    getExternalWriteSnapshot() {
+        return this._issueExternalWriteSnapshot(this._captureExternalWriteState());
+    }
+
+    _issueExternalWriteSnapshot(baseline) {
+        this._mmxMcpBaselines ||= new Map();
+        this._mmxMcpInstanceId ||= `mmx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const token = globalThis.crypto?.randomUUID?.()
+            || `${this._mmxMcpInstanceId}-${this._mmxMcpSnapshotSeq = (this._mmxMcpSnapshotSeq || 0) + 1}`;
+        this._mmxMcpBaselines.set(token, baseline);
+        while (this._mmxMcpBaselines.size > 16) this._mmxMcpBaselines.delete(this._mmxMcpBaselines.keys().next().value);
+        return {
+            protocol: "mmx-three-way-v1",
+            write_mode: "patch", revision: "mmx-patch-20261009",
+            baseline_token: token,
+            baseline_handoff: "post-write-v1", single_use: true,
+            token_scope: "timeline_data+global_prompt",
+            timeline_data: JSON.stringify({ ...baseline, __mcp_write: { baseline_token: token, write_mode: "patch", revision: "mmx-patch-20261009" } }),
+            global_prompt: String(baseline.global?.prompt ?? ""),
+        };
+    }
+
+    _externalWriteBaseline(token) {
+        const retry = "Use the fresh minimax_h3_director_write.baseline_token from the successful write receipt, or read this live node again with panel_query_graph fields=detail. For global_prompt edit text in minimax_h3_director_write.global_prompt_value.";
+        if (typeof token !== "string" || !token) {
+            throw new Error("[DIRECTOR_BASELINE_MISSING] Include __mcp_write.baseline_token from a successful detail read or write receipt. " + retry);
+        }
+        const usedBy = this._mmxMcpConsumedBaselines?.get(token);
+        if (usedBy) {
+            throw new Error("[DIRECTOR_BASELINE_CONSUMED] Director baseline already consumed by " + usedBy
+                + ". timeline_data and global_prompt share ONE single-use baseline; changing widget names does not renew it. " + retry);
+        }
+        if (!this._mmxMcpBaselines?.has(token)) {
+            throw new Error("[DIRECTOR_BASELINE_UNKNOWN] Director baseline is expired, evicted, or belongs to another editor/workflow instance. " + retry);
+        }
+        return this._mmxMcpBaselines.get(token);
+    }
+
+    setExternalGlobalPrompt(text, options = {}) {
+        try {
+            let envelope = text && typeof text === "object" && !Array.isArray(text) ? text : null;
+            if (!envelope && typeof text === "string") {
+                try {
+                    const candidate = JSON.parse(text);
+                    if (candidate?.__mcp_write?.baseline_token) envelope = candidate;
+                } catch { /* ordinary prompt text uses an explicit options token */ }
+            }
+            if (envelope && typeof envelope.text !== "string") throw new Error("global_prompt envelope requires string text");
+            const token = envelope?.__mcp_write?.baseline_token ?? envelope?.baseline_token ?? options.baseline_token;
+            const baseline = this._externalWriteBaseline(token);
+            const v = envelope ? envelope.text : String(text ?? "");
+            const candidate = JSON.parse(JSON.stringify(baseline));
+            candidate.global ||= {};
+            candidate.global.prompt = v;
+            // Same merge/import/verification path, including untouched timeline fields.
+            return this.setExternalTimelineData(candidate, { baseline_token: token, via: "setExternalGlobalPrompt" });
+        } catch (e) {
+            return { ok: false, error: String(e), conflicts: [] };
+        }
+    }
+
+    clearExternalGlobalPrompt() {
+        // Releasing a latch is not a text replacement. Keep any current DOM draft.
+        invalidateDirectorConfigureRestore(this.node);
+        this._captureExternalWriteState();
+        this._mmxExternalPrompt = null;
+        this._mmxExternalPromptStamp = Math.max(Date.now(), this._mmxExternalPromptStamp + 1);
+        this.updateExternalPromptLock();
+        this.commit(true, { syncTimeline: true });
+        this.flushTimelineSync();
+        return { ok: true, cleared: true, via: "clearExternalGlobalPrompt", latched: false, conflicts: [] };
+    }
+
+    getExternalPromptState() {
+        return {
+            protocol: "mmx-three-way-v1",
+            write_mode: "patch", revision: "mmx-patch-20261009",
+            latched: this._mmxExternalPrompt !== null,
+            chars: (this._mmxExternalPrompt || "").length,
+            stamp: this._mmxExternalPromptStamp,
+            sameAsTimeline: this._mmxExternalPrompt === (this.timeline?.global?.prompt ?? null),
+        };
+    }
+
+    setExternalTimelineData(jsonText, options = {}) {
+        try {
+            const parsed = JSON.parse(typeof jsonText === "string" ? jsonText : JSON.stringify(jsonText));
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+                || (parsed.global != null && (typeof parsed.global !== "object" || Array.isArray(parsed.global)))) {
+                return { ok: false, error: "timeline_data must be a JSON object with an object-valued global", conflicts: [] };
+            }
+            const token = parsed.__mcp_write?.baseline_token ?? options.baseline_token;
+            if (options.baseline_token && parsed.__mcp_write?.baseline_token
+                && options.baseline_token !== parsed.__mcp_write.baseline_token) throw new Error("Director baseline tokens disagree");
+            const baseline = this._externalWriteBaseline(token);
+            delete parsed.__mcp_write;
+            invalidateDirectorConfigureRestore(this.node);
+            const current = this._captureExternalWriteState();
+            const prepared = prepareDirectorSubmission(baseline, parsed);
+            const taskKey = baseline.global?.taskType === prepared.global?.taskType
+                ? this.getTaskKey?.() : resolveTaskKey(prepared.global?.taskType);
+            const merged = mergeDirectorValues(canonicalDirectorMergeState(baseline),
+                canonicalDirectorMergeState(prepared), canonicalDirectorMergeState(current));
+            const expected = JSON.parse(JSON.stringify(merged.value));
+            restoreDirectorWorkspaces(merged.value, current, taskKey);
+            const previousLatch = this._mmxExternalPrompt;
+            try {
+                this._mmxExternalPrompt = String(merged.value.global?.prompt ?? "");
+                this._mmxExternalPromptStamp = Math.max(Date.now(), this._mmxExternalPromptStamp + 1);
+                if (options.via === "setExternalGlobalPrompt") {
+                    // A scalar prompt write does not need to rebuild the timeline UI.
+                    this.timeline.global.prompt = this._mmxExternalPrompt;
+                    if (this.globalPrompt) {
+                        this.globalPrompt.value = this._mmxExternalPrompt;
+                        this.globalPrompt.__bdTokenApi?.hydrateFromValue?.(this._mmxExternalPrompt);
+                    }
+                    if (this.globalPromptWidget) this.globalPromptWidget.value = this._mmxExternalPrompt;
+                    this.commit(true, { syncTimeline: true });
+                } else {
+                    this.applyImportedTimeline(merged.value);
+                }
+                this.updateExternalPromptLock();
+                this.flushTimelineSync();
+                const actual = JSON.parse(this.timelineWidget.value);
+                    const canonicalActual = canonicalDirectorMergeState(actual);
+                    const lost = lostDirectorFrontendEdits(expected, canonicalActual, merged.preservedPaths);
+                    const unapplied = lostDirectorFrontendEdits(expected, canonicalActual, merged.changedPaths);
+                if (lost.length || unapplied.length) {
+                    // Do not confirm a write if normalization or hydration lost a frontend edit.
+                    throw new Error(`Director readback mismatch; preserved frontend fields: ${formatDirectorMismatches(expected, canonicalActual, lost, "frontend")}; unapplied Agent fields: ${formatDirectorMismatches(expected, canonicalActual, unapplied)}`);
+                }
+                // Hand off a NEW pinned post-write snapshot. Never retarget or
+                // reuse the old baseline: that could turn stale fields into edits.
+                const next = this._issueExternalWriteSnapshot(actual);
+                this._mmxMcpBaselines.delete(token);
+                this._mmxMcpConsumedBaselines ||= new Map();
+                this._mmxMcpConsumedBaselines.set(token, options.via || "setExternalTimelineData");
+                while (this._mmxMcpConsumedBaselines.size > 16) {
+                    this._mmxMcpConsumedBaselines.delete(this._mmxMcpConsumedBaselines.keys().next().value);
+                }
+                return {
+                    ok: true, via: options.via || "setExternalTimelineData", latched: true,
+                    version: this.timeline.version, totalFrames: this.timeline.totalFrames,
+                    conflicts: merged.conflicts,
+                    changed_paths: merged.changedPaths,
+                    preserved_frontend_paths: merged.preservedPaths,
+                    minimax_h3_director_write: {
+                        protocol: next.protocol, write_mode: next.write_mode, revision: next.revision,
+                        baseline_handoff: next.baseline_handoff,
+                        baseline_token: next.baseline_token, single_use: true,
+                        token_scope: next.token_scope, previous_baseline_consumed: true,
+                        global_prompt_value: JSON.stringify({
+                            text: next.global_prompt, __mcp_write: { baseline_token: next.baseline_token },
+                        }),
+                        next_write: "Use this NEW token for the next timeline_data PATCH or edit the returned global_prompt_value envelope. Do not reuse the token passed to this successful write.",
+                    },
+                    timeline_data: this.timelineWidget.value,
+                };
+            } catch (error) {
+                try {
+                    this._mmxExternalPrompt = String(current.global?.prompt ?? "");
+                    this.applyImportedTimeline(current);
+                    this._mmxExternalPrompt = previousLatch === null ? null : String(current.global?.prompt ?? "");
+                    this.updateExternalPromptLock();
+                    this.flushTimelineSync();
+                } catch (restoreError) {
+                    throw new Error(`${error}; restoration failed: ${restoreError}; re-read current node state before any retry`);
+                }
+                throw new Error(`${error}; write rolled back to current frontend snapshot`);
+            }
+        } catch (e) {
+            return { ok: false, error: String(e), conflicts: [] };
+        }
     }
 
     normalizeSegments() {
@@ -13493,9 +13729,22 @@ app.registerExtension({
         }
 
         if (!isDirectorNodeDef(nodeType, nodeData)) return;
+
+        // [MMX-EXT] Install forwarding independently of the UI guard so an older
+        // patched prototype can acquire or repair the external methods on re-registration.
+        for (const method of ["setExternalGlobalPrompt", "clearExternalGlobalPrompt",
+            "getExternalPromptState", "getExternalWriteSnapshot", "setExternalTimelineData", "commit"]) {
+            nodeType.prototype[method] = function (...args) {
+                // An existing editor contains unsaved state; do not initialize it from
+                // an older pending onConfigure snapshot before an external write.
+                const editor = this._minimaxEditor || initDirectorEditor(this);
+                if (!editor) return { ok: false, error: "Director editor is not ready" };
+                return editor[method](...args);
+            };
+        }
+
         if (nodeType.prototype._minimaxDirectorPatched) return;
         nodeType.prototype._minimaxDirectorPatched = true;
-
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = onCreated?.apply(this, arguments);
@@ -13613,13 +13862,18 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function (...args) {
             normalizeDirectorOutputs(this);
             const saved = args[0];
+            const configureEpoch = this._mmxConfigureEpoch = (this._mmxConfigureEpoch || 0) + 1;
             if (saved) this._mmxSavedConfigureData = saved;
             this._mmxPendingConfigureRestore = true;
             const out = onConfigure?.apply(this, args);
-            const runRestore = () => applyDirectorConfigureRestore(this, this._mmxSavedConfigureData);
+            const runRestore = () => {
+                if (this._mmxConfigureEpoch !== configureEpoch) return;
+                applyDirectorConfigureRestore(this, saved);
+            };
             queueMicrotask(runRestore);
             setTimeout(runRestore, 0);
             setTimeout(() => {
+                if (this._mmxConfigureEpoch !== configureEpoch) return;
                 finishDirectorConfigureRestore(this);
                 syncDirectorSchedulerWidgets(this, { restore: false });
                 const ed = initDirectorEditor(this) || this._minimaxEditor;
@@ -13633,6 +13887,8 @@ app.registerExtension({
                     ed.restoreVideoFromTimeline();
                 } else if (ed._directorMode === "prompt_batch" || ed._directorMode === "image_batch") {
                     ensureImageBatchTimeline(ed);
+                } else if (ed._directorMode === "fl2v") {
+                    ensureFl2vTimeline(ed);
                 } else {
                     ed.ensureGenTimeline();
                 }
@@ -13650,4 +13906,3 @@ app.registerExtension({
         };
     },
 });
-
