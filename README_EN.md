@@ -6,7 +6,7 @@ Based on [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI
 
 Select **H3 / Pika-H3** in the Director. Pika exposes text, first-frame, last-frame, first-and-last-frame and multimodal-reference generation. The six-step recipe is fixed; missing adapters fail before sampling. Language supports Auto / 中文 / English; Auto follows ComfyUI before falling back to the browser. Source-audio conditioning is optional and off by default, separate from exporting the original audio.
 
-[Pro usage and compatibility](docs/pro-guide.md) · [Upstream PR / Issue review](docs/upstream-review.md)
+[Pro usage and compatibility](docs/pro-guide.md) · [性能与验收](docs/performance.md) · [Upstream PR / Issue review](docs/upstream-review.md)
 
 
 Multi-segment AV timeline director for **official ComfyUI MiniMax-H3**.  

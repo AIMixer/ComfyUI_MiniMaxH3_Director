@@ -6,7 +6,7 @@
 
 导演台顶部选择 **H3 / Pika-H3**。Pika 支持纯文、首帧、尾帧、首尾帧、多模态参考；固定六步配方，适配器缺失时在采样前报错。语言支持自动／中文／English，自动优先跟随 ComfyUI。原声参与生成是独立可选功能，默认关闭，与导出采用原声分开。
 
-[Pro 使用与兼容说明](docs/pro-guide.md) · [上游 PR／Issue 处理记录](docs/upstream-review.md)
+[Pro 使用与兼容说明](docs/pro-guide.md) · [性能与验收](docs/performance.md) · [上游 PR／Issue 处理记录](docs/upstream-review.md)
 
 
 基于 **ComfyUI 官方 MiniMax-H3** 的多段音视频导演台插件。仓库地址：[AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director)
