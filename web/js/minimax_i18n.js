@@ -1,8 +1,22 @@
-/** MiniMax H3 Director UI i18n (zh / en) with localStorage persistence. */
+/** Director UI language preference: follow ComfyUI or use a saved override. */
+
+import { app } from "../../scripts/app.js";
 
 export const LOCALE_STORAGE_KEY = "mmx_director_ui_locale";
 
 const ZH = {
+    "output.audioConditioning": "原声条件",
+    "output.audioConditioning.none": "不锁定",
+    "output.audioConditioning.sourceLock": "锁定原声",
+    "tooltip.audioConditioning": "将原声作为生成条件；与成片选用生成声音、原声或静音分别设置。锁定需提供原声。",
+    "toolbar.language": "界面语言",
+    "toolbar.languageAuto": "自动（跟随 ComfyUI）",
+    "toolbar.generationFamily": "生成系列",
+    "pika.recipe": "Pika-H3 · 固定 6 步 · lcm · CFG 1 · video shift 12 / audio shift 3 · 自动匹配 LoRA",
+    "pika.keyframes": "首帧：只上传首帧；尾帧：只上传尾帧；首尾帧：两个图片槽都上传。都不上传则文生视频。",
+    "pika.fl2v": "首帧 / 尾帧 / 首尾帧（按图片槽选择）",
+    "pika.mixed": "混合片段（逐组选择任务）",
+
     "toolbar.addRefGroup": "添加素材组",
     "toolbar.uploadVideo": "上传视频",
     "toolbar.addShot": "添加一组",
@@ -608,6 +622,18 @@ const ZH = {
 };
 
 const EN = {
+    "output.audioConditioning": "Source audio conditioning",
+    "output.audioConditioning.none": "No lock",
+    "output.audioConditioning.sourceLock": "Lock source audio",
+    "tooltip.audioConditioning": "Use source audio as a generation condition. This is separate from choosing generated, source, or muted export audio. Source audio is required to lock.",
+    "toolbar.language": "UI language",
+    "toolbar.languageAuto": "Auto (follow ComfyUI)",
+    "toolbar.generationFamily": "Generation family",
+    "pika.recipe": "Pika-H3 · Fixed 6 steps · lcm · CFG 1 · video shift 12 / audio shift 3 · Automatic task LoRA",
+    "pika.keyframes": "First frame: fill only the first slot. Last frame: fill only the last slot. First + last: fill both. Empty slots generate from text.",
+    "pika.fl2v": "First / last / first + last (choose image slots)",
+    "pika.mixed": "Mixed segments (choose each group's task)",
+
     "toolbar.addRefGroup": "Add asset group",
     "toolbar.uploadVideo": "Upload video",
     "toolbar.addShot": "Add shot",
@@ -1229,41 +1255,60 @@ export const ASPECT_I18N_KEYS = {
 };
 
 let _locale = null;
+let _preference = null;
+let _initialized = false;
 const _listeners = new Set();
 
 function detectDefaultLocale() {
+    const comfy = app.ui?.settings?.getSettingValue?.("Comfy.Locale");
+    const browser = typeof navigator !== "undefined" ? navigator.language : "";
+    return String(comfy || browser || "en").toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+export function getLocalePreference() {
+    if (_preference) return _preference;
     try {
-        const nav = (typeof navigator !== "undefined" && (navigator.language || navigator.userLanguage)) || "zh";
-        return String(nav).toLowerCase().startsWith("zh") ? "zh" : "en";
-    } catch {
-        return "zh";
-    }
+        const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
+        if (["auto", "zh", "en"].includes(saved)) _preference = saved;
+    } catch { /* storage may be unavailable */ }
+    return _preference ||= "auto";
 }
 
 export function getLocale() {
-    if (_locale) return _locale;
-    try {
-        const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
-        if (saved === "zh" || saved === "en") {
-            _locale = saved;
-            return _locale;
-        }
-    } catch { /* ignore */ }
-    _locale = detectDefaultLocale();
-    return _locale;
+    const preference = getLocalePreference();
+    return preference === "auto" ? detectDefaultLocale() : preference;
+}
+
+function notifyLocaleChange() {
+    _locale = getLocale();
+    for (const fn of _listeners) {
+        try { fn(_locale); } catch { /* one editor must not block the others */ }
+    }
 }
 
 export function setLocale(lang) {
-    const next = lang === "en" ? "en" : "zh";
-    if (_locale === next) return _locale;
-    _locale = next;
+    _preference = ["zh", "en"].includes(lang) ? lang : "auto";
     try {
-        localStorage.setItem(LOCALE_STORAGE_KEY, next);
-    } catch { /* ignore */ }
-    for (const fn of _listeners) {
-        try { fn(next); } catch { /* ignore */ }
-    }
+        localStorage.setItem(LOCALE_STORAGE_KEY, _preference);
+    } catch { /* storage may be unavailable */ }
+    notifyLocaleChange();
     return _locale;
+}
+
+export function initializeLocale() {
+    if (_initialized) return;
+    _initialized = true;
+    const followSetting = () => {
+        if (getLocalePreference() === "auto") notifyLocaleChange();
+    };
+    app.ui?.settings?.addEventListener?.("Comfy.Locale.change", followSetting);
+    window.addEventListener("languagechange", followSetting);
+    window.addEventListener("storage", (event) => {
+        if (event.key !== LOCALE_STORAGE_KEY) return;
+        _preference = null;
+        notifyLocaleChange();
+    });
+    notifyLocaleChange();
 }
 
 export function toggleLocale() {

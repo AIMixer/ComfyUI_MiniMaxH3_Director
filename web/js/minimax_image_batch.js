@@ -1,3 +1,4 @@
+import { createUploadId } from "./minimax_upload_id.js";
 /** Multi prompt-group UI for t2i / i2i / r2i / t2v / i2v / r2v (prompt batch mode). */
 
 import { api } from "../../scripts/api.js";
@@ -38,7 +39,7 @@ import {
     safeUploadFilename,
 } from "./minimax_gen_timeline.js";
 import { refreshPromptTokenEditors, teardownPromptImageMentions, wirePromptImageMentions } from "./minimax_prompt_mentions.js";
-import { t } from "./minimax_i18n.js";
+import { t, taskDisplayLabel } from "./minimax_i18n.js";
 import { createFl2vSlotPair, normalizeImageRef } from "./minimax_fl2v.js";
 import {
     hasDuplicateReferenceAudio,
@@ -657,7 +658,7 @@ async function uploadImage(file) {
 
 async function uploadChunked(file) {
     const filename = safeUploadFilename(file?.name, file?.type);
-    const uploadId = crypto.randomUUID();
+    const uploadId = createUploadId();
     const totalChunks = Math.ceil(file.size / BATCH_CHUNK_SIZE);
     for (let i = 0; i < totalChunks; i++) {
         const start = i * BATCH_CHUNK_SIZE;
@@ -2743,7 +2744,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             for (const opt of MIXED_SEGMENT_TASKS) {
                 const o = document.createElement("option");
                 o.value = opt;
-                o.textContent = opt;
+                o.textContent = editor.isPikaFamily?.() && opt === "fl2v" ? t("pika.fl2v") : taskDisplayLabel(opt);
                 if (opt === key) o.selected = true;
                 taskSel.appendChild(o);
             }

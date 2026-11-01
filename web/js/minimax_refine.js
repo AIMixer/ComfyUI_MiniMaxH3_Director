@@ -591,6 +591,9 @@ function cacheStatusPayload(director, refine) {
         shift_video: Number(directorValue(director, "shift_video", 12)),
         shift_audio: Number(directorValue(director, "shift_audio", 3)),
         sigmas_linked: directorHasSigmasLink(director),
+        generation_family: String(directorValue(director, "generation_family", "H3")),
+        pika_flex: Boolean(directorValue(director, "pika_flex", false)),
+        audio_conditioning: String(directorValue(director, "audio_conditioning", "none")),
         // SelfLift is a graph-wired pack, not a Director widget. The run writes
         // sl_* into first-pass meta; the panel must send the same pack or it
         // always reports those keys as diffs.

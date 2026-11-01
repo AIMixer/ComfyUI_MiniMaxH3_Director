@@ -1,3 +1,4 @@
+import { createUploadId } from "./minimax_upload_id.js";
 import { mergeDirectorValues, lostDirectorFrontendEdits, prepareDirectorSubmission, canonicalDirectorMergeState, formatDirectorMismatches, restoreDirectorWorkspaces } from "./minimax_mcp_merge.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -120,10 +121,12 @@ import {
     applyI18nDom,
     aspectDisplayLabel,
     getLocale,
+    getLocalePreference,
+    initializeLocale,
+    setLocale,
     onLocaleChange,
     t,
     taskDisplayLabel,
-    toggleLocale,
 } from "./minimax_i18n.js";
 import { bindPackActions } from "./minimax_pack.js";
 import {
@@ -521,7 +524,7 @@ function stripTimelineEphemeralFields(timeline) {
 
 const HIDDEN_WIDGETS = [
     "timeline_data", "total_frames", "width", "height", "ref_max_size",
-    "task_type", "global_prompt", "frame_rate", "cfg",
+    "task_type", "global_prompt", "frame_rate", "cfg", "generation_family", "pika_flex", "audio_conditioning",
     "export_source_images",
     "export_pre_face_refine",
     // seed stays visible under 采样设置 (with control_after_generate)
@@ -615,49 +618,81 @@ function sanitizeDirectorCacheName(node) {
  * control_after_generate linked combo may exist — shifting optional widgets
  * (steps defaults back to 25). Re-apply saved values by name once widgets settle.
  */
+function isDirectorValueWidget(w) {
+    return !!w?.name && w.serialize !== false && w.options?.serialize !== false
+        && w.name !== DIRECTOR_DOM_WIDGET_NAME && !w.name.startsWith("bd_grp_")
+        && !w._bdGroupHeader && !["bdgroup", "dom", "director"].includes(String(w.type || "").toLowerCase());
+}
+
+function directorValueWidgets(node) {
+    const widgets = (node.widgets || []).flatMap((w) => [w, ...(w.linkedWidgets || [])]);
+    return [...new Set(widgets)].filter(isDirectorValueWidget);
+}
+
+function legacyDirectorWidgetValues(values) {
+    const prefix = ["task_type", "global_prompt", "cfg", "seed", "control_after_generate",
+        "frame_rate", "width", "height", "ref_max_size", "total_frames", "timeline_data",
+        "steps", "sampler", "scheduler", "shift_video", "shift_audio"];
+    const perf = ["clear_vram_between_segments", "clear_vram_before_refine",
+        "clear_vram_before_face_refine", "cache_frames_codec"];
+    const exports = ["export_source_images", "export_pre_face_refine"];
+    const pika = ["pika_flex", "video_decode"];
+    // Both backend order and the old frontend's relocated performance group
+    // were saved in the wild. Do not map a legacy suffix onto new Pro fields.
+    const layouts = [
+        [...prefix, ...perf, ...exports, "cache_name", ...pika],
+        [...prefix, ...perf, ...exports, "cache_name"],
+        [...prefix, ...exports, ...pika, ...perf, "cache_name"],
+        [...prefix, ...exports, ...perf, "cache_name"],
+        [...prefix, ...exports, ...pika, "generation_family", "audio_conditioning", ...perf, "cache_name"],
+    ];
+    for (const layout of layouts) {
+        for (const grouped of [false, true]) {
+            const names = layout.flatMap((name) => {
+                const group = { cfg: "bd_grp_sample", steps: "bd_grp_advanced",
+                    clear_vram_between_segments: "bd_grp_perf" }[name];
+                return grouped && group ? [group, name] : [name];
+            });
+            if (values.length !== names.length && values.length !== names.length + 1) continue;
+            const saved = Object.fromEntries(names.map((name, i) => [name, values[i]]));
+            if (typeof saved.seed !== "number" || typeof saved.timeline_data !== "string") continue;
+            if (!["raw", "ffv1"].includes(saved.cache_frames_codec)) continue;
+            if (pika.every((name) => names.includes(name))
+                && (typeof saved.pika_flex !== "boolean" || !["regular", "tiled"].includes(saved.video_decode))) continue;
+            return saved;
+        }
+    }
+    return null;
+}
+
 function restoreDirectorWidgetsFromSaved(node, data) {
     if (!node || !data) return false;
-
-    const named = data.widgets_values_named;
-    if (named && typeof named === "object") {
-        node._mmxRestoringSampleWidgets = true;
-        try {
-            for (const [name, value] of Object.entries(named)) {
-                if (name === DIRECTOR_DOM_WIDGET_NAME) continue;
-                if (value === undefined) continue;
-                const w = findDirectorWidget(node, name);
-                if (!w || w.serialize === false) continue;
-                w.value = value;
-            }
-            // ⛔ named 里**没有**的 widget = 保存这份工作流时还不存在的新控件。
-            //    configure 阶段 ComfyUI 是按**下标**塞 widgets_values 的，而本节点
-            //    运行期会重排 widget 顺序（性能组搬家），下标对不上就会把邻居的值
-            //    塞给新控件 —— 实测 cache_name 因此拿到了 BDGROUP「性能」的字符串。
-            //    这里按后端声明的默认值兜底，把新控件复位。
-            for (const w of node.widgets ?? []) {
-                if (!w?.name || w.serialize === false) continue;
-                if (w.name === DIRECTOR_DOM_WIDGET_NAME) continue;
-                if (Object.prototype.hasOwnProperty.call(named, w.name)) continue;
-                const def = w.options?.default;
-                if (def !== undefined) w.value = def;
-            }
-        } finally {
-            node._mmxRestoringSampleWidgets = false;
+    let named = data.widgets_values_named;
+    if (!named || typeof named !== "object" || Array.isArray(named)) {
+        const values = data.widgets_values;
+        if (!Array.isArray(values) || !values.length) return false;
+        named = legacyDirectorWidgetValues(values);
+        if (!named) {
+            const widgets = (node.widgets || []).filter((w) => w.serialize !== false);
+            named = Object.fromEntries(widgets.slice(0, values.length).map((w, i) => [w.name, values[i]]));
         }
-        return true;
     }
-
-    const values = data.widgets_values;
-    if (!Array.isArray(values) || !values.length) return false;
-
     node._mmxRestoringSampleWidgets = true;
     try {
-        let idx = 0;
-        for (const w of node.widgets ?? []) {
-            if (w.serialize === false) continue;
-            if (idx >= values.length) break;
-            w.value = values[idx++];
+        for (const w of directorValueWidgets(node)) {
+            const hasValue = Object.prototype.hasOwnProperty.call(named, w.name) && named[w.name] !== undefined;
+            const def = node._mmxDeclaredWidgetDefaults?.[w.name] ?? w.options?.default;
+            if (hasValue) w.value = named[w.name];
+            else if (def !== undefined) w.value = def;
         }
+        const family = widgetByName(node, "generation_family");
+        if (family && (!Object.prototype.hasOwnProperty.call(named, "generation_family")
+            || !["H3", "Pika-H3"].includes(family.value))) {
+            family.value = widgetByName(node, "pika_flex")?.value === true ? "Pika-H3" : "H3";
+        }
+        const audio = widgetByName(node, "audio_conditioning");
+        if (audio && (!Object.prototype.hasOwnProperty.call(named, "audio_conditioning")
+            || !["none", "source_lock"].includes(audio.value))) audio.value = "none";
     } finally {
         node._mmxRestoringSampleWidgets = false;
     }
@@ -851,6 +886,11 @@ function directorHasSigmasLink(node) {
     return Array.isArray(inp.links) && inp.links.length > 0;
 }
 
+function directorUsesPika(node) {
+    const family = widgetByName(node, "generation_family")?.value;
+    return family === "Pika-H3" || widgetByName(node, "pika_flex")?.value === true;
+}
+
 function syncDirectorSchedulerWidgets(node, { restore = false } = {}) {
     if (!node) return;
     hookDirectorSampleWidgetSnapshots(node);
@@ -858,8 +898,12 @@ function syncDirectorSchedulerWidgets(node, { restore = false } = {}) {
     hideDirectorSigmasWidget(node);
     if (restore) restoreDirectorSampleWidgets(node);
     const wired = directorHasSigmasLink(node);
-    setDirectorWidgetVisible(node, "steps", !wired);
-    setDirectorWidgetVisible(node, "scheduler", !wired);
+    const pika = directorUsesPika(node);
+    for (const name of ["steps", "scheduler", "sampler", "shift_video", "shift_audio"]) {
+        setDirectorWidgetVisible(node, name, !pika && (!wired || !["steps", "scheduler"].includes(name)));
+        const widget = widgetByName(node, name);
+        if (widget) widget.disabled = pika;
+    }
     if (restore) restoreDirectorSampleWidgets(node);
     node.setDirtyCanvas?.(true, true);
 }
@@ -1101,6 +1145,8 @@ const STYLES = `
 .bd-toolbar-wrap{display:flex;flex-direction:column;gap:4px;width:100%}
 .bd-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
 .bd-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0}
+.bd-pika-recipe{width:100%;box-sizing:border-box;font-size:12px;line-height:1.5;color:#bbb;padding:4px 2px}
+.bd-pika-recipe.hidden{display:none!important}
 .bd-smart-split-msg{width:100%;box-sizing:border-box;font-size:11px;line-height:1.4;color:#f66;padding:0 2px;min-height:0}
 .bd-smart-split-msg.hidden{display:none!important}
 .bd-smart-split-msg.ok{color:#8c8}
@@ -1510,7 +1556,7 @@ async function uploadToInput(file) {
 
 async function uploadVideoChunked(file, onProgress) {
     const filename = safeUploadFilename(file?.name, file?.type);
-    const uploadId = crypto.randomUUID();
+    const uploadId = createUploadId();
     const totalChunks = Math.ceil(file.size / MINIMAX_CHUNK_SIZE);
     for (let i = 0; i < totalChunks; i++) {
         const start = i * MINIMAX_CHUNK_SIZE;
@@ -2276,6 +2322,7 @@ class MiniMaxH3DirectorEditor {
         this.totalFramesWidget = this.widget("total_frames");
         this.frameRateWidget = this.widget("frame_rate");
         this.taskTypeWidget = this.widget("task_type");
+        this.familyWidget = this.widget("generation_family");
         this.globalPromptWidget = this.widget("global_prompt");
         // [MMX-EXT] Local patch: external callers opt in through the setters below.
         this._mmxExternalPrompt = null;
@@ -2321,6 +2368,7 @@ class MiniMaxH3DirectorEditor {
             this.ensureGenTimeline();
         }
         this.applyTaskLayout(this._directorMode);
+        this.syncGenerationFamily();
 
         this.updateDomWidgetHeight();
         this.applyZoomWidth();
@@ -2940,6 +2988,11 @@ class MiniMaxH3DirectorEditor {
         toolbarWrap.innerHTML = `
             <div class="bd-toolbar">
                 <div class="bd-actions">
+                    <span class="bd-label">MiniMax H3 Director Pro</span>
+                    <label class="bd-label" data-i18n="toolbar.generationFamily" for="mmx-family-${this.node.id}">生成系列</label>
+                    <select class="bd-select" id="mmx-family-${this.node.id}" data-r="generation-family">
+                        <option value="H3">H3</option><option value="Pika-H3">Pika-H3</option>
+                    </select>
                     <button type="button" class="bd-btn bd-btn-primary hidden" data-a="r2v-add-group" data-i18n="toolbar.addRefGroup" data-i18n-title="tooltip.addRefGroup">添加素材组</button>
                     <button type="button" class="bd-btn bd-btn-primary" data-a="video" data-i18n="toolbar.uploadVideo">上传视频</button>
                     <button type="button" class="bd-btn" data-a="video-existing" data-i18n="mediaPicker.pickExistingVideo" data-i18n-title="mediaPicker.pickExistingHint">选已有视频</button>
@@ -2969,17 +3022,26 @@ class MiniMaxH3DirectorEditor {
                     <button type="button" class="bd-btn" data-a="pack-import" data-i18n="toolbar.importPack" data-i18n-title="tooltip.importPack">导入导演包</button>
                     <button type="button" class="bd-btn" data-a="pack-export" data-i18n="toolbar.exportPack" data-i18n-title="tooltip.exportPack">导出导演包</button>
                     <button type="button" class="bd-btn" data-a="check-update" data-i18n="toolbar.checkUpdate" data-i18n-title="tooltip.checkUpdate">检查更新</button>
-                    <button type="button" class="bd-btn" data-a="lang-toggle" data-i18n="toolbar.langToggle" data-i18n-title="toolbar.langToggleTitle">EN</button>
+                    <label class="bd-label" data-i18n="toolbar.language" for="mmx-language-${this.node.id}">界面语言</label>
+                    <select class="bd-select" id="mmx-language-${this.node.id}" data-r="language">
+                        <option value="auto" data-i18n="toolbar.languageAuto">自动（跟随 ComfyUI）</option>
+                        <option value="zh">中文</option><option value="en">English</option>
+                    </select>
                     <div class="bd-bounds" data-r="bounds">起点: 0.00 | 终点: -</div>
                     <div class="bd-timecode" data-r="timecode">0.00s</div>
                 </div>
+            </div>
+            <div class="bd-pika-recipe hidden" data-r="pika-recipe" role="status">
+                <span data-i18n="pika.recipe"></span><br><span data-i18n="pika.keyframes"></span>
             </div>
             <div class="bd-smart-split-msg hidden" data-r="smart-split-msg" role="status"></div>
             <div class="bd-external-groups-msg hidden" data-r="external-groups-msg" role="status"></div>`;
         this.root.appendChild(toolbarWrap);
         this.smartSplitMsgEl = toolbarWrap.querySelector('[data-r="smart-split-msg"]');
         this.externalGroupsMsgEl = toolbarWrap.querySelector('[data-r="external-groups-msg"]');
-        this.langToggleBtn = toolbarWrap.querySelector('[data-a="lang-toggle"]');
+        this.languageSelect = toolbarWrap.querySelector('[data-r="language"]');
+        this.familySelect = toolbarWrap.querySelector('[data-r="generation-family"]');
+        this.pikaRecipe = toolbarWrap.querySelector('[data-r="pika-recipe"]');
 
         this.mainBody = document.createElement("div");
         this.mainBody.className = "bd-main";
@@ -3073,6 +3135,13 @@ class MiniMaxH3DirectorEditor {
                     <option value="generate" data-i18n="output.audio.generate">生成声音</option>
                     <option value="source" data-i18n="output.audio.source">使用原声</option>
                     <option value="mute" data-i18n="output.audio.mute">静音</option>
+                </select>
+            </span>
+            <span class="bd-out-audio-wrap" data-r="audio-conditioning-wrap" data-i18n-title="tooltip.audioConditioning">
+                <label for="mmx-audio-conditioning-${this.node.id}" data-i18n="output.audioConditioning">原声条件</label>
+                <select class="bd-select" id="mmx-audio-conditioning-${this.node.id}" data-r="audio-conditioning">
+                    <option value="none" data-i18n="output.audioConditioning.none">不锁定</option>
+                    <option value="source_lock" data-i18n="output.audioConditioning.sourceLock">锁定原声</option>
                 </select>
             </span>
             <span class="bd-out-source-wrap hidden" data-r="out-source-wrap" data-i18n-title="widget.tooltip.exportSourceImages">
@@ -3471,6 +3540,9 @@ class MiniMaxH3DirectorEditor {
         this.fpsInput = this.root.querySelector('[data-r="timeline-fps"]');
         this.outAudioWrap = this.root.querySelector('[data-r="out-audio-wrap"]');
         this.outAudioMode = this.root.querySelector('[data-r="out-audio-mode"]');
+        this.audioConditioning = this.root.querySelector('[data-r="audio-conditioning"]');
+        this.audioConditioningWrap = this.root.querySelector('[data-r="audio-conditioning-wrap"]');
+        this.audioConditioning.value = this.widget("audio_conditioning")?.value || "none";
         this.exportSourceImagesWrap = this.root.querySelector('[data-r="out-source-wrap"]');
         this.exportSourceImagesCb = this.root.querySelector('[data-r="out-export-source"]');
         this.exportPreFaceRefineWrap = this.root.querySelector('[data-r="out-preface-wrap"]');
@@ -3547,7 +3619,8 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="del"]', () => this.deleteSelectedSegment());
         bind('[data-a="mode-global"]', () => this.setEditMode("global"));
         bind('[data-a="mode-segment"]', () => this.setEditMode("segment"));
-        bind('[data-a="lang-toggle"]', () => toggleLocale());
+        this.languageSelect.onchange = () => setLocale(this.languageSelect.value);
+        this.familySelect.onchange = () => this.setGenerationFamily(this.familySelect.value);
         bind('[data-a="zoom-toggle"]', () => this.toggleTimelineZoom());
         bindPackActions(this);
         bindUpdateAction(this);
@@ -3799,6 +3872,11 @@ class MiniMaxH3DirectorEditor {
         };
         this.outMaxFrames.onchange = () => this.onOutputField("maxExportFrames", +this.outMaxFrames.value);
         this.outExportMode.onchange = () => this.onOutputField("exportMode", this.outExportMode.value);
+        this.audioConditioning.onchange = () => {
+            const widget = this.widget("audio_conditioning");
+            if (widget) widget.value = this.audioConditioning.value;
+            this.commit(false, { syncTimeline: true });
+        };
         if (this.outAudioMode) {
             this.outAudioMode.onchange = () => this.onOutputField("audioMode", this.outAudioMode.value);
         }
@@ -4106,7 +4184,7 @@ class MiniMaxH3DirectorEditor {
             const taskType = widgets.task_type || widgets.taskType || data.global?.taskType || "";
             if (this.taskTypeWidget && taskType) this.taskTypeWidget.value = taskType;
             if (this.globalTask && taskType) this.globalTask.value = taskType;
-            for (const name of ["steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed"]) {
+            for (const name of ["steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed", "generation_family", "pika_flex", "audio_conditioning"]) {
                 if (widgets[name] == null || widgets[name] === "") continue;
                 const w = this.widget(name);
                 if (w) w.value = widgets[name];
@@ -4144,6 +4222,7 @@ class MiniMaxH3DirectorEditor {
             }
             this.applyTaskLayout(this._directorMode);
             this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value);
+            this.syncGenerationFamily();
             this.setEditMode(this.timeline.editMode || "global");
             this.selectedIndex = 0;
             this.updateSelectionUI();
@@ -5335,6 +5414,7 @@ class MiniMaxH3DirectorEditor {
         }
         const isVideoEditTask = isVideoEditTaskKey(taskKey) || taskKey === "r2v";
         this.outAudioWrap?.classList.toggle("hidden", !isVideoEditTask);
+        this.audioConditioningWrap?.classList.toggle("hidden", !isVideoEditTask && !["t2v", "i2v", "fl2v", "mixed"].includes(taskKey));
         this.syncExportSourceImagesUI();
         if (this.outExportMode) {
             this.outExportMode.disabled = (isBatch || isFl2v) && !showBatchExport;
@@ -6510,13 +6590,45 @@ class MiniMaxH3DirectorEditor {
         const prev = selected || el.value;
         el.innerHTML = "";
         for (const v of opts) {
+            const task = resolveTaskKey(v);
+            if (this.isPikaFamily() && !["t2v", "i2v", "fl2v", "r2v", "mixed"].includes(task)) continue;
             const o = document.createElement("option");
             o.value = v;
             const key = resolveTaskKey(v);
-            o.textContent = taskDisplayLabel(key) || v;
+            o.textContent = this.isPikaFamily() && ["fl2v", "mixed"].includes(key)
+                ? t(`pika.${key}`) : taskDisplayLabel(key) || v;
             el.appendChild(o);
         }
         if (prev) el.value = prev;
+    }
+
+    isPikaFamily() {
+        return directorUsesPika(this.node);
+    }
+
+    setGenerationFamily(value) {
+        if (!this.familyWidget) return;
+        this.familyWidget.value = value === "Pika-H3" ? "Pika-H3" : "H3";
+        const legacy = this.widget("pika_flex");
+        if (legacy) legacy.value = this.familyWidget.value === "Pika-H3";
+        this.syncGenerationFamily();
+        this.commit(false, { syncTimeline: true });
+    }
+
+    syncGenerationFamily() {
+        const pika = this.isPikaFamily();
+        this.root?.classList.toggle("pika-family", pika);
+        if (this.familySelect) this.familySelect.value = pika ? "Pika-H3" : "H3";
+        this.pikaRecipe?.classList.toggle("hidden", !pika);
+        if (this.audioConditioning) this.audioConditioning.value = this.widget("audio_conditioning")?.value || "none";
+        syncDirectorSchedulerWidgets(this.node);
+        this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value);
+        if (pika && !["t2v", "i2v", "fl2v", "r2v", "mixed"].includes(this.getTaskKey())) {
+            const fallback = [...(this.globalTask?.options || [])].find((option) => resolveTaskKey(option.value) === "t2v");
+            if (fallback) this.onGlobalField("taskType", fallback.value);
+        }
+        this.renderImageBatchGroups?.();
+        this.node.setDirtyCanvas?.(true, true);
     }
 
     refreshAspectSelectLabels() {
@@ -6532,6 +6644,7 @@ class MiniMaxH3DirectorEditor {
         this.root?.classList.toggle("locale-en", getLocale() === "en");
         this.root?.classList.toggle("locale-zh", getLocale() !== "en");
         applyI18nDom(this.root);
+        if (this.languageSelect) this.languageSelect.value = getLocalePreference();
         applyDirectorWidgetLabels(this.node);
         this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value || this.globalTask?.value);
         this.refreshAspectSelectLabels();
@@ -13146,6 +13259,9 @@ function graphLinkRecord(graph, linkId) {
     const links = graph.links;
     if (!links) return null;
     let link = links[linkId];
+    if (!link && typeof links.get === "function") {
+        link = links.get(linkId) || links.get(Number(linkId)) || links.get(String(linkId));
+    }
     if (!link && typeof links.find === "function") {
         link = links.find((l) => l && (l.id === linkId || l[0] === linkId));
     }
@@ -13570,6 +13686,33 @@ function combineGroupSlotIndex(name) {
     return m ? parseInt(m[1], 10) : null;
 }
 
+function compareCombineInputs(a, b) {
+    const ai = combineGroupSlotIndex(a.name);
+    const bi = combineGroupSlotIndex(b.name);
+    if (ai != null && bi != null) return ai - bi;
+    if (ai != null) return -1;
+    if (bi != null) return 1;
+    return String(a.name) < String(b.name) ? -1 : String(a.name) > String(b.name) ? 1 : 0;
+}
+
+function fixCombineNodeTargetSlots(node) {
+    const links = node.graph?.links;
+    if (!links) return;
+    let changed = false;
+    for (const [slot, input] of (node.inputs || []).entries()) {
+        if (input.link == null) continue;
+        const link = typeof links.get === "function" ? links.get(input.link) : links[input.link];
+        if (!link || String(link.target_id ?? link[3]) !== String(node.id)) continue;
+        if (Array.isArray(link)) {
+            if (link[4] !== slot) { link[4] = slot; changed = true; }
+        } else if (link.target_slot !== slot) {
+            link.target_slot = slot;
+            changed = true;
+        }
+    }
+    if (changed) node.graph.setDirtyCanvas?.(true, true);
+}
+
 function isCombineGroupSlot(input) {
     if (!input) return false;
     if (combineGroupSlotIndex(input.name) != null) return true;
@@ -13646,12 +13789,7 @@ function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs", slotL
         const out = [];
         const slots = (node.inputs || [])
             .filter(isCombineGroupSlot)
-            .sort((a, b) => {
-                const ai = combineGroupSlotIndex(a.name);
-                const bi = combineGroupSlotIndex(b.name);
-                if (ai != null && bi != null) return ai - bi;
-                return 0;
-            });
+            .sort(compareCombineInputs);
         for (const input of slots) {
             if (input.link == null) continue;
             const label = slotLabel || String(input.name || "");
@@ -13832,6 +13970,7 @@ function normalizeDirectorOutputs(node) {
 app.registerExtension({
     name: "ComfyUI.MiniMaxH3DirectorPlugin",
     async setup() {
+        initializeLocale();
         installDirectorClipboardGuard();
         const flushDirectors = () => {
             const graph = app.graph ?? app.canvas?.graph;
@@ -13956,7 +14095,10 @@ app.registerExtension({
             nodeType.prototype.onConnectionsChange = function (...args) {
                 const out = onConnectionsChange?.apply(this, args);
                 // Combine/Group wiring changes do not fire Director.onConnectionsChange.
-                queueMicrotask(() => notifyDirectorsSyncExternalGroups());
+                queueMicrotask(() => {
+                    if (cls === EXTERNAL_COMBINE_NODE_TYPE) fixCombineNodeTargetSlots(this);
+                    notifyDirectorsSyncExternalGroups();
+                });
                 return out;
             };
             const onWidgetChanged = nodeType.prototype.onWidgetChanged;
@@ -14003,6 +14145,15 @@ app.registerExtension({
 
         if (!isDirectorNodeDef(nodeType, nodeData)) return;
 
+        const widgetDefaults = {};
+        for (const inputs of [nodeData.input?.required, nodeData.input?.optional]) {
+            for (const [name, spec] of Object.entries(inputs || {})) {
+                const def = spec[1]?.default ?? (Array.isArray(spec[0]) ? spec[0][0] : undefined);
+                if (def !== undefined) widgetDefaults[name] = def;
+            }
+        }
+        nodeType.prototype._mmxDeclaredWidgetDefaults = widgetDefaults;
+
         // [MMX-EXT] Install forwarding independently of the UI guard so an older
         // patched prototype can acquire or repair the external methods on re-registration.
         for (const method of ["setExternalGlobalPrompt", "clearExternalGlobalPrompt",
@@ -14022,6 +14173,7 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             const r = onCreated?.apply(this, arguments);
             normalizeDirectorOutputs(this);
+            if (!this.title || this.title === "MiniMax H3 Director") this.title = "MiniMax H3 Director Pro";
             applyDirectorWidgetLabels(this);
             // ComfyUI may attach seed's control_after_generate combo after onNodeCreated.
             queueMicrotask(() => applyDirectorWidgetLabels(this));
@@ -14112,6 +14264,9 @@ app.registerExtension({
         const onWidgetChanged = nodeType.prototype.onWidgetChanged;
         nodeType.prototype.onWidgetChanged = function (name, ...rest) {
             const out = onWidgetChanged?.apply(this, [name, ...rest]);
+            if (["generation_family", "pika_flex", "audio_conditioning"].includes(String(name || ""))) {
+                this._minimaxEditor?.syncGenerationFamily();
+            }
             if (DIRECTOR_SAMPLE_VALUE_WIDGETS.includes(String(name || ""))) {
                 snapshotDirectorSampleWidgets(this);
             }
@@ -14129,6 +14284,15 @@ app.registerExtension({
         nodeType.prototype.onRemoved = function () {
             destroyDirectorEditor(this);
             return onRemoved?.apply(this, arguments);
+        };
+
+        const onSerialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function (data) {
+            const out = onSerialize?.apply(this, arguments);
+            data.widgets_values_named = Object.fromEntries(directorValueWidgets(this).map((w) => [
+                w.name, typeof w.serializeValue === "function" ? w.serializeValue(this) : w.value,
+            ]));
+            return out;
         };
 
         const onConfigure = nodeType.prototype.onConfigure;
@@ -14167,6 +14331,7 @@ app.registerExtension({
                 }
                 ed.applyTaskLayout(ed._directorMode);
                 ed.populateTaskSelect(ed.globalTask, ed.taskTypeWidget?.value);
+                ed.syncGenerationFamily();
                 ed.setEditMode(ed.timeline.editMode || "global");
                 ed.selectedIndex = 0;
                 ed.updateSelectionUI();

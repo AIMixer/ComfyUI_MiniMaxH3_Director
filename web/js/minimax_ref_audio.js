@@ -1,3 +1,4 @@
+import { createUploadId } from "./minimax_upload_id.js";
 import { api } from "../../scripts/api.js";
 import { fileForComfyUpload } from "./minimax_gen_timeline.js";
 
@@ -58,7 +59,7 @@ export async function prepareLocalReferenceAudio(file, onProgress) {
         return prepared;
     }
 
-    const uploadId = crypto.randomUUID();
+    const uploadId = createUploadId();
     const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
     for (let index = 0; index < totalChunks; index++) {
         const start = index * CHUNK_SIZE;
