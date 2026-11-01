@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
 
 MMX_DIR_FACE_REFINE = "MMX_DIR_FACE_REFINE"
 
@@ -83,6 +84,16 @@ def pack_face_refine(
     colour_match: float = 1.0,
     blend: float = 1.0,
     sigmas=None,
+    refine_model=None,
+    reference_image=None,
+    prompt: str = "",
+    cut_detection: str = "none",
+    cut_threshold: float = 3.0,
+    max_gap_frames: int = 6,
+    adaptive_strength: bool = False,
+    large_face_multiplier: float = 0.35,
+    face_px_small: float = 30.0,
+    face_px_large: float = 120.0,
 ) -> dict[str, Any]:
     mode = str(canvas_mode or "manual").strip().lower()
     if mode not in CANVAS_MODES:
@@ -130,6 +141,16 @@ def pack_face_refine(
         "sigmas_parsed": parsed,
         "sigmas_tensor": sigma_tensor,
         "has_sigmas_tensor": sigma_tensor is not None,
+        "refine_model": refine_model,
+        "reference_image": reference_image,
+        "prompt": str(prompt or "").strip(),
+        "cut_detection": "auto" if cut_detection == "auto" else "none",
+        "cut_threshold": _clamp_float(cut_threshold, 0.1, 100.0, 3.0),
+        "max_gap_frames": _clamp_int(max_gap_frames, 0, 240, 6),
+        "adaptive_strength": bool(adaptive_strength),
+        "large_face_multiplier": _clamp_float(large_face_multiplier, 0.0, 1.0, 0.35),
+        "face_px_small": _clamp_float(face_px_small, 1.0, 800.0, 30.0),
+        "face_px_large": _clamp_float(face_px_large, 1.0, 1600.0, 120.0),
     }
 
 
@@ -158,6 +179,11 @@ def normalize_face_refine_pack(raw) -> dict[str, Any] | None:
         colour_match=raw.get("colour_match", 1.0),
         blend=raw.get("blend", 1.0),
         sigmas=raw.get("sigmas_tensor") if raw.get("sigmas_tensor") is not None else raw.get("sigmas"),
+        **{key: raw[key] for key in (
+            "refine_model", "reference_image", "prompt", "cut_detection", "cut_threshold",
+            "max_gap_frames", "adaptive_strength", "large_face_multiplier", "face_px_small",
+            "face_px_large",
+        ) if key in raw},
     )
 
 
@@ -166,6 +192,11 @@ def face_refine_fingerprint(plan) -> dict[str, Any]:
     pack = getattr(plan, "face_refine", None)
     if not isinstance(pack, dict) or not pack.get("enabled"):
         return {}
+    model = pack.get("refine_model")
+    image = pack.get("reference_image")
+    image_hash = ""
+    if image is not None:
+        image_hash = hashlib.sha256(image.detach().float().cpu().contiguous().numpy().tobytes()).hexdigest()
     return {
         "face_refine": True,
         "fr_detector": pack.get("detector") or "",
@@ -189,6 +220,17 @@ def face_refine_fingerprint(plan) -> dict[str, Any]:
         "fr_sigmas": ",".join(f"{x:.4f}" for x in (pack.get("sigmas_parsed") or ())),
         # Bump when continuity seam fade lands so old unfaded stitch caches miss.
         "fr_seam_fade": 12,
+        "fr_revision": 4,
+        "fr_model": (
+            f"{model.clone_base_uuid}:{model.patches_uuid}:{model.model_options}"
+            if model is not None else "inherit"
+        ),
+        "fr_reference": image_hash,
+        "fr_prompt": pack.get("prompt", ""),
+        **{f"fr_{key}": pack[key] for key in (
+            "cut_detection", "cut_threshold", "max_gap_frames", "adaptive_strength",
+            "large_face_multiplier", "face_px_small", "face_px_large",
+        )},
     }
 
 

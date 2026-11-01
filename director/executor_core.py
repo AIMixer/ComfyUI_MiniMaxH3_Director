@@ -1298,6 +1298,22 @@ def execute_director_plan_core(
                 f"Segment {ui_idx + 1}/{timeline_seg_total}: 命中一采缓存 "
                 f"(seed={int(getattr(plan, 'sample_seed', seed) or seed)})，跳过一采，开始二采"
             )
+        elif selflift_will_run(plan, seg) and (plan.selflift or {}).get("backend") == "avatar":
+            from .selflift.avatar import sample_avatar_stage
+
+            _report_sample_phase("sample", 0)
+            samples = sample_avatar_stage(
+                model=seg_model, positive=positive, negative=negative, latent=latent,
+                vae=vae, seed=seed, cfg=cfg, steps=steps, scheduler=scheduler,
+                sigmas=first_pass_sigmas, pack=plan.selflift,
+                shift_video=shift_video, shift_audio=shift_audio, shift_cache=shift_cache,
+                after_shift=after_shift,
+            )
+            _report_sample_phase("sample", 1)
+            reports.append(
+                f"Segment {ui_idx + 1}/{timeline_seg_total}: "
+                "使用 selflift-Avatar 原版 SelfLiftAvatarH3Sampler；不使用导演台低清 carry。"
+            )
         elif selflift_will_run(plan, seg):
             samples, low_carry = sample_selflift_stage(
                 model=seg_model,

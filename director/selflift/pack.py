@@ -107,6 +107,36 @@ def normalize_selflift_pack(raw) -> dict[str, Any] | None:
         return None
     if not raw.get("enabled"):
         return None
+    if raw.get("backend") == "avatar":
+        w_min = float(raw.get("w_min", DEFAULT_W_MIN))
+        w_max = float(raw.get("w_max", DEFAULT_W_MAX))
+        if w_min > w_max:
+            raise ValueError("原版 SelfLift 要求 w_min 不大于 w_max。")
+        pack = pack_selflift(
+            split_mode="transition_step",
+            transition_step=raw.get("transition_step", DEFAULT_TRANSITION_STEP),
+            lowres_scale=raw.get("lowres_scale", DEFAULT_LOWRES_SCALE),
+            latent_upscale_model=(raw.get("upscaler_model") or raw.get("latent_upscale_model") or "none"),
+            sampler_mode="euler",
+            native_low_carry=False,
+            rho=raw.get("rho", DEFAULT_RHO), w_min=w_min, w_max=w_max,
+            latent_upsample="nearest",
+            enable_tiling=raw.get("highres_tiling", raw.get("enable_tiling", False)),
+            tile_count=raw.get("tiling_tiles", raw.get("tile_count", 2)),
+            tile_overlap=0,
+            model_hires=raw.get("high_res_model", raw.get("sample_model")),
+        )
+        pack.update({
+            "backend": "avatar",
+            "sampler": raw.get("sampler"),
+            "transition_step": int(raw.get("transition_step", DEFAULT_TRANSITION_STEP)),
+            "avatar_tiling_mode": raw.get("tiling_mode") or "auto",
+            "avatar_tiling_axis": raw.get("tiling_axis") or "auto",
+            "avatar_tiling_method": raw.get("highres_tiling_mode") or "spatial",
+            "avatar_token_chunk": int(raw.get("highres_token_chunk", 4096)),
+            "avatar_weight_cache_gb": float(raw.get("highres_weight_cache_gb", 4.0)),
+        })
+        return pack
     return pack_selflift(
         split_mode=raw.get("split_mode") or "highres_steps",
         highres_steps=raw.get("highres_steps", DEFAULT_HIGHRES_STEPS),
@@ -175,7 +205,7 @@ def selflift_fingerprint(plan) -> dict[str, Any]:
     pack = getattr(plan, "selflift", None)
     if not isinstance(pack, dict) or not pack.get("enabled"):
         return {}
-    return {
+    fingerprint = {
         "selflift": True,
         "sl_split": pack.get("split_mode") or "",
         "sl_high": int(pack.get("highres_steps") or 0),
@@ -194,6 +224,16 @@ def selflift_fingerprint(plan) -> dict[str, Any]:
         "sl_overlap": int(pack.get("tile_overlap") or 0),
         "sl_hires_model": bool(pack.get("sample_model") is not None),
     }
+    if pack.get("backend") == "avatar":
+        fingerprint.update({
+            "sl_backend": "avatar",
+            "sl_avatar_tiling_mode": pack["avatar_tiling_mode"],
+            "sl_avatar_tiling_axis": pack["avatar_tiling_axis"],
+            "sl_avatar_tiling_method": pack["avatar_tiling_method"],
+            "sl_avatar_token_chunk": pack["avatar_token_chunk"],
+            "sl_avatar_weight_cache_gb": pack["avatar_weight_cache_gb"],
+        })
+    return fingerprint
 
 
 def selflift_report_line(plan) -> str | None:
@@ -207,7 +247,7 @@ def selflift_report_line(plan) -> str | None:
     else:
         split = f"highres_steps={int(pack.get('highres_steps') or 0)}"
     return (
-        "SelfLift: "
+        ("SelfLiftAvatar 原版: " if pack.get("backend") == "avatar" else "SelfLift: ") +
         f"scale={scale:.2f} {split} "
         f"3D={pack.get('h3_latent_model') or '(none)'} "
         f"rho={float(pack.get('rho') or 0):.2f} "
