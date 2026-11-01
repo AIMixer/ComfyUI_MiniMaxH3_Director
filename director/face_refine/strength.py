@@ -112,4 +112,3 @@ def apply_face_strength(model, latent, transform, pack):
     return patched, out, (
         f"face-size multiplier {strength.min():.2f}–{strength.max():.2f}; {note}; {renote}"
     )
-
