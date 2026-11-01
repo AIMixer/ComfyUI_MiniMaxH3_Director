@@ -1,0 +1,91 @@
+{
+  "2": {
+    "inputs": {
+      "unet_name": "minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader"
+  },
+  "4": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_int4_convrot.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader"
+  },
+  "5": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+    },
+    "class_type": "VAELoader"
+  },
+  "6": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader"
+  },
+  "200": {
+    "class_type": "MiniMaxH3Director",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "video_vae": [
+        "5",
+        0
+      ],
+      "audio_vae": [
+        "6",
+        0
+      ],
+      "clip": [
+        "4",
+        0
+      ],
+      "task_type": "mixed — 混合模式(Mixed Segments)",
+      "global_prompt": "",
+      "bd_grp_sample": "采样设置",
+      "cfg": 1.0,
+      "seed": 42,
+      "frame_rate": 24.0,
+      "width": 832,
+      "height": 480,
+      "ref_max_size": 832,
+      "total_frames": 124,
+      "timeline_data": "{\"version\":5,\"timelineMode\":\"prompt_batch\",\"editMode\":\"segment\",\"totalFrames\":124,\"frameRate\":24,\"width\":832,\"height\":480,\"global\":{\"taskType\":\"mixed\",\"prompt\":\"\",\"refs\":[],\"refVideos\":[],\"refAudios\":[],\"commonEnabled\":false},\"segments\":[{\"id\":\"pika-pro-first\",\"start\":0,\"length\":124,\"frameCount\":124,\"durationSec\":5.166666666666667,\"taskType\":\"fl2v\",\"prompt\":\"integrated_multimodal_description: Begin with the supplied opening image. A gentle breeze creates subtle natural motion in a calm outdoor scene. Locked-off camera, soft daylight, one continuous shot.\\n\\noverall_soundscape: Quiet outdoor ambience. No dialogue.\\n\\nnon_diegetic_music: None.\",\"negativePrompt\":\"\",\"refs\":[],\"refVideos\":[],\"refAudios\":[],\"startImage\":{\"index\":0,\"imageFile\":\"Pika_reference.png\",\"fileName\":\"Pika_reference.png\",\"type\":\"input\",\"subfolder\":\"\"},\"endImage\":null,\"continuityFromPrev\":false,\"refImageSize\":\"match\",\"loras\":[]}],\"runSelectEnabled\":false,\"runSelection\":[],\"output\":{\"mode\":\"fixed\",\"width\":832,\"height\":480,\"audioMode\":\"generate\",\"audioConditioning\":\"none\",\"exportMode\":\"segments\",\"continuityEnabled\":false},\"liveTaePreview\":false}",
+      "bd_grp_advanced": "高级采样",
+      "steps": 6,
+      "sampler": "lcm",
+      "scheduler": "simple",
+      "shift_video": 12.0,
+      "shift_audio": 3.0,
+      "bd_grp_perf": "性能",
+      "clear_vram_between_segments": false,
+      "clear_vram_before_refine": false,
+      "clear_vram_before_face_refine": false,
+      "cache_frames_codec": "raw",
+      "export_source_images": false,
+      "export_pre_face_refine": false,
+      "cache_name": "pika_pro_first_example",
+      "pika_flex": false,
+      "video_decode": "tiled",
+      "generation_family": "Pika-H3",
+      "audio_conditioning": "none"
+    },
+    "_meta": {
+      "title": "Pika-H3 Director Pro - First frame"
+    }
+  },
+  "201": {
+    "class_type": "PreviewAny",
+    "inputs": {
+      "source": [
+        "200",
+        5
+      ]
+    }
+  }
+}
