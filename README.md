@@ -1,4 +1,13 @@
-# ComfyUI MiniMax H3 Director
+# MiniMax H3 导演台 Pro
+
+基于 [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director)，由 [H-Bole](https://github.com/H-Bole) **独立维护**。支持 MiniMax H3 与 Pika H3 Flex 两种任务适配器，保留上游署名及 Apache-2.0 许可证。本仓库是社区维护版。
+
+**本仓库：**[H-Bole/ComfyUI-MiniMax-H3-Director-Pro](https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro)。
+
+导演台顶部选择 **H3 / Pika-H3**。Pika 支持纯文、首帧、尾帧、首尾帧、多模态参考；固定六步配方，适配器缺失时在采样前报错。语言支持自动／中文／English，自动优先跟随 ComfyUI。原声参与生成是独立可选功能，默认关闭，与导出采用原声分开。
+
+[Pro 使用与兼容说明](docs/pro-guide.md) · [上游 PR／Issue 处理记录](docs/upstream-review.md)
+
 
 基于 **ComfyUI 官方 MiniMax-H3** 的多段音视频导演台插件。仓库地址：[AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director)
 
@@ -89,7 +98,7 @@ Refine 的 `nvidia_rtx_vsr` 另需 NVIDIA GPU，可 `pip install nvidia-vfx --ex
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director.git
+git clone https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git
 
 pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 ```
@@ -100,7 +109,7 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 
 1. 打开 **ComfyUI Manager**
 2. 选择 **Install via Git URL**
-3. 填入 `https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director.git` 并安装
+3. 填入 `https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git` 并安装
 4. 重启 ComfyUI
 
 ## 更新
@@ -245,8 +254,8 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 
 | | |
 |---|---|
-| **维护者** | [AI搅拌手 / AIMixer](https://github.com/AIMixer) |
-| **本仓库** | [github.com/AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director) |
+| **上游作者** | [AI搅拌手 / AIMixer](https://github.com/AIMixer) |
+| **上游仓库** | [github.com/AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director) |
 | **姊妹插件** | [ComfyUI_Bernini_Director](https://github.com/AIMixer/ComfyUI_Bernini_Director) |
 | **作者 QQ** | **3697688140** |
 | **B 站** | [space.bilibili.com/1997403556](https://space.bilibili.com/1997403556) |

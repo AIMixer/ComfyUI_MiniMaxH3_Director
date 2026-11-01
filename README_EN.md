@@ -1,4 +1,13 @@
-# ComfyUI MiniMax H3 Director
+# MiniMax H3 Director Pro
+
+Based on [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director), independently maintained by [H-Bole](https://github.com/H-Bole). Supports MiniMax H3 and the two Pika H3 Flex task adapters. Original attribution and Apache-2.0 licensing are retained; this fork is not an official Pika or MiniMax release.
+
+**This repository:** [H-Bole/ComfyUI-MiniMax-H3-Director-Pro](https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro).
+
+Select **H3 / Pika-H3** in the Director. Pika exposes text, first-frame, last-frame, first-and-last-frame and multimodal-reference generation. The six-step recipe is fixed; missing adapters fail before sampling. Language supports Auto / 中文 / English; Auto follows ComfyUI before falling back to the browser. Source-audio conditioning is optional and off by default, separate from exporting the original audio.
+
+[Pro usage and compatibility](docs/pro-guide.md) · [Upstream PR / Issue review](docs/upstream-review.md)
+
 
 Multi-segment AV timeline director for **official ComfyUI MiniMax-H3**.  
 Repository: [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director)
@@ -85,7 +94,7 @@ Refine `nvidia_rtx_vsr` needs an NVIDIA GPU: `pip install nvidia-vfx --extra-ind
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director.git
+git clone https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git
 
 pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 ```
@@ -96,7 +105,7 @@ Restart ComfyUI.
 
 1. Open **ComfyUI Manager**
 2. Choose **Install via Git URL**
-3. Enter `https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director.git` and install
+3. Enter `https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git` and install
 4. Restart ComfyUI
 
 ## Updating
@@ -246,8 +255,8 @@ Mirror the two official conditioning nodes and feed **multi-group** batches into
 
 | | |
 |---|---|
-| **Maintainer** | [AIMixer](https://github.com/AIMixer) |
-| **Repository** | [github.com/AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director) |
+| **Upstream author** | [AIMixer](https://github.com/AIMixer) |
+| **Upstream repository** | [github.com/AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director) |
 | **Sibling plugin** | [ComfyUI_Bernini_Director](https://github.com/AIMixer/ComfyUI_Bernini_Director) |
 | **Author QQ** | **3697688140** |
 | **Bilibili** | [space.bilibili.com/1997403556](https://space.bilibili.com/1997403556) |
