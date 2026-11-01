@@ -2542,6 +2542,12 @@ class MiniMaxH3DirectorEditor {
                         : resolveSegmentRefImageSize(matched, this.timeline?.output),
                     ...(matched?.runEnabled != null ? { runEnabled: matched.runEnabled } : {}),
                     loras: matched?.loras,
+                    // Must survive syncExternalGroupsTimeline → newBatchSegment(); dropping it made
+                    // 段间引导 appear to spring back on after refresh (commit rebuilt segments and
+                    // the unset field defaulted to on). Same bug as the one fixed in newFl2vShot.
+                    ...(matched?.continuityFromPrev != null
+                        ? { continuityFromPrev: matched.continuityFromPrev }
+                        : {}),
                 });
             });
             for (const item of promptWriteBack) {
