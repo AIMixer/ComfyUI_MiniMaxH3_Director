@@ -6,6 +6,9 @@ import logging
 
 import torch
 
+from ..lib.audio_io import _pcm_time_for_native, _probe_av_timing, extract_audio_segment, video_has_audio
+from ..lib.video_io import resolve_video_path
+
 from ..lib.image_prep import (
     assert_minimax_canvas,
     cat_frames_variable_size,
@@ -439,6 +442,7 @@ def build_gen_director_plan(
     from .plan import (
         DirectorPlan,
         SegmentPlan,
+        SegmentRefAudio,
         _load_ref_audios,
         _load_ref_videos,
         _load_refs,
@@ -678,6 +682,7 @@ def build_gen_director_plan(
             )
         seg_ref_audios = []
         seg_ref_videos = []
+        seg_ref_video_audios = []
         if edit_mode == "global":
             seg_ref_audios = segment_ref_audios_for_context(
                 seg_task_key,
@@ -739,6 +744,16 @@ def build_gen_director_plan(
                     seg_ref_videos = merge_indexed_refs(common_videos, local_videos)
                 else:
                     seg_ref_videos = local_videos
+        if materialize_media:
+            for video in seg_ref_videos:
+                path = resolve_video_path(video.meta)
+                if video_has_audio(path) is False:
+                    continue
+                video_pts0, audio_start, frame_dur = _probe_av_timing(path, fallback_fps=fps)
+                start_sec = _pcm_time_for_native(0, video_pts0=video_pts0, audio_start=audio_start, frame_dur=frame_dur)
+                audio = extract_audio_segment(path, start_sec, int(video.tensor.shape[0]) / fps)
+                if audio is not None:
+                    seg_ref_video_audios.append(SegmentRefAudio(index=video.index, audio=audio, audio_file=video.video_file))
         if seg_task_key in ("r2v", "r2i") and not seg_refs and not seg_ref_videos and not seg_ref_audios:
             log.warning(
                 "gen segment #%d task=%s has no reference media — will behave like "
@@ -786,6 +801,7 @@ def build_gen_director_plan(
                 refs=seg_refs,
                 ref_audios=seg_ref_audios,
                 ref_videos=seg_ref_videos,
+                ref_video_audios=seg_ref_video_audios,
                 negative_prompt=seg_negative,
                 source_clip=seg_source,
                 continuity_from_prev=resolve_segment_continuity_from_prev(

@@ -8,6 +8,20 @@ import logging
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.vram")
 
 
+def finish_native_stage() -> None:
+    """Match execution.py's node boundary between internally invoked native nodes."""
+    import comfy.memory_management
+
+    if comfy.memory_management.aimdo_enabled:
+        import comfy.model_management
+        import comfy.model_prefetch
+        import comfy_aimdo.model_vbar
+
+        comfy.model_prefetch.cleanup_prefetch_queues()
+        comfy.model_management.reset_cast_buffers()
+        comfy_aimdo.model_vbar.vbars_reset_watermark_limits()
+
+
 def release_director_plan_memory(plan) -> None:
     """Drop execution-only source/reference tensors after Director returns."""
     if plan is None:

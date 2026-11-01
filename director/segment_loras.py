@@ -12,6 +12,7 @@ exactly what the stock LoraLoader node does.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.segment_loras")
@@ -74,6 +75,25 @@ def normalize_lora_rows(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def resolve_pika_task_loras(rows, task_key: str) -> list[dict[str, Any]]:
+    """Keep Pika's task adapter paired with the conditioning path."""
+    rows = normalize_lora_rows(rows)
+    variant = "ref2va" if task_key in {"r2v", "v2v", "rv2v"} else "fl2va"
+    for row in rows:
+        for source in ("fl2va", "ref2va"):
+            row["name"] = row["name"].replace(
+                f"pika_h3_flex_{source}_", f"pika_h3_flex_{variant}_"
+            )
+    pika_rows = [row for row in rows if "pika_h3_flex_" in row["name"]]
+    if pika_rows:
+        adapter = pika_rows[0]
+        rows = [row for row in rows if row not in pika_rows]
+    else:
+        adapter = {"name": f"pika_h3_flex_{variant}_v1_bf16.safetensors"}
+    rows.insert(0, {**adapter, "strength": 1.0, "active": True})
+    return rows
+
+
 def effective_lora_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """Rows that will actually change the model (active, non-zero strength)."""
     return [
@@ -102,11 +122,12 @@ def apply_segment_loras(
     model,
     rows: list[dict[str, Any]] | None,
     *,
-    state_dict_cache: dict | None = None,
+    loader_cache: dict | None = None,
+    model_cache: dict | None = None,
 ):
     """Return ``model`` with this segment's LoRAs patched in.
 
-    ``state_dict_cache`` keeps the loaded tensors for the duration of one
+    ``loader_cache`` keeps native LoRA loaders for the duration of one
     Director run so a LoRA reused by several segments is read from disk once.
     The original model is never mutated — each patch clones it.
     """
@@ -114,10 +135,13 @@ def apply_segment_loras(
     if not eff or model is None:
         return model
 
-    import comfy.sd
-    import comfy.utils
     import folder_paths
+    from nodes import LoraLoaderModelOnly
 
+    paths = [folder_paths.get_full_path_or_raise("loras", row["name"]) for row in eff]
+    key = (id(model), tuple((path, Path(path).stat().st_mtime_ns, float(row["strength"])) for path, row in zip(paths, eff)))
+    if model_cache is not None and key in model_cache:
+        return model_cache[key]
     patched = model
     for row in eff:
         name = row["name"]
@@ -129,14 +153,22 @@ def apply_segment_loras(
                 % (name, exc)
             ) from exc
 
-        state_dict = state_dict_cache.get(path) if state_dict_cache is not None else None
-        if state_dict is None:
-            state_dict = comfy.utils.load_torch_file(path, safe_load=True)
-            if state_dict_cache is not None:
-                state_dict_cache[path] = state_dict
-
-        patched, _ = comfy.sd.load_lora_for_models(
-            patched, None, state_dict, float(row["strength"]), 0.0
+        stamp = Path(path).stat()
+        loader_key = (path, stamp.st_mtime_ns, stamp.st_size)
+        loader = loader_cache.get(loader_key) if loader_cache is not None else None
+        if loader is None:
+            loader = LoraLoaderModelOnly()
+            if loader_cache is not None:
+                for stale in tuple(loader_cache):
+                    if stale[0] == path:
+                        loader_cache.pop(stale)
+                loader_cache[loader_key] = loader
+        patched, = loader.load_lora_model_only(
+            patched, name, float(row["strength"])
         )
         log.debug("Segment LoRA applied: %s @ %.2f", name, float(row["strength"]))
+    if model_cache is not None:
+        if len(model_cache) >= 4:
+            model_cache.pop(next(iter(model_cache)))
+        model_cache[key] = patched
     return patched

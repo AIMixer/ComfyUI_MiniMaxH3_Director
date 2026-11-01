@@ -563,6 +563,15 @@ async def minimax_first_pass_cache_status(request):
         plan.sample_sigmas_linked = bool(body.get("sigmas_linked"))
         plan.sample_shift_video = float(body.get("shift_video") or 12.0)
         plan.sample_shift_audio = float(body.get("shift_audio") or 3.0)
+        plan.raw.setdefault("output", {})["audioConditioning"] = str(body.get("audio_conditioning") or "none")
+        if body.get("generation_family") == "Pika-H3" or body.get("pika_flex") is True:
+            from .pika import configure_pika_plan, pika_sigmas
+
+            configure_pika_plan(plan, materialize_media=False)
+            plan.sample_cfg, plan.sample_steps, plan.sample_sampler = 1.0, 6, "lcm"
+            plan.sample_shift_video, plan.sample_shift_audio = 12.0, 3.0
+            plan.sample_sigmas = pika_sigmas().tolist()
+            plan.sample_sigmas_linked = True
         from .selflift.pack import normalize_selflift_pack
         from .semantic_bridge import normalize_semantic_bridge_pack
         from .refine_pack import normalize_refine_pack

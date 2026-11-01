@@ -248,6 +248,7 @@ def decode_video_latent(
     tile_overlap: int = _STOCK_OVERLAP,
     output_device: str = "cpu",
     context: str = "director",
+    tiled: bool = False,
 ):
     """Decode a Director video latent, transparently handling the X2 head.
 
@@ -257,9 +258,20 @@ def decode_video_latent(
     """
     packed_channels, upscale = detect_packed_output(vae)
     if packed_channels == 0:
-        from nodes import VAEDecode
+        from .vram_cleanup import finish_native_stage
 
-        return VAEDecode().decode(vae, samples)[0]
+        try:
+            if tiled:
+                from nodes import VAEDecodeTiled
+
+                images = VAEDecodeTiled().decode(vae, samples, 512, 64, 64, 8)[0]
+            else:
+                from nodes import VAEDecode
+
+                images = VAEDecode().decode(vae, samples)[0]
+        finally:
+            finish_native_stage()
+        return images
 
     video = _as_video_latent(samples)
     inner = vae.first_stage_model
@@ -284,6 +296,8 @@ def decode_video_latent(
     saved_out_channels = inner.decoder.out_channels
     saved_pixel_mean = inner.pixel_mean
     saved_pixel_std = inner.pixel_std
+    from .vram_cleanup import finish_native_stage
+
     try:
         inner.decoder.out_channels = packed_channels
         inner.tiling = True
@@ -312,5 +326,5 @@ def decode_video_latent(
         inner.pixel_std = saved_pixel_std
         for name, value in saved.items():
             setattr(inner, name, value)
-
+        finish_native_stage()
     return _to_images(pixels.to(out_dev))

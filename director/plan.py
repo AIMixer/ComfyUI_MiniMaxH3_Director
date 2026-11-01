@@ -308,6 +308,7 @@ class DirectorPlan:
     # Pixel-frame cache codec. "raw" = uint8 .pt; "ffv1" = lossless mkv.
     cache_frames_codec: str = "raw"
     run_indices: frozenset[int] | None = None  # None = run all segments
+    assemble_only: bool = False
     continuity_enabled: bool = False
     continuity_overlap_frames: int = 0
     # "guide" (motion-context keyframes) | "continue" (引导+重绘 / latent remask).

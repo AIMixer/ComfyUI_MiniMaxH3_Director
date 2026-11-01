@@ -272,6 +272,9 @@ def sample_single_stage(
         sampler_obj = None
         if model_use is not model and (shift_cache is None or not shift_cache.holds(model_use)):
             model_use = None
+        from .vram_cleanup import finish_native_stage
+
+        finish_native_stage()
 
     notify(phase_name, 1)
     return out

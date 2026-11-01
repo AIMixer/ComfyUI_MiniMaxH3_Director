@@ -7,7 +7,6 @@ import comfy.samplers
 from ..director.executor_core import execute_director_plan_core
 from ..director.seed_from_video import (
     enable_assemble_mode_when_nothing_selected,
-    seed_segments_from_source_videos,
 )
 from .director_common import (
     finalize_director_outputs,
@@ -50,6 +49,11 @@ def director_timeline_required_inputs() -> dict:
 
 class MiniMaxH3Director:
     """In-node timeline Director using ComfyUI official MiniMax H3 pipeline."""
+
+    def __init__(self):
+        self._base_model = None
+        self._lora_loaders = {}
+        self._lora_models = {}
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -195,6 +199,10 @@ class MiniMaxH3Director:
                         ),
                     },
                 ),
+                "pika_flex": ("BOOLEAN", {"default": False, "tooltip": "Legacy Pika switch; use generation_family for new workflows."}),
+                "video_decode": (["regular", "tiled"], {"default": "regular", "tooltip": "Tiled: spatial 512/64, temporal 64/8."}),
+                "generation_family": (["H3", "Pika-H3"], {"default": "H3"}),
+                "audio_conditioning": (["none", "source_lock"], {"default": "none", "tooltip": "Source-audio conditioning, independent of export audio selection."}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -318,9 +326,18 @@ class MiniMaxH3Director:
         export_source_images=False,
         export_pre_face_refine=False,
         cache_name="",
+        video_decode="regular",
+        pika_flex=False,
+        generation_family="H3",
+        audio_conditioning="none",
         **kwargs,
     ):
         del kwargs
+        pika_flex = bool(pika_flex) or generation_family == "Pika-H3"
+        if self._base_model is not model:
+            self._base_model = model
+            self._lora_loaders.clear()
+            self._lora_models.clear()
 
         # 全部片段都是现成视频 → 走拼接：先把时间线标成全跑，避免空选择报错，
         # 之后每段都命中播种缓存，采样器一次都不会触发。
@@ -354,16 +371,7 @@ class MiniMaxH3Director:
         # Video-as-segment: any segment declaring ``sourceVideo`` gets its cache
         # (pixels + AV latent + export audio) written from that finished video, so
         # the segment is not sampled and the next segment continues from it.
-        # Never fatal — an unseeded segment simply falls back to normal sampling.
-        try:
-            seeded = seed_segments_from_source_videos(plan, unique_id, video_vae, audio_vae)
-            if seeded:
-                print(
-                    f"[MiniMax H3 Director] 视频播种：{seeded} 段直接取自 sourceVideo"
-                    f"（不采样，后续段从它续写）"
-                )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[MiniMax H3 Director] 视频播种跳过：{exc}")
+        plan.raw.setdefault("output", {})["audioConditioning"] = str(audio_conditioning)
 
         try:
             combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, held_for_confirmation, pre_face_combined, pre_face_segments = (
@@ -387,6 +395,10 @@ class MiniMaxH3Director:
                     clear_vram_before_refine=clear_vram_before_refine,
                     clear_vram_before_face_refine=clear_vram_before_face_refine,
                     export_pre_face_refine=export_pre_face_refine,
+                    video_decode=video_decode,
+                    pika_flex=pika_flex,
+                    lora_loader_cache=self._lora_loaders,
+                    lora_model_cache=self._lora_models,
                 )
             )
 
@@ -413,7 +425,6 @@ class MiniMaxH3Director:
             for item in getattr(plan, "global_ref_audios", None) or []:
                 if getattr(item, "audio_path", ""):
                     item.audio = None
-            from ..director.vram_cleanup import cleanup_segment_vram, release_director_plan_memory
+            from ..director.vram_cleanup import release_director_plan_memory
 
             release_director_plan_memory(plan)
-            cleanup_segment_vram(enabled=True, unload_models=True)

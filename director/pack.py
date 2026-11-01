@@ -592,7 +592,7 @@ def build_export_pack(timeline: dict, widgets: dict | None = None, *, dry_run: b
         "taskType": task_key,
         "widgets": {
             k: widgets[k]
-            for k in ("steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed", "task_type")
+            for k in ("steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed", "task_type", "generation_family", "pika_flex", "video_decode", "audio_conditioning")
             if k in widgets
         },
         "output": data.get("output") if isinstance(data.get("output"), dict) else {},
