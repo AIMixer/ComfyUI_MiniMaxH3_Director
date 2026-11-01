@@ -42,3 +42,11 @@ Pika 选项会在分段采样前自动加载匹配任务的 LoRA，强度固定 
 SelfLift 3D 放大失败会明确报错，不静默改为双线性插值。大时间轴的磁盘合并遵守硬切语义，临时映射文件随最后一个持有者释放；不会按文件年龄删除仍可能使用的映射。
 
 上游处理依据、未采用实现与待复现问题见[逐项审查记录](upstream-review.md)。性能和媒体验收以本维护版实际运行记录为准；历史 101.29 秒不构成当前硬件环境的速度保证。
+
+## 现有 SelfLift 与脸修工作流
+
+`MiniMaxH3DirectorAvatarSelfLift` 将导演台的一采交给已安装的 [selflift-Avatar](https://github.com/slmonker/selflift-Avatar)；需要其 `SelfLiftAvatarH3Sampler` 和 Euler 采样器。保留原节点标识与端口，缺依赖会明确报错。动态续写遮罩不适用于这条桥接路径，需使用段间引导。
+
+`MiniMaxH3FaceRefineVideo` 对已有 IMAGE 视频帧复用脸修流程；原音轨由原生视频节点接回，不在该节点重新生成。`MiniMaxH3DirectorFaceRefine` 增加可选独立模型、参考图和提示词，支持按切镜跟踪、掉检帧保留与自适应强度；旧输入顺序不变。相关脸修实现参考 [Carasibana/ComfyUI-H3-FaceRefine](https://github.com/Carasibana/ComfyUI-H3-FaceRefine)，保留其 [MIT 许可](../director/face_refine/UPSTREAM_LICENSE)。
+
+The Avatar bridge retains `MiniMaxH3DirectorAvatarSelfLift` and requires selflift-Avatar's `SelfLiftAvatarH3Sampler` plus Euler. Use guide continuity rather than dynamic continuation masks. `MiniMaxH3FaceRefineVideo` refines existing IMAGE batches; reconnect the original audio through native video nodes. FaceRefine's optional independent model, reference image, prompt, cut tracking and strength controls preserve the existing input order. The adapted face code retains its MIT attribution.
