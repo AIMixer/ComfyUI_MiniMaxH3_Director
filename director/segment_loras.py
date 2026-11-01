@@ -91,6 +91,8 @@ def resolve_pika_task_loras(rows, task_key: str) -> list[dict[str, Any]]:
     else:
         adapter = {"name": f"pika_h3_flex_{variant}_v1_bf16.safetensors"}
     rows.insert(0, {**adapter, "strength": 1.0, "active": True})
+    if len(rows) > MAX_SEGMENT_LORAS:
+        raise ValueError(f"Pika's task adapter occupies one LoRA slot; keep at most {MAX_SEGMENT_LORAS - 1} additional LoRAs.")
     return rows
 
 
@@ -139,7 +141,8 @@ def apply_segment_loras(
     from nodes import LoraLoaderModelOnly
 
     paths = [folder_paths.get_full_path_or_raise("loras", row["name"]) for row in eff]
-    key = (id(model), tuple((path, Path(path).stat().st_mtime_ns, float(row["strength"])) for path, row in zip(paths, eff)))
+    stamps = [Path(path).stat() for path in paths]
+    key = (id(model), tuple((path, stamp.st_mtime_ns, stamp.st_size, float(row["strength"])) for path, row, stamp in zip(paths, eff, stamps)))
     if model_cache is not None and key in model_cache:
         return model_cache[key]
     patched = model
