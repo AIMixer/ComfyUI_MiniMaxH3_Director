@@ -143,14 +143,15 @@ def write_frames_to_mp4(
             "-pix_fmt",
             "yuv420p",
             "-preset",
-            "medium",
+            "veryfast",
             "-crf",
             "18",
             "-movflags",
             "+faststart",
         ]
         if has_audio:
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-shortest"]
+            duration = n / fps + 1 / int(audio["sample_rate"])
+            cmd += ["-af", "apad", "-t", f"{duration:.9f}", "-c:a", "aac", "-b:a", "192k"]
         else:
             cmd += ["-an"]
         cmd.append(str(tmp_mp4))

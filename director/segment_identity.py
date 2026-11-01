@@ -162,6 +162,7 @@ def strip_position(record: Any) -> Any:
 
 def _normalize(raw: Any) -> dict[str, Any]:
     slots: dict[str, int] = {}
+    occupied: set[int] = set()
     next_slot = 0
     if isinstance(raw, dict):
         raw_slots = raw.get("slots")
@@ -175,7 +176,11 @@ def _normalize(raw: Any) -> dict[str, Any]:
                 except (TypeError, ValueError):
                     continue
                 if slot >= 0:
+                    if slot in occupied:
+                        log.warning("Segment cache: ignoring duplicate slot %d claimed by %s.", slot, name)
+                        continue
                     slots[name] = slot
+                    occupied.add(slot)
         try:
             next_slot = int(raw.get("next"))
         except (TypeError, ValueError):
@@ -207,6 +212,8 @@ def _bootstrap(root: Path) -> dict[str, Any]:
     taken as-is and only *labelled* with the identity they were written for.
     """
     slots: dict[str, int] = {}
+    occupied: set[int] = set()
+    next_slot = 0
     try:
         entries = sorted(root.iterdir())
     except OSError:
@@ -219,16 +226,24 @@ def _bootstrap(root: Path) -> dict[str, Any]:
             slot = int(match.group(1))
         except ValueError:
             continue
+        # Even an unreadable/anonymous legacy meta owns its existing slot.
+        next_slot = max(next_slot, slot + 1)
         node = _record_node(_load_json(path))
         if not node or node in slots:
             continue
+        if slot in occupied:
+            # Final and first-pass metadata can refer to different groups after
+            # an old positional partial run. The other group must get a new slot.
+            log.warning("Segment cache: conflicting legacy identity %s in slot %d; treating it as uncached.", node, slot)
+            continue
         slots[node] = slot
+        occupied.add(slot)
     if slots:
         log.info(
             "Segment cache slot table bootstrapped from %d existing cache entry(ies).",
             len(slots),
         )
-    return _normalize({"slots": slots})
+    return _normalize({"slots": slots, "next": next_slot})
 
 
 def _table_for(root: Path) -> dict[str, Any]:
@@ -254,7 +269,9 @@ def _save_table(root: Path, table: dict[str, Any]) -> None:
             "slot numbers stay valid for this run only.",
             exc,
         )
-    _TABLE_CACHE.pop(str(path), None)
+    # Keep allocations stable within this run even when publishing is denied.
+    # A later external write still invalidates the cache through its file stamp.
+    _TABLE_CACHE[str(path)] = (_stamp(path), table)
 
 
 def resolve_slot_for_index(

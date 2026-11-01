@@ -1,4 +1,4 @@
-"""Freeze the AV latent's audio stream to the source track (audioMode=source).
+"""Optionally freeze the AV latent's audio stream to the source track.
 
 ``audioMode=source`` previously only changed the **export** path: the exported
 mp4 muxes the original timeline / reference audio instead of decoding the
@@ -6,7 +6,8 @@ model-generated audio, but generation still denoised the audio stream freely —
 the model invented its own track, so lip movement drifted off the real song
 (the r2v music-video use case).
 
-With the freeze, source mode also drives **generation** with that same audio:
+Only ``output.audioConditioning=source_lock`` opts into generation conditioning.
+Plain source mode keeps its existing export-only behavior. When enabled:
 
 1. the segment's audio is encoded with the audio VAE (timeline slice first,
    then ``<Audio J>`` reference cards — the same priority the source-mode mux
@@ -37,50 +38,16 @@ import torch
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.audio_freeze")
 
-# Marker stored inside the latent dict. Plain dict of ints/strs: survives
-# torch.save (segment cache), dict copies (refine joins) and NestedTensor
-# repacks. Contains no tensors on purpose.
+# Keep a CPU copy of the clean audio in the marker itself: disk reloads and
+# sigma-resume stages must not depend on a process-local cache.
 AUDIO_FREEZE_MARK_KEY = "h3_audio_freeze_mark"
 
-FREEZE_VERSION = 2
+FREEZE_VERSION = 3
 
 # Audio-latent ticks per video frame when comfy's constant is unavailable
 # (40 ticks/s at 24 fps = 5/3 — matches FRAME_PER_TOKEN=4 * FRAME_RESCALE=5/3
 # in comfy.ldm.minimax.model).
 DEFAULT_FRAME_RESCALE = 5.0 / 3.0
-
-# Encoded segment audio by PCM signature, kept so the sampler can RESTORE the
-# frozen window content, not just its mask. Why the restore is needed: comfy's
-# noise_mask machinery treats ``latent["samples"]`` as the clean x0 — it
-# overrides the model's prediction with it (``out = out*mask + latent*(1-mask)``)
-# and reinjects it via ``scale_latent_inpaint`` at every step. The SelfLift /
-# refine resume path rewrites the whole AV latent into the sigma-resume
-# representation (``inverse_noise_scaling`` = ``x / (1 - sigma)`` ≈ x13 at
-# sigma≈0.92, with the low-res pass noise mixed in), so a mask-only refresh
-# would pin that mangled audio as the "clean" conditioning of every high-res
-# pass. Restoring the window content keeps the frozen track bit-identical
-# through every sampling stage. Small (≈0.4 MB per segment), CPU-resident.
-_Z_CACHE: dict[str, Any] = {}
-_Z_CACHE_MAX = 8
-
-
-def _cache_z(sig: str, z) -> None:
-    """Remember the encoded window for refresh-time content restore (LRU-ish)."""
-    try:
-        _Z_CACHE.pop(str(sig), None)
-        _Z_CACHE[str(sig)] = z
-        while len(_Z_CACHE) > _Z_CACHE_MAX:
-            _Z_CACHE.pop(next(iter(_Z_CACHE)))
-    except Exception:
-        pass
-
-
-def _cached_z(sig: str):
-    try:
-        return _Z_CACHE.get(str(sig))
-    except Exception:
-        return None
-
 
 def _env_enabled() -> bool:
     raw = str(os.environ.get("MINIMAX_H3_AUDIO_FREEZE", "")).strip().lower()
@@ -90,11 +57,14 @@ def _env_enabled() -> bool:
 def freeze_requested(plan) -> tuple[bool, str]:
     """Whether the freeze should act on this plan: ``(active, detail)``.
 
-    Active only when the plan's audio mode resolves to ``source`` (the mux
-    keeps the original audio). Every other mode is untouched.
+    Both source export and an explicit source_lock opt-in are required.
     """
     if not _env_enabled():
         return False, "disabled by MINIMAX_H3_AUDIO_FREEZE=0"
+    raw = getattr(plan, "raw", None)
+    output = raw.get("output") if isinstance(raw, dict) else None
+    if not isinstance(output, dict) or output.get("audioConditioning") != "source_lock":
+        return False, "source_lock not requested"
     from .audio_export import AUDIO_MODE_SOURCE, resolve_audio_mode
 
     try:
@@ -103,7 +73,7 @@ def freeze_requested(plan) -> tuple[bool, str]:
         return False, f"resolve_audio_mode failed: {exc}"
     if mode != AUDIO_MODE_SOURCE:
         return False, f"audioMode={mode or 'generate'} (needs source)"
-    return True, "source mode"
+    return True, "source_lock"
 
 
 def fingerprint_flag(plan) -> str | None:
@@ -386,7 +356,12 @@ def apply_first_pass_audio_freeze(
     # Already frozen (first-pass cache hit / re-entry): the sampler refreshes
     # the mask from the marker, no re-encode needed.
     mark = latent.get(AUDIO_FREEZE_MARK_KEY)
-    if isinstance(mark, dict) and int(mark.get("covered_ticks") or 0) > 0:
+    if (
+        isinstance(mark, dict)
+        and mark.get("version") == FREEZE_VERSION
+        and torch.is_tensor(mark.get("clean_audio"))
+        and int(mark.get("covered_ticks") or 0) > 0
+    ):
         return None
 
     pcm, source_label = segment_freeze_pcm(plan, seg, ref_audios, ref_video_audios)
@@ -432,13 +407,13 @@ def apply_first_pass_audio_freeze(
     )
     _install_noise_mask(latent, video, audio, offset=offset, covered=covered)
     sig = pcm_signature(pcm)
-    _cache_z(sig, z.detach().to("cpu"))
     latent[AUDIO_FREEZE_MARK_KEY] = {
         "offset_ticks": offset,
         "covered_ticks": covered,
         "source": source_label,
         "sig": sig,
         "version": FREEZE_VERSION,
+        "clean_audio": z[..., :covered].detach().to("cpu").contiguous().clone(),
     }
     log.info(
         "Audio freeze: %s encoded (%d ticks, sig=%s); pinned %d/%d ticks @+%d.",
@@ -456,22 +431,19 @@ def refresh_frozen_audio_mask(latent) -> str | None:
     so the frozen audio tokens stay clean through every sampling stage
     (first pass, refine passes, SelfLift, FaceRefine).
 
-    v2: also RESTORES the frozen window content. The SelfLift / refine resume
+    Restores the frozen window content. The SelfLift / refine resume
     math re-expresses the whole AV latent in the sigma-resume representation
     (``inverse_noise_scaling`` = ``x / (1 - sigma)``), which rewrites the audio
     window too. comfy's mask machinery would then treat that mangled audio as
     the clean x0 to preserve (prediction override + ``scale_latent_inpaint``
     reinjection), so the high-res passes would condition on noise-dominated
-    audio. The encoded window is cached by PCM signature at apply time and
-    written back here whenever it drifted. No-op when the content already
-    matches (first entry, cache hits), and falls back to a mask-only refresh
-    when the cache is cold (e.g. latent loaded from disk cache — those carry
-    the clean window since v2).
+    audio. The clean CPU window travels inside the marker through torch.save,
+    so it can be restored after a process restart without another VAE encode.
     """
-    if not isinstance(latent, dict):
+    if not _env_enabled() or not isinstance(latent, dict):
         return None
     mark = latent.get(AUDIO_FREEZE_MARK_KEY)
-    if not isinstance(mark, dict):
+    if not isinstance(mark, dict) or mark.get("version") != FREEZE_VERSION:
         return None
     av = _av_streams(latent)
     if av is None:
@@ -485,8 +457,8 @@ def refresh_frozen_audio_mask(latent) -> str | None:
     end = min(audio_t, offset + covered)
     restored = False
     if end > offset:
-        z = _cached_z(str(mark.get("sig") or ""))
-        if z is not None and int(z.shape[-1]) >= end - offset:
+        z = mark.get("clean_audio")
+        if torch.is_tensor(z) and z.ndim == audio.ndim and int(z.shape[-1]) >= end - offset:
             want = z[..., : end - offset].to(device=audio.device, dtype=audio.dtype)
             if not torch.equal(audio[..., offset:end], want):
                 fresh = audio.clone()

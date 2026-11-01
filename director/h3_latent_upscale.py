@@ -532,7 +532,9 @@ def upscale_h3_video_latent(
             f"{int(target_width)}×{int(target_height)})."
         )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    from comfy.model_management import get_torch_device
+
+    device = get_torch_device()
     # Official 3D node defaults to fp32; bf16 GroupNorm on this net can collapse
     # to NaN/mud and decode as a brown static frame.
     dtype = torch.float32

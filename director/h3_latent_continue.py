@@ -469,8 +469,20 @@ class _PrefixRemask:
         # Paint live prefix weights onto the cond mask the sampler already
         # unpacked. Never replace it with a storage-shaped tensor — that
         # desyncs H3 patch-row labels from the packed AV latent (honeycomb).
+        from .spatial_tiled_sampling import _crop_active_tile_mask
+
+        # A remask wrapper can receive a full-canvas cond after the tiler
+        # cropped its positional mask. Crop at the final APPLY_MODEL boundary.
+        mask = _crop_active_tile_mask(kwargs.get("denoise_mask"))
+        if mask is not None:
+            kwargs["denoise_mask"] = mask
+        options = kwargs.get("transformer_options")
+        if isinstance(options, dict) and "denoise_mask" in options:
+            kwargs["transformer_options"] = {
+                **options,
+                "denoise_mask": _crop_active_tile_mask(options["denoise_mask"]),
+            }
         sigma = args[1] if len(args) > 1 else kwargs.get("t")
-        mask = kwargs.get("denoise_mask")
         if sigma is None or not torch.is_tensor(mask) or mask.ndim != 5:
             return executor(*args, **kwargs)
         if int(mask.shape[2]) < self.prefix_steps:

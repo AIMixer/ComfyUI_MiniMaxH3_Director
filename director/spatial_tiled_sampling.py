@@ -13,6 +13,7 @@ from __future__ import annotations
 import inspect
 import logging
 import math
+from contextvars import ContextVar
 from typing import Any, Callable
 
 import torch
@@ -23,6 +24,7 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.spatial_tiles")
 VAE_SPATIAL = 16
 # Long-side pixel size at or below this skips tiling (same 16× latent grid as H3).
 MAX_PIXELS_NO_TILE = 384
+_ACTIVE_TILE: ContextVar[tuple | None] = ContextVar("director_active_spatial_tile", default=None)
 
 
 def clamp_n_tiles(raw: Any) -> int:
@@ -148,6 +150,14 @@ def _crop_matching_video(tensor, full_h: int, full_w: int, axis: str, start: int
     return cropped
 
 
+def _crop_active_tile_mask(mask):
+    """Also crop masks reconstructed by APPLY_MODEL wrappers during a tile call."""
+    tile = _ACTIVE_TILE.get()
+    if tile is None:
+        return mask
+    return _crop_matching_video(mask, *tile)
+
+
 def _crop_ref_block(blk, full_h: int, full_w: int, axis: str, start: int, end: int):
     """Crop a PackedLayout ref whose latent sits on the generate canvas.
 
@@ -266,24 +276,49 @@ def _rebuild_layout(payload: dict, latent_t: int, tile_h: int, tile_w: int, audi
         return PackedLayout(*args, **kwargs)
 
 
-def _install_tile_payloads(cfg_guider, *, axis: str, start: int, end: int, tile_shapes, full_h: int, full_w: int):
-    restorations: list[tuple[Any, str, Any]] = []
+def _install_tile_payloads(cfg_guider, *, axis: str, start: int, end: int, tile_shapes, full_h: int, full_w: int, restorations=None):
+    if restorations is None:
+        restorations = []
     vs = tile_shapes[0]
     tile_h = (int(vs[3]) + 1) // 2 * 2
     tile_w = (int(vs[4]) + 1) // 2 * 2
     latent_t = int(vs[2])
     audio_t = int(tile_shapes[1][-1]) if len(tile_shapes) > 1 else 0
 
+    seen_containers = set()
+    seen_conds = set()
+    original_shapes = {}
     for model_conds in _iter_payloads(cfg_guider):
+        if id(model_conds) in seen_containers:
+            continue
+        seen_containers.add(id(model_conds))
         shape_cond = model_conds.get("latent_shapes")
-        if shape_cond is not None and hasattr(shape_cond, "cond"):
+        full_shapes = original_shapes.setdefault(id(shape_cond), getattr(shape_cond, "cond", None))
+        if shape_cond is not None and hasattr(shape_cond, "cond") and id(shape_cond) not in seen_conds:
+            seen_conds.add(id(shape_cond))
             restorations.append((shape_cond, "cond", shape_cond.cond))
             shape_cond.cond = tile_shapes
 
+        # extra_conds bakes this mask once per sampling run, separately from
+        # the sampler's positional mask. Shared positive/negative conds must
+        # only be cropped once and restored even if layout rebuilding fails.
+        mask_cond = model_conds.get("denoise_mask")
+        if mask_cond is not None and hasattr(mask_cond, "cond") and id(mask_cond) not in seen_conds:
+            seen_conds.add(id(mask_cond))
+            mask = mask_cond.cond
+            cropped, did = _crop_generate_video(mask, full_h, full_w, axis, start, end)
+            if torch.is_tensor(mask) and mask.ndim == 3 and full_shapes:
+                cropped, _, _ = _crop_packed(mask, full_shapes, axis, start, end)
+                did = True
+            if did:
+                restorations.append((mask_cond, "cond", mask))
+                mask_cond.cond = cropped
+
         payload_cond = model_conds.get("minimax_payload")
         payload = getattr(payload_cond, "cond", None) if payload_cond is not None else None
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or id(payload_cond) in seen_conds:
             continue
+        seen_conds.add(id(payload_cond))
         restorations.append((payload_cond, "cond", payload))
         new_payload = dict(payload)
         if payload.get("keyframes"):
@@ -308,23 +343,11 @@ def _install_tile_payloads(cfg_guider, *, axis: str, start: int, end: int, tile_
         new_payload["layout"] = layout
         payload_cond.cond = new_payload
 
-        # H3 caches a 5D video denoise mask in extra_conds before spatial
-        # tiling starts; without cropping it here, model.forward sees the
-        # full-size mask while latent_x is the tile (out * mask → dim
-        # mismatch at the spatial axis).
-        mask_cond = model_conds.get("denoise_mask")
-        if mask_cond is not None and hasattr(mask_cond, "cond"):
-            mask_tensor = mask_cond.cond
-            if isinstance(mask_tensor, torch.Tensor) and mask_tensor.ndim in (4, 5):
-                cropped, did = _crop_generate_video(mask_tensor, full_h, full_w, axis, start, end)
-                if did:
-                    restorations.append((mask_cond, "cond", mask_tensor))
-                    mask_cond.cond = cropped
     return restorations
 
 
 def _restore_payloads(restorations: list[tuple[Any, str, Any]]) -> None:
-    for obj, attr, value in restorations:
+    for obj, attr, value in reversed(restorations):
         setattr(obj, attr, value)
 
 
@@ -464,8 +487,9 @@ def _tiled_model_call(
             if saved_noise is not None:
                 model_k.noise, _, _ = _crop_packed(saved_noise, full_shapes, axis, ax_start, ax_end)
             restorations = []
+            tile_token = _ACTIVE_TILE.set((full_h, full_w, axis, ax_start, ax_end))
             try:
-                restorations = _install_tile_payloads(
+                _install_tile_payloads(
                     cfg,
                     axis=axis,
                     start=ax_start,
@@ -473,21 +497,12 @@ def _tiled_model_call(
                     tile_shapes=tile_shapes,
                     full_h=full_h,
                     full_w=full_w,
+                    restorations=restorations,
                 )
-            except Exception as exc:
-                _restore_payloads(restorations)
-                base.latent_shapes = saved_shapes
-                model_k.latent_image = saved_latent_image
-                model_k.noise = saved_noise
-                log.warning(
-                    "spatial tile layout failed (%s); this step uses a full-frame forward",
-                    exc,
-                )
-                return _invoke_model(model_k, x, sigma, denoise_mask, call_kw)
-            base.latent_shapes = tile_shapes
-            try:
+                base.latent_shapes = tile_shapes
                 pred = _invoke_model(model_k, tile_x, sigma, tile_mask, call_kw)
             finally:
+                _ACTIVE_TILE.reset(tile_token)
                 _restore_payloads(restorations)
                 base.latent_shapes = saved_shapes
                 model_k.latent_image = saved_latent_image

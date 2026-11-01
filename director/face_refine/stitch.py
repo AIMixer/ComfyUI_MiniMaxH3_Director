@@ -41,8 +41,8 @@ def stitch_faces(
     paste = str(pack.get("paste_region") or "face_only")
     dilation = int(pack.get("mask_dilation") or 16)
     feather = int(pack.get("feather") or 24)
-    colour_match = float(pack.get("colour_match") or 1.0)
-    blend = float(pack.get("blend") or 1.0)
+    colour_match = float(pack.get("colour_match", 1.0))
+    blend = float(pack.get("blend", 1.0))
     cw, ch = transform["canvas"]
     width, height = transform["src_size"]
     face_rects = transform.get("face_rect")

@@ -136,6 +136,9 @@ def source_identity_changed(stored: Any, expected: dict[str, Any]) -> bool:
     Gen timelines (no source clips) never count as a source change, so stale
     fill/continuity still work after pipeline-only fingerprint churn.
     """
+    previous = stored if isinstance(stored, dict) else {}
+    if previous.get("finished_video") != expected.get("finished_video"):
+        return True
     exp = expected.get(SOURCE_VIDEO_FP_KEY) or []
     if not exp:
         return False
@@ -391,8 +394,23 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
             else CONTINUITY_PIPELINE_ID
         ),
     }
+    from .segment_loras import effective_lora_rows, normalize_lora_rows
+
+    loras = []
+    for row in effective_lora_rows(normalize_lora_rows(seg.loras)):
+        path = folder_paths.get_full_path("loras", row["name"])
+        stamp = os.stat(path) if path else None
+        loras.append({"name": row["name"], "strength": float(row["strength"]), "mtime_ns": stamp.st_mtime_ns if stamp else None, "size": stamp.st_size if stamp else None})
+    if loras:
+        payload["loras"] = loras
     if plan.continuity_enabled and bool(getattr(plan, "continuity_keep_tail", True)):
         payload["continuity_keep_tail"] = True
+    if seg.source_video:
+        from ..lib.video_io import resolve_video_path
+
+        path = resolve_video_path(seg.source_video)
+        stat = os.stat(path)
+        payload["finished_video"] = {"source": seg.source_video, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
     witness = getattr(plan, "external_groups_witness", None)
     if isinstance(witness, dict):
         # This segment's own group only. The whole chain is deliberately *not*
@@ -419,6 +437,7 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
         audio_witness = timeline_audio_identity(plan)
         if audio_witness:
             payload["audio_freeze_timeline"] = audio_witness
+            payload["audio_freeze_slice"] = [int(seg.start_frame), int(seg.end_frame), float(plan.frame_rate)]
     return payload
 
 
@@ -652,6 +671,7 @@ def save_segment_cache(
     handoff: dict[str, Any] | None = None,
     audio: dict[str, Any] | None = None,
     replace_audio: bool = True,
+    strict: bool = False,
 ) -> None:
     """Persist a segment tensor (+ optional AV latent / export audio). Never raises.
 
@@ -662,9 +682,13 @@ def save_segment_cache(
         (phase-align trim re-save must not wipe a prior audio cache).
     """
     if not node_id:
+        if strict:
+            raise ValueError("A cache identity is required for a finished-video segment.")
         return
     root = _cache_root(node_id)
     if root is None:
+        if strict:
+            raise OSError("The finished-video segment cache directory is unavailable.")
         return
     fp = segment_cache_fingerprint(seg, plan)
     idx = resolve_slot(root, seg, plan)
@@ -716,6 +740,8 @@ def save_segment_cache(
         )
         for stray in root.glob(f".seg_{idx:04d}.*"):
             _safe_unlink(stray)
+        if strict:
+            raise
 
 
 def _fingerprint_diff_keys(stored: Any, expected: dict[str, Any]) -> list[str]:

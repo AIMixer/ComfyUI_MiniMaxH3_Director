@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-import time
+import weakref
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -26,14 +26,15 @@ def _stream_root() -> Path:
 
     root = Path(folder_paths.get_temp_directory()) / "minimax_director_merge"
     root.mkdir(parents=True, exist_ok=True)
-    cutoff = time.time() - 48 * 60 * 60
-    for old in root.glob("*.raw"):
-        try:
-            if old.stat().st_mtime < cutoff:
-                old.unlink()
-        except OSError:
-            pass
     return root
+
+
+def _release_mapping(mapping, path):
+    mapping.close()
+    try:
+        path.unlink()
+    except OSError:
+        log.warning("Director merge temporary file could not be removed: %s", path)
 
 
 def stream_merge_required(frame_counts: list[int], shape: tuple[int, int, int]) -> bool:
@@ -99,6 +100,7 @@ class FrameBatchAccumulator:
             mode="r+",
             shape=(self._frames, h, w, c),
         )
+        weakref.finalize(array, _release_mapping, array._mmap, self.path)
         log.info(
             "Director %s merge streamed to disk: %d frames, %s",
             self._label,

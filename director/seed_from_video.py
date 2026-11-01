@@ -28,11 +28,9 @@ Per segment, in ``timeline_data``::
     "sourceVideo": {"videoFile": "out.mp4", "type": "input",
                     "subfolder": "minimax_seg_export/20261016_004547"}
 
-``videoFile`` may also be given as ``fileName``. A finished segment must not
-also be selected for sampling; leave it out of ``runSelection``.
-
-Never raises: any segment that cannot be seeded is simply left uncached, so the
-Director falls back to sampling it as usual.
+``videoFile`` may also be given as ``fileName``. The executor excludes declared
+finished segments from sampling. Seeding failures raise instead of replacing
+the requested material with newly generated content.
 """
 
 from __future__ import annotations
@@ -50,12 +48,6 @@ from .h3_motion_context import _repack_av_streams
 from .segment_cache import save_segment_cache
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.seed_from_video")
-
-log.info("[Director] seed_from_video module loaded (video-as-segment enabled)")
-
-class _SkipLatent(Exception):
-    """Internal: raised to skip the VAE encode, caught immediately below."""
-
 
 SOURCE_VIDEO_KEYS = ("sourceVideo", "source_video")
 DEFAULT_AUDIO_SR = 32000
@@ -79,12 +71,9 @@ def _resample_audio_to_vae(audio: dict, vae_sr: int, want_samples: int) -> torch
         return None
     sr = int(audio.get("sample_rate") or DEFAULT_AUDIO_SR)
     if sr != vae_sr:
-        try:
-            import torchaudio.functional as AF
+        import comfy.audio
 
-            wave = AF.resample(wave, sr, vae_sr)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("seed-from-video: audio resample failed (%s); using raw rate", exc)
+        wave = comfy.audio.resample(wave, sr, vae_sr)
     have = int(wave.shape[-1])
     if want_samples > 0 and have > want_samples:
         wave = wave[..., :want_samples]
@@ -99,20 +88,19 @@ def seed_segment_from_video(seg, plan, node_id: str, vae, audio_vae, need_latent
     src = _read_source_video(seg)
     if src is None:
         return False
+    if not node_id or vae is None:
+        raise ValueError("sourceVideo requires a cache key and a video VAE")
 
     n = int(seg.frame_count)
     if n <= 0:
-        log.warning("seed-from-video: segment %d has no frames; skipped", seg.index + 1)
-        return False
+        raise ValueError(f"sourceVideo segment {seg.index + 1} has no frames")
 
     try:
         path = resolve_video_path(src)
     except Exception as exc:  # noqa: BLE001
-        log.warning("seed-from-video: segment %d cannot resolve %r (%s)", seg.index + 1, src, exc)
-        return False
+        raise ValueError(f"sourceVideo segment {seg.index + 1} cannot resolve {src!r}") from exc
     if not path or not os.path.exists(path):
-        log.warning("seed-from-video: segment %d file not found: %r", seg.index + 1, path)
-        return False
+        raise FileNotFoundError(f"sourceVideo segment {seg.index + 1}: {path!r}")
 
     fps = float(getattr(plan, "frame_rate", 24.0) or 24.0)
     out_w = int(getattr(plan, "width", 0) or 0)
@@ -128,77 +116,46 @@ def seed_segment_from_video(seg, plan, node_id: str, vae, audio_vae, need_latent
             hold_past_eof=True,
         )
     except Exception as exc:  # noqa: BLE001
-        log.warning("seed-from-video: segment %d decode failed (%s)", seg.index + 1, exc)
-        return False
+        raise RuntimeError(f"sourceVideo segment {seg.index + 1} decode failed") from exc
 
-    if not torch.is_tensor(frames) or frames.numel() == 0:
-        log.warning("seed-from-video: segment %d decoded nothing", seg.index + 1)
-        return False
+    if not torch.is_tensor(frames) or frames.ndim != 4 or frames.numel() == 0 or frames.shape[-1] < 3:
+        raise ValueError(f"sourceVideo segment {seg.index + 1} decoded no valid RGB frames")
 
     frames = frames[:n, ..., :3].contiguous().float()
     if frames.shape[0] < n:  # top up short decodes with the last frame
         tail = frames[-1:].repeat(n - frames.shape[0], 1, 1, 1)
         frames = torch.cat([frames, tail], dim=0)
-    if out_w and out_h and (frames.shape[2] != out_h or frames.shape[1] != out_w):
-        try:
-            moved = frames.movedim(-1, 1)
-            moved = torch.nn.functional.interpolate(
-                moved, size=(out_h, out_w), mode="bilinear", align_corners=False
-            )
-            frames = moved.movedim(1, -1).contiguous()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("seed-from-video: segment %d resize failed (%s)", seg.index + 1, exc)
+    if out_w and out_h and (frames.shape[1] != out_h or frames.shape[2] != out_w):
+        moved = frames.movedim(-1, 1)
+        moved = torch.nn.functional.interpolate(
+            moved, size=(out_h, out_w), mode="bilinear", align_corners=False
+        )
+        frames = moved.movedim(1, -1).contiguous()
 
     # ---- AV latent (video stream + audio stream) ----
     # Only needed when a later segment will be *sampled* and must continue from
     # this one. In assemble mode nothing is sampled, so skip the (expensive) VAE
     # encode entirely -- the pixels and the export audio are all that's required.
+    export_audio = load_reference_audio(path)
     av_latent: dict[str, Any] | None = None
-    if not need_latent:
-        log.info(
-            "Seed-from-video: segment %d needs no continuity seed -> skipping VAE encode",
-            seg.index + 1,
-        )
-    try:
-        if not need_latent:
-            raise _SkipLatent()
+    if need_latent:
+        if audio_vae is None:
+            raise ValueError(f"sourceVideo segment {seg.index + 1} continuity requires an audio VAE")
         v_lat = vae.encode(frames)
-        streams: list[Any] = []
-        if isinstance(v_lat, dict) and "samples" in v_lat:
-            streams.append(v_lat["samples"])
-        elif torch.is_tensor(v_lat):
-            streams.append(v_lat)
-
-        if audio_vae is not None:
-            vae_sr = int(getattr(audio_vae, "audio_sample_rate", DEFAULT_AUDIO_SR) or DEFAULT_AUDIO_SR)
-            audio = load_reference_audio(path)
-            want = frames_to_audio_samples(n, fps, vae_sr)
-            wave = _resample_audio_to_vae(audio, vae_sr, want)
-            if wave is not None:
-                a_lat = audio_vae.encode(wave[:1].movedim(1, -1))
-                samples = a_lat.get("samples") if isinstance(a_lat, dict) else a_lat
-                if torch.is_tensor(samples):
-                    streams.append(samples)
-
-        if streams:
-            av_latent = {"samples": _repack_av_streams(streams)}
-    except _SkipLatent:
-        av_latent = None
-    except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "seed-from-video: segment %d latent encode failed (%s); "
-            "seeding pixels only (continuity will fall back)",
-            seg.index + 1,
-            exc,
-        )
-        av_latent = None
-
-    # ---- export audio (decoded, not latent) ----
-    export_audio: dict | None = None
-    try:
-        export_audio = load_reference_audio(path)
-    except Exception:  # noqa: BLE001
-        export_audio = None
+        video_samples = v_lat.get("samples") if isinstance(v_lat, dict) else v_lat
+        if not torch.is_tensor(video_samples) or video_samples.ndim != 5:
+            raise ValueError(f"sourceVideo segment {seg.index + 1}: invalid video VAE latent")
+        vae_sr = int(getattr(audio_vae, "audio_sample_rate", DEFAULT_AUDIO_SR) or DEFAULT_AUDIO_SR)
+        want = frames_to_audio_samples(n, fps, vae_sr)
+        wave = _resample_audio_to_vae(export_audio, vae_sr, want)
+        # Silent footage still needs an audio stream for the AV continuation.
+        if wave is None:
+            wave = torch.zeros((1, 2, want), dtype=torch.float32)
+        a_lat = audio_vae.encode(wave[:1].movedim(1, -1))
+        audio_samples = a_lat.get("samples") if isinstance(a_lat, dict) else a_lat
+        if not torch.is_tensor(audio_samples) or audio_samples.ndim != 4:
+            raise ValueError(f"sourceVideo segment {seg.index + 1}: invalid audio VAE latent")
+        av_latent = {"samples": _repack_av_streams([video_samples, audio_samples])}
 
     handoff = {
         "export_frames": n,
@@ -216,10 +173,10 @@ def seed_segment_from_video(seg, plan, node_id: str, vae, audio_vae, need_latent
             av_latent=av_latent,
             handoff=handoff,
             audio=export_audio,
+            strict=True,
         )
     except Exception as exc:  # noqa: BLE001
-        log.warning("seed-from-video: segment %d cache write failed (%s)", seg.index + 1, exc)
-        return False
+        raise RuntimeError(f"sourceVideo segment {seg.index + 1} cache write failed") from exc
 
     log.info(
         "Seed-from-video: segment %d/%d seeded from %s (%d frames%s)",
@@ -234,17 +191,17 @@ def seed_segment_from_video(seg, plan, node_id: str, vae, audio_vae, need_latent
 
 def seed_segments_from_source_videos(plan, node_id: str | None, vae, audio_vae) -> int:
     """Seed every segment that declares a source video. Returns how many were seeded."""
-    if not node_id or vae is None:
-        log.info("Seed-from-video: skipped (node_id=%r vae=%r)", node_id, vae is not None)
-        return 0
     segs = getattr(plan, "segments", None) or []
     with_src = sum(1 for s in segs if _read_source_video(s) is not None)
+    if not with_src:
+        return 0
+    if not node_id or vae is None:
+        raise ValueError("sourceVideo requires a cache key and a video VAE")
     log.info(
         "Seed-from-video: scanning %d segment(s), %d declare sourceVideo",
         len(segs),
         with_src,
     )
-    print(f"[Director] 视频播种扫描：{len(segs)} 段，其中 {with_src} 段带 sourceVideo", flush=True)
     segs_all = list(getattr(plan, "segments", None) or [])
     run_indices = getattr(plan, "run_indices", None)   # None = 全跑
     assemble = bool(getattr(plan, "assemble_only", False)) or (
@@ -259,13 +216,24 @@ def seed_segments_from_source_videos(plan, node_id: str | None, vae, audio_vae) 
 
     seeded = 0
     for pos, seg in enumerate(segs_all):
+        if _read_source_video(seg) is None:
+            continue
         try:
             nxt = pos + 1
-            need_latent = (not assemble) and nxt < len(segs_all) and _will_sample(nxt)
+            need_latent = (
+                not assemble
+                and bool(getattr(plan, "continuity_enabled", False))
+                and nxt < len(segs_all)
+                and bool(getattr(segs_all[nxt], "continuity_from_prev", True))
+                and _will_sample(segs_all[nxt].index)
+                and _read_source_video(segs_all[nxt]) is None
+            )
             if seed_segment_from_video(seg, plan, node_id, vae, audio_vae, need_latent=need_latent):
                 seeded += 1
         except Exception as exc:  # noqa: BLE001
-            log.warning("Seed-from-video: segment %s skipped (%s)", getattr(seg, "index", "?"), exc)
+            raise RuntimeError(
+                f"sourceVideo segment {seg.index + 1} failed; generation was not substituted"
+            ) from exc
     return seeded
 
 
@@ -291,9 +259,8 @@ def enable_assemble_mode_when_nothing_selected(timeline_data: str) -> tuple[str,
     ``sourceVideo`` are seeded by this module), the sampler never fires, and the
     export is a straight concatenation.
 
-    A **non-empty** selection keeps the normal behaviour, so selecting a segment
-    still re-runs it -- which is also how a segment's seed gets refreshed from its
-    (possibly changed) source video.
+    A **non-empty** selection samples only segments without a declared source
+    video; source segments are always refreshed from that video instead.
 
     An explicit ``assembleOnly`` flag forces it regardless of the selection.
     Returns ``(timeline_data, assemble)``. Never raises.

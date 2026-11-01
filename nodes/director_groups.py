@@ -176,11 +176,11 @@ def _combine_groups(groups_map) -> list:
     if not groups_map:
         raise ValueError("Director Groups Combine: connect at least one group.")
 
-    def _slot_index(name: str) -> int:
+    def _slot_index(name: str) -> tuple:
         try:
-            return int(str(name).rsplit("_", 1)[-1])
+            return (0, int(str(name).rsplit("_", 1)[-1]), "")
         except ValueError:
-            return 10**9
+            return (1, 0, str(name))
 
     out: list = []
     for name, g in sorted(groups_map.items(), key=lambda kv: _slot_index(kv[0])):
