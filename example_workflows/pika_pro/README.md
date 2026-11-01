@@ -16,16 +16,11 @@
 
 ## 模型与统一设置
 
-节点 `2`、`4`、`5`、`6` 分别加载扩散模型、文本编码器、视频 VAE 和音频 VAE。模板中的名称是可替换示例：
+节点 `2`、`4`、`5`、`6` 分别加载扩散模型、文本编码器、视频 VAE 和音频 VAE。逐文件下载链接、安装目录和适配器格式边界见[统一模型说明](../../docs/models.md)。模板使用其中的**本机已验证／API 示例组合**：社区 b25-49 INT8 hybrid 底模、INT4 编码器、INT8 视频 VAE 和 FP32 音频 VAE；不是官方独立底模组合。
 
-- `minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors`
-- `qwen3vl_32b_minimax_h3_int4_convrot.safetensors`
-- `minimax_h3_video_vae_int8_convrot.safetensors`
-- `minimax_h3_audio_vae_fp32.safetensors`
+请按自己的模型列表更新 loader 输入。使用独立底模时，前四份图选 FL2VA，多模态图选 Ref2VA；不同量化格式需相应加载支持，不保证任意组合兼容。
 
-请从自己的 ComfyUI 模型列表选择兼容权重，并更新对应 loader 输入。模板不分发模型，也不保证其他量化格式或所有权重组合均兼容；部分量化权重需要各自的加载支持。示例扩散权重名称代表可覆盖 FL2VA / Ref2VA 路径的组合；若使用独立模型，前四项选择兼容 FL2VA 的权重，多模态选择兼容 Ref2VA 的权重。
-
-导演台在 `generation_family: "Pika-H3"` 下按任务自动加对应 Pika 适配器，默认名称为 `pika_h3_flex_fl2va_v1_bf16.safetensors` 或 `pika_h3_flex_ref2va_v1_bf16.safetensors`。请预先准备匹配的适配器并使其出现在 LoRA 列表中。若自己的兼容适配器文件名不同，可在该段的 `loras` 中写入对应名称（保留 `pika_h3_flex_fl2va_` / `pika_h3_flex_ref2va_` 命名规则），并保持强度 1；避免在 loader 外另加同一适配器导致叠加。
+导演台按任务自动加载 Pika LoRA，强度固定为 1，默认文件名及替代名称规则见模型说明；不要在 loader 外重复添加同一适配器。
 
 全部模板固定为：`generation_family=Pika-H3`、旧开关 `pika_flex=false`、`video_decode=tiled`，24 fps、124 帧、832×480、seed 42。124 帧在 24 fps 下约为 5.167 秒。Pika 路径采用 CFG 1、LCM、六步及视频/音频时钟 12/3。实时 TAE 预览、段间续接、音频冻结均关闭；没有连接 SelfLift、Refine、FaceRefine 或额外 SIGMAS。`PreviewAny` 仅显示执行报告文本，不开启实时视频预览。
 

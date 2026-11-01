@@ -100,7 +100,7 @@ Refine 的 `nvidia_rtx_vsr` 另需 NVIDIA GPU，可 `pip install nvidia-vfx --ex
 cd ComfyUI/custom_nodes
 git clone https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git
 
-pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
+pip install -r ComfyUI-MiniMax-H3-Director-Pro/requirements.txt
 ```
 
 重启 ComfyUI。
@@ -146,16 +146,13 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 | `minimax_h3_director_external_groups_r2v.json` | r2v | **ref2va** | 外部 Group×N → Combine → `r2v_groups` |
 | `minimax_h3_director_二采_加速.json` | r2v | **ref2va** | 外接 Refine 二采（SIGMAS + H3 latent）；`images` 与 `images_pre_refine` 各出一路成片 |
 
-### 推荐模型文件
+### 模型安装与 Pika 任务配对
 
-| 用途 | 文件名 | 目录 |
-|------|--------|------|
-| UNET (t2v / i2v / fl2v) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| UNET (r2v / v2v / rv2v) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` |
-| Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
-| Video VAE（2X 高清，可选） | `MiniMax-H3-X2-Detail-v1.safetensors` | `models/vae/` |
-| Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` |
+[完整模型清单、逐文件下载链接、安装目录和五任务配对](docs/models.md)（中英共用入口），包含 Comfy 官方教程组合，以及本仓库 Pika API 示例使用的社区 hybrid／INT4 已验证组合。两者共用双 VAE 与任务 LoRA；原始 Pika 适配器不能通过改名替代 Comfy 格式文件。
+
+选择 **Pika-H3** 后导演台自动加载任务 LoRA、强度固定 1；不要在外部再次加载同一适配器。下方 25 步默认采样参数属于 H3，Pika 使用固定六步。
+
+[Pika 五任务 API 示例](example_workflows/pika_pro/README.md) 用于 `POST /prompt`，不是可拖入画布的 UI 工作流；上表原版 H3 示例为 UI 工作流。
 
 ### 2X 视频 VAE（可选）
 

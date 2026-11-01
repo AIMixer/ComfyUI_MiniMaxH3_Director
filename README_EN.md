@@ -96,7 +96,7 @@ Refine `nvidia_rtx_vsr` needs an NVIDIA GPU: `pip install nvidia-vfx --extra-ind
 cd ComfyUI/custom_nodes
 git clone https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git
 
-pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
+pip install -r ComfyUI-MiniMax-H3-Director-Pro/requirements.txt
 ```
 
 Restart ComfyUI.
@@ -142,16 +142,13 @@ This repo ships examples under `example_workflows/`:
 | `minimax_h3_director_external_groups_r2v.json` | r2v | **ref2va** | External Group×N → Combine → `r2v_groups` |
 | `minimax_h3_director_二采_加速.json` | r2v | **ref2va** | Refine second sample (SIGMAS + H3 latent); `images` and `images_pre_refine` each save a clip |
 
-### Recommended model files
+### Model installation and Pika task pairing
 
-| Role | Filename | Directory |
-|------|----------|-----------|
-| UNET (t2v / i2v / fl2v) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| UNET (r2v / v2v / rv2v) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` |
-| Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
-| Video VAE (2X, optional) | `MiniMax-H3-X2-Detail-v1.safetensors` | `models/vae/` |
-| Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` |
+[Full model list, individual downloads, installation paths and five task pairs](docs/models.md) (shared Chinese/English reference), covering the Comfy tutorial configuration and the locally verified community hybrid/INT4 configuration used by this repository's Pika API examples. Both use the same two VAEs and task LoRAs. Renaming original Pika adapters does not convert them to Comfy format.
+
+With **Pika-H3**, Director loads the task LoRA internally at strength 1; do not load it again externally. The 25-step defaults below describe H3; Pika uses its fixed six-step recipe.
+
+[Pika five-task API examples](example_workflows/pika_pro/README.md) target `POST /prompt`; they are not UI workflows that can be dragged onto the canvas. The original H3 examples listed above are UI workflows.
 
 ### 2X video VAE (optional)
 
