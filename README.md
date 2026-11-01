@@ -8,6 +8,8 @@
 
 [Pro 使用与兼容说明](docs/pro-guide.md) · [性能与验收](docs/performance.md) · [上游 PR／Issue 处理记录](docs/upstream-review.md)
 
+上游回馈：[汇总 PR #278](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director/pull/278)，包含当前 Pro 版本、来源与验证边界，待上游审阅。
+
 
 基于 **ComfyUI 官方 MiniMax-H3** 的多段音视频导演台插件。仓库地址：[AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director)
 

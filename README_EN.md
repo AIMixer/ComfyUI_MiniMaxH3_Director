@@ -8,6 +8,8 @@ Select **H3 / Pika-H3** in the Director. Pika exposes text, first-frame, last-fr
 
 [Pro usage and compatibility](docs/pro-guide.md) · [性能与验收](docs/performance.md) · [Upstream PR / Issue review](docs/upstream-review.md)
 
+Upstream contribution: [consolidation PR #278](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director/pull/278), including the current Pro version, attribution and validation limits; awaiting upstream review.
+
 
 Multi-segment AV timeline director for **official ComfyUI MiniMax-H3**.  
 Repository: [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director)
