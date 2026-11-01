@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from ..frame_align import minimax_align_frame_count
+from ..h3_x2_decode import decode_video_latent
 from .inject import inject_video_latent
 from .stitch import stitch_faces
 from .track import track_and_crop
@@ -23,10 +24,9 @@ def _pad_frames(frames: torch.Tensor, length: int) -> torch.Tensor:
 
 
 def _decode_video(samples, vae) -> torch.Tensor:
-    from nodes import VAEDecode
-
-    images, = VAEDecode().decode(vae, samples)
-    return images
+    # X2-aware, matching Director's other decode points. A stock VAE keeps the
+    # plain VAEDecode path; an X2 head is PixelShuffle-unpacked to real RGB.
+    return decode_video_latent(vae, samples, context="director.face_refine")
 
 
 def apply_segment_face_refine(
