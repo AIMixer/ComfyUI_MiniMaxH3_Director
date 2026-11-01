@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import comfy.samplers
 
 from ..director.executor_core import execute_director_plan_core
@@ -334,6 +335,10 @@ class MiniMaxH3Director:
     ):
         del kwargs
         pika_flex = bool(pika_flex) or generation_family == "Pika-H3"
+        if str(timeline_data or "").strip():
+            timeline = json.loads(timeline_data)
+            timeline["generationFamily"] = "Pika-H3" if pika_flex else "H3"
+            timeline_data = json.dumps(timeline, ensure_ascii=False)
         if self._base_model is not model:
             self._base_model = model
             self._lora_loaders.clear()

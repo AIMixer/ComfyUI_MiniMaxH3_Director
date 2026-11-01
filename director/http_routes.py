@@ -542,6 +542,11 @@ async def minimax_first_pass_cache_status(request):
         from .plan import build_director_plan
         from .segment_cache import inspect_first_pass_cache
 
+        if str(timeline_data).strip():
+            timeline = json.loads(timeline_data)
+            timeline["generationFamily"] = "Pika-H3" if body.get("generation_family") == "Pika-H3" or body.get("pika_flex") is True else "H3"
+            timeline_data = json.dumps(timeline, ensure_ascii=False)
+
         plan = build_director_plan(
             str(timeline_data),
             global_task_type=str(body.get("task_type") or ""),

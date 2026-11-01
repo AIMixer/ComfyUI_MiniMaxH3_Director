@@ -641,7 +641,7 @@ def build_fl2v_director_plan(
         start_f = int(shot.get("timeline_start") or 0)
         fc = max(MIN_FL2V_FRAMES, int(shot["frameCount"]))
         user_prompt = (shot.get("prompt") or "").strip() or fallback_prompt
-        full_prompt = reinforce_fl2v_prompt(
+        full_prompt = user_prompt if timeline.get("generationFamily") == "Pika-H3" else reinforce_fl2v_prompt(
             user_prompt,
             has_end_frame=end_kf is not None,
             has_start_frame=start_kf is not None,

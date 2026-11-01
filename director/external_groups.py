@@ -739,7 +739,7 @@ def build_plan_from_external_groups(
                     else None
                 )
                 if seg_task_key in {"fl2v", "i2v"}:
-                    prompt = reinforce_fl2v_prompt(
+                    prompt = prompt if timeline.get("generationFamily") == "Pika-H3" else reinforce_fl2v_prompt(
                         prompt,
                         has_end_frame=end_img is not None,
                         has_start_frame=start_img is not None,
@@ -810,7 +810,7 @@ def build_plan_from_external_groups(
             ]
             audio_idxs = usable_ref_audio_indices(ref_audios)
             prompt = drop_unusable_audio_prompt_tags(prompt, audio_idxs)
-            prompt = reinforce_r2v_prompt(
+            prompt = prompt if timeline.get("generationFamily") == "Pika-H3" else reinforce_r2v_prompt(
                 prompt,
                 ref_indices=[r.index for r in refs],
                 video_indices=[v.index for v in ref_videos],
