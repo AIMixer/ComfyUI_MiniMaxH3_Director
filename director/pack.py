@@ -6,6 +6,7 @@ Zip layout uses ASCII paths that match the English UI:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import hashlib
@@ -270,6 +271,8 @@ def _rewrite_one(
     *,
     dry_run: bool,
     sizes: list[int],
+    dedup: dict[str, str] | None = None,
+    sized: set[str] | None = None,
 ) -> str | None:
     if not isinstance(item, dict):
         return None
@@ -285,10 +288,25 @@ def _rewrite_one(
             if key in item:
                 item[key] = ""
         return None
-    try:
-        sizes.append(int(src.stat().st_size))
-    except OSError:
-        sizes.append(0)
+    src_key = str(src)
+    # Same source file referenced many times in the timeline (segments vs
+    # batchWorkspaces/videoWorkspaces copies): pack it ONCE and point every
+    # reference at the single stored entry.
+    if dedup is not None and src_key in dedup:
+        dest_rel = dedup[src_key]
+    elif dedup is not None:
+        dedup[src_key] = dest_rel
+    if sized is None:
+        try:
+            sizes.append(int(src.stat().st_size))
+        except OSError:
+            sizes.append(0)
+    elif src_key not in sized:
+        sized.add(src_key)
+        try:
+            sizes.append(int(src.stat().st_size))
+        except OSError:
+            sizes.append(0)
     if not dry_run:
         _copy_file(src, staging / dest_rel.replace("/", os.sep))
     _set_media_fields(item, dest_rel, keys[0])
@@ -304,7 +322,7 @@ def _slot_index(item: dict, fallback: int) -> int:
     return n
 
 
-def _rewrite_image_list(refs: list, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int]) -> None:
+def _rewrite_image_list(refs: list, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int], dedup: dict[str, str] | None = None, sized: set[str] | None = None) -> None:
     if not isinstance(refs, list):
         return
     for i, ref in enumerate(refs):
@@ -322,10 +340,10 @@ def _rewrite_image_list(refs: list, folder: str, staging: Path, missing: list[st
         if ext not in IMAGE_EXTS:
             ext = ".png"
         dest = f"{folder}/Picture{idx + 1}{ext}"
-        _rewrite_one(ref, IMAGE_KEYS, dest, staging, missing, dry_run=dry_run, sizes=sizes)
+        _rewrite_one(ref, IMAGE_KEYS, dest, staging, missing, dry_run=dry_run, sizes=sizes, dedup=dedup, sized=sized)
 
 
-def _rewrite_audio_list(refs: list, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int]) -> None:
+def _rewrite_audio_list(refs: list, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int], dedup: dict[str, str] | None = None, sized: set[str] | None = None) -> None:
     if not isinstance(refs, list):
         return
     for i, ref in enumerate(refs):
@@ -343,10 +361,10 @@ def _rewrite_audio_list(refs: list, folder: str, staging: Path, missing: list[st
         if ext not in AUDIO_EXTS:
             ext = ".wav"
         dest = f"{folder}/Audio{idx + 1}{ext}"
-        _rewrite_one(ref, AUDIO_KEYS, dest, staging, missing, dry_run=dry_run, sizes=sizes)
+        _rewrite_one(ref, AUDIO_KEYS, dest, staging, missing, dry_run=dry_run, sizes=sizes, dedup=dedup, sized=sized)
 
 
-def _rewrite_video_list(refs: list, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int]) -> None:
+def _rewrite_video_list(refs: list, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int], dedup: dict[str, str] | None = None, sized: set[str] | None = None) -> None:
     if not isinstance(refs, list):
         return
     for i, ref in enumerate(refs):
@@ -364,7 +382,7 @@ def _rewrite_video_list(refs: list, folder: str, staging: Path, missing: list[st
         if ext not in VIDEO_EXTS:
             ext = ".mp4"
         dest = f"{folder}/Video{idx + 1}{ext}"
-        _rewrite_one(ref, VIDEO_KEYS, dest, staging, missing, dry_run=dry_run, sizes=sizes)
+        _rewrite_one(ref, VIDEO_KEYS, dest, staging, missing, dry_run=dry_run, sizes=sizes, dedup=dedup, sized=sized)
         preview_src = resolve_media_path(
             _item_rel(ref, PREVIEW_KEYS),
             subfolder=str(ref.get("subfolder") or ""),
@@ -376,7 +394,7 @@ def _rewrite_video_list(refs: list, folder: str, staging: Path, missing: list[st
                 pext = ".jpg"
             _rewrite_one(
                 ref, PREVIEW_KEYS, f"{folder}/Video{idx + 1}_preview{pext}",
-                staging, missing, dry_run=dry_run, sizes=sizes,
+                staging, missing, dry_run=dry_run, sizes=sizes, dedup=dedup, sized=sized,
             )
         if _item_rel(ref, PAIRED_AUDIO_KEYS):
             aext = _safe_ext(_item_rel(ref, PAIRED_AUDIO_KEYS), ".flac")
@@ -384,11 +402,11 @@ def _rewrite_video_list(refs: list, folder: str, staging: Path, missing: list[st
                 aext = ".flac"
             _rewrite_one(
                 ref, PAIRED_AUDIO_KEYS, f"{folder}/Video{idx + 1}_audio{aext}",
-                staging, missing, dry_run=dry_run, sizes=sizes,
+                staging, missing, dry_run=dry_run, sizes=sizes, dedup=dedup, sized=sized,
             )
 
 
-def _rewrite_image_ref(item: dict | None, dest_stem: str, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int]) -> None:
+def _rewrite_image_ref(item: dict | None, dest_stem: str, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int], dedup: dict[str, str] | None = None, sized: set[str] | None = None) -> None:
     if not isinstance(item, dict):
         return
     rel = _item_rel(item, IMAGE_KEYS)
@@ -398,10 +416,10 @@ def _rewrite_image_ref(item: dict | None, dest_stem: str, folder: str, staging: 
     ext = _safe_ext(src or rel, ".jpg")
     if ext not in IMAGE_EXTS:
         ext = ".jpg"
-    _rewrite_one(item, IMAGE_KEYS, f"{folder}/{dest_stem}{ext}", staging, missing, dry_run=dry_run, sizes=sizes)
+    _rewrite_one(item, IMAGE_KEYS, f"{folder}/{dest_stem}{ext}", staging, missing, dry_run=dry_run, sizes=sizes, dedup=dedup, sized=sized)
 
 
-def _rewrite_video_media(item: dict | None, dest_stem: str, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int]) -> None:
+def _rewrite_video_media(item: dict | None, dest_stem: str, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int], dedup: dict[str, str] | None = None, sized: set[str] | None = None) -> None:
     if not isinstance(item, dict):
         return
     rel = _item_rel(item, VIDEO_KEYS) or str(item.get("fileName") or "").replace("\\", "/").strip()
@@ -411,7 +429,7 @@ def _rewrite_video_media(item: dict | None, dest_stem: str, folder: str, staging
     ext = _safe_ext(src or rel, ".mp4")
     if ext not in VIDEO_EXTS:
         ext = ".mp4"
-    _rewrite_one(item, VIDEO_KEYS, f"{folder}/{dest_stem}{ext}", staging, missing, dry_run=dry_run, sizes=sizes)
+    _rewrite_one(item, VIDEO_KEYS, f"{folder}/{dest_stem}{ext}", staging, missing, dry_run=dry_run, sizes=sizes, dedup=dedup, sized=sized)
 
 
 def _group_json(seg: dict) -> dict:
@@ -451,20 +469,20 @@ def _group_json(seg: dict) -> dict:
     return out
 
 
-def _explode_card(card: dict, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int]) -> None:
-    _rewrite_image_list(card.get("refs") or [], folder, staging, missing, dry_run, sizes)
-    _rewrite_audio_list(card.get("refAudios") or card.get("ref_audios") or [], folder, staging, missing, dry_run, sizes)
-    _rewrite_video_list(card.get("refVideos") or card.get("ref_videos") or [], folder, staging, missing, dry_run, sizes)
+def _explode_card(card: dict, folder: str, staging: Path, missing: list[str], dry_run: bool, sizes: list[int], dedup: dict[str, str] | None = None, sized: set[str] | None = None) -> None:
+    _rewrite_image_list(card.get("refs") or [], folder, staging, missing, dry_run, sizes, dedup, sized)
+    _rewrite_audio_list(card.get("refAudios") or card.get("ref_audios") or [], folder, staging, missing, dry_run, sizes, dedup, sized)
+    _rewrite_video_list(card.get("refVideos") or card.get("ref_videos") or [], folder, staging, missing, dry_run, sizes, dedup, sized)
     if isinstance(card.get("genImage"), dict):
-        _rewrite_image_ref(card["genImage"], "start", folder, staging, missing, dry_run, sizes)
+        _rewrite_image_ref(card["genImage"], "start", folder, staging, missing, dry_run, sizes, dedup, sized)
         if card["genImage"].get("imageFile"):
             card["imageFile"] = card["genImage"]["imageFile"]
     elif card.get("imageFile"):
         dummy = {"imageFile": card.get("imageFile"), "subfolder": card.get("subfolder") or "", "type": card.get("type") or "input"}
-        _rewrite_image_ref(dummy, "start", folder, staging, missing, dry_run, sizes)
+        _rewrite_image_ref(dummy, "start", folder, staging, missing, dry_run, sizes, dedup, sized)
         card["imageFile"] = dummy.get("imageFile") or card.get("imageFile")
-    _rewrite_image_ref(card.get("startImage"), "start", folder, staging, missing, dry_run, sizes)
-    _rewrite_image_ref(card.get("endImage"), "end", folder, staging, missing, dry_run, sizes)
+    _rewrite_image_ref(card.get("startImage"), "start", folder, staging, missing, dry_run, sizes, dedup, sized)
+    _rewrite_image_ref(card.get("endImage"), "end", folder, staging, missing, dry_run, sizes, dedup, sized)
 
 
 def _ascii_extra_name(src: Path, used: set[str]) -> str:
@@ -489,10 +507,12 @@ def _walk_rewrite_leftovers(
     dry_run: bool,
     sizes: list[int],
     extra_used: set[str],
+    dedup: dict[str, str] | None = None,
+    sized: set[str] | None = None,
 ) -> None:
     if isinstance(obj, list):
         for item in obj:
-            _walk_rewrite_leftovers(item, staging, missing, dry_run, sizes, extra_used)
+            _walk_rewrite_leftovers(item, staging, missing, dry_run, sizes, extra_used, dedup, sized)
         return
     if not isinstance(obj, dict):
         return
@@ -510,16 +530,24 @@ def _walk_rewrite_leftovers(
         ext = _safe_ext(src or rel, fallback_ext)
         if ext not in allowed:
             ext = fallback_ext
-        dest = _ascii_extra_name(src or Path(rel), extra_used)
-        # keep intended extension
-        dest = str(Path(dest).with_suffix(ext)).replace("\\", "/")
-        extra_used.add(Path(dest).name)
-        _rewrite_one(obj, keys, dest, staging, missing, dry_run=dry_run, sizes=sizes)
+        src_key = str(src) if src is not None else ""
+        # Reuse an already-packed copy (e.g. the same file that segments put
+        # into asset_groups, re-referenced by batchWorkspaces/videoWorkspaces).
+        if dedup is not None and src_key and src_key in dedup:
+            dest = dedup[src_key]
+        else:
+            dest = _ascii_extra_name(src or Path(rel), extra_used)
+            # keep intended extension
+            dest = str(Path(dest).with_suffix(ext)).replace("\\", "/")
+            extra_used.add(Path(dest).name)
+            if dedup is not None and src_key:
+                dedup[src_key] = dest
+        _rewrite_one(obj, keys, dest, staging, missing, dry_run=dry_run, sizes=sizes, dedup=dedup, sized=sized)
     for key, val in obj.items():
         if key in IMAGE_KEYS + AUDIO_KEYS + VIDEO_KEYS + PREVIEW_KEYS + PAIRED_AUDIO_KEYS:
             continue
         if isinstance(val, (dict, list)):
-            _walk_rewrite_leftovers(val, staging, missing, dry_run, sizes, extra_used)
+            _walk_rewrite_leftovers(val, staging, missing, dry_run, sizes, extra_used, dedup, sized)
 
 
 def _task_combo(value: str) -> str:
@@ -538,6 +566,8 @@ def build_export_pack(timeline: dict, widgets: dict | None = None, *, dry_run: b
     widgets = widgets if isinstance(widgets, dict) else {}
     missing: list[str] = []
     sizes: list[int] = []
+    dedup: dict[str, str] = {}
+    sized: set[str] = set()
     staging: Path | None = None
     if not dry_run:
         staging = Path(tempfile.mkdtemp(prefix="mmx_pack_"))
@@ -547,13 +577,13 @@ def build_export_pack(timeline: dict, widgets: dict | None = None, *, dry_run: b
         global_block = {}
         data["global"] = global_block
     shared_folder = "shared_params"
-    _rewrite_image_list(global_block.get("refs") or [], shared_folder, staging or Path("."), missing, dry_run, sizes)
-    _rewrite_audio_list(global_block.get("refAudios") or global_block.get("ref_audios") or [], shared_folder, staging or Path("."), missing, dry_run, sizes)
-    _rewrite_video_list(global_block.get("refVideos") or global_block.get("ref_videos") or [], shared_folder, staging or Path("."), missing, dry_run, sizes)
+    _rewrite_image_list(global_block.get("refs") or [], shared_folder, staging or Path("."), missing, dry_run, sizes, dedup, sized)
+    _rewrite_audio_list(global_block.get("refAudios") or global_block.get("ref_audios") or [], shared_folder, staging or Path("."), missing, dry_run, sizes, dedup, sized)
+    _rewrite_video_list(global_block.get("refVideos") or global_block.get("ref_videos") or [], shared_folder, staging or Path("."), missing, dry_run, sizes, dedup, sized)
     if isinstance(global_block.get("referenceVideo"), dict):
-        _rewrite_video_media(global_block["referenceVideo"], "reference_video", shared_folder, staging or Path("."), missing, dry_run, sizes)
+        _rewrite_video_media(global_block["referenceVideo"], "reference_video", shared_folder, staging or Path("."), missing, dry_run, sizes, dedup, sized)
     if isinstance(global_block.get("genImage"), dict):
-        _rewrite_image_ref(global_block["genImage"], "start", shared_folder, staging or Path("."), missing, dry_run, sizes)
+        _rewrite_image_ref(global_block["genImage"], "start", shared_folder, staging or Path("."), missing, dry_run, sizes, dedup, sized)
 
     task_key = resolve_task_key(
         str(widgets.get("task_type") or widgets.get("taskType") or global_block.get("taskType") or "t2v")
@@ -566,17 +596,17 @@ def build_export_pack(timeline: dict, widgets: dict | None = None, *, dry_run: b
 
     for i, card in enumerate(cards):
         folder = f"asset_groups/{i + 1:02d}"
-        _explode_card(card, folder, staging or Path("."), missing, dry_run, sizes)
+        _explode_card(card, folder, staging or Path("."), missing, dry_run, sizes, dedup, sized)
 
-    _rewrite_video_media(data.get("video") if isinstance(data.get("video"), dict) else None, "clip_1", "source_video", staging or Path("."), missing, dry_run, sizes)
+    _rewrite_video_media(data.get("video") if isinstance(data.get("video"), dict) else None, "clip_1", "source_video", staging or Path("."), missing, dry_run, sizes, dedup, sized)
     clips = data.get("videoClips")
     if isinstance(clips, list):
         for i, clip in enumerate(clips):
             stem = "clip_1" if i == 0 else f"clip_{i + 1}"
-            _rewrite_video_media(clip if isinstance(clip, dict) else None, stem, "source_video", staging or Path("."), missing, dry_run, sizes)
+            _rewrite_video_media(clip if isinstance(clip, dict) else None, stem, "source_video", staging or Path("."), missing, dry_run, sizes, dedup, sized)
 
     extra_used: set[str] = set()
-    _walk_rewrite_leftovers(data, staging or Path("."), missing, dry_run, sizes, extra_used)
+    _walk_rewrite_leftovers(data, staging or Path("."), missing, dry_run, sizes, extra_used, dedup, sized)
 
     total_bytes = int(sum(sizes))
     unique_missing = []
@@ -639,7 +669,7 @@ def build_export_pack(timeline: dict, widgets: dict | None = None, *, dry_run: b
         stored_name = f"{uuid.uuid4().hex}.mmxpack.zip"
         _purge_pack_exports(keep=stored_name)
         zip_path = _pack_export_root() / stored_name
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
             for path in staging.rglob("*"):
                 if not path.is_file():
                     continue
@@ -1087,7 +1117,10 @@ async def minimax_export_pack(request):
     widgets = body.get("widgets") if isinstance(body.get("widgets"), dict) else {}
     dry_run = bool(body.get("dryRun") or body.get("dry_run"))
     try:
-        result = build_export_pack(timeline, widgets, dry_run=dry_run)
+        # build_export_pack is CPU/disk-bound and fully synchronous; running it
+        # on the event loop would freeze the entire ComfyUI server for its
+        # duration (tens of seconds on big timelines), so do it in a thread.
+        result = await asyncio.to_thread(build_export_pack, timeline, widgets, dry_run=dry_run)
     except Exception as exc:
         log.warning("Director pack export failed: %s", exc)
         return web.Response(status=400, text=str(exc))
@@ -1099,10 +1132,6 @@ async def minimax_export_pack(request):
     path = _pack_export_root() / filename
     download_name = str(result.get("downloadName") or filename)
     download_name = re.sub(r"[^A-Za-z0-9._-]+", "_", download_name) or filename
-    extra = {
-        "X-Pack-Download-Name": download_name,
-        "X-Pack-Missing": json.dumps(result.get("missing") or [], ensure_ascii=True),
-    }
     try:
         size = int(path.stat().st_size)
     except OSError:
@@ -1118,7 +1147,15 @@ async def minimax_export_pack(request):
         result["downloadName"] = download_name
         result["bytes"] = size
         return web.json_response(result)
-    return await _send_zip_file(request, path, download_name, extra, unlink_after=True)
+    # Large packs: return the stored filename and let the browser fetch it via
+    # GET /minimax/director/download_pack (streams straight to disk). Streaming
+    # the whole zip into this response made the frontend buffer gigabytes in JS
+    # memory, which killed the tab/connection. The zip stays in the export root
+    # and is purged by TTL if never downloaded.
+    result["filename"] = filename
+    result["downloadName"] = download_name
+    result["bytes"] = size
+    return web.json_response(result)
 
 
 async def minimax_download_pack(request):
