@@ -1230,6 +1230,8 @@ const STYLES = `
 .bd-seg-head>b{flex-shrink:0;margin:0}
 .bd-seg-refsize{display:inline-flex;align-items:center;gap:6px;color:#c8c8c8;font-size:11px;white-space:nowrap;margin-left:auto;flex-shrink:0}
 .bd-seg-refsize select{max-width:132px}
+.bd-seg-seed{display:inline-flex;align-items:center;gap:5px;color:#9a9a9a;font-size:11px;background:#0e0e0e;border:1px solid #262626;border-radius:8px;padding:3px 8px;white-space:nowrap}
+.bd-seg-seed.hidden{display:none!important}
 .bd-seg-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
 .bd-seg-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
 .bd-seg-head .bd-meta,.bd-panel.bd-v2v-panel .bd-seg-head .bd-meta,.bd-panel.bd-rv2v-panel .bd-seg-head .bd-meta{color:#8a8a8a;font-size:11px;line-height:1.45;padding:0;min-width:0}
@@ -3213,6 +3215,7 @@ class MiniMaxH3DirectorEditor {
                         <span data-i18n="batch.continuityFromPrev">引用上段</span>
                     </label>
                     <div class="bd-meta" data-r="seg-info"></div>
+                    <span class="bd-seg-seed hidden" data-r="seg-last-seed" hidden></span>
                     <label class="bd-seg-refsize hidden" data-r="seg-ref-image-size-wrap" hidden data-i18n-title="tooltip.refImageSize">
                         <span data-i18n="output.refImageSize.label">参考图尺寸</span>
                         <select class="bd-select" data-r="seg-ref-image-size">
@@ -3377,6 +3380,7 @@ class MiniMaxH3DirectorEditor {
         this.segContinuityFromPrevWrap = this.root.querySelector('[data-r="seg-continuity-from-prev-wrap"]');
         this.segContinuityFromPrevCb = this.root.querySelector('[data-r="seg-continuity-from-prev"]');
         this.segRefImageSizeWrap = this.root.querySelector('[data-r="seg-ref-image-size-wrap"]');
+        this.segLastSeedWrap = this.root.querySelector('[data-r="seg-last-seed"]');
         this.segRefImageSize = this.root.querySelector('[data-r="seg-ref-image-size"]');
         this.segInfo = this.root.querySelector('[data-r="seg-info"]');
         this.segPrompt = this.root.querySelector('[data-r="seg-prompt"]');
@@ -4385,9 +4389,12 @@ class MiniMaxH3DirectorEditor {
         // re-shows it on top of the green progress title.
         const running = !!this.runStatusEl?.classList.contains("active");
         this.runSelectBar?.classList.toggle("hidden", !enabled || running);
+        this.batchDelSelectedBtn?.classList.toggle("hidden", !enabled);
+        if (this.batchDelSelectedBtn) this.batchDelSelectedBtn.disabled = true;
         if (!canRunSelect) return;
         this.normalizeRunSelection();
         const count = (this.timeline.runSelection || []).length;
+        if (this.batchDelSelectedBtn) this.batchDelSelectedBtn.disabled = running || !count;
         const syncAllCb = (cb) => {
             if (!cb) return;
             cb.checked = count >= n && n > 0;
@@ -4431,6 +4438,42 @@ class MiniMaxH3DirectorEditor {
             runSelectEnabled: true,
             runSelection: [...(this.timeline.runSelection || [])],
         };
+    }
+
+    /** Snapshot the seed the queued run will use, plus participating segment objects. */
+    captureRunSeedSnapshot() {
+        this._pendingRunSeed = null;
+        this._runSeedAborted = false;
+        this._runSeedConfirmed = false;
+        if (!this.timeline || this.isFl2vMode()) return;
+        const seed = Number(this.widget("seed")?.value);
+        if (!Number.isFinite(seed)) return;
+        const segs = this.timeline.segments || [];
+        const indices = this.isRunSelectEnabled()
+            ? [...(this.timeline.runSelection || [])]
+            : segs.map((_, i) => i);
+        const segRefs = indices.map((i) => segs[i]).filter(Boolean);
+        if (!segRefs.length) return;
+        this._pendingRunSeed = { seed: Math.trunc(seed), segRefs };
+    }
+
+    /** Commit the snapshotted seed onto the segments that took part in the run. */
+    applyRunSeedSnapshot() {
+        const snap = this._pendingRunSeed;
+        this._pendingRunSeed = null;
+        if (!snap || this._runSeedAborted || !this._runSeedConfirmed) return;
+        let changed = false;
+        for (const seg of snap.segRefs) {
+            if (seg.lastSeed !== snap.seed) {
+                seg.lastSeed = snap.seed;
+                changed = true;
+            }
+        }
+        if (!changed) return;
+        this.commit(false, { syncTimeline: true });
+        if (this.isImageBatch()) this.renderImageBatchGroups?.();
+        else this.scheduleRender?.();
+        this.syncSegmentSeedUI?.();
     }
 
     getDirectorMode() {
@@ -6702,6 +6745,7 @@ class MiniMaxH3DirectorEditor {
         }
         this.syncSegmentContinuityFromPrevUI();
         this.syncSegmentRefImageSizeUI();
+        this.syncSegmentSeedUI();
     }
 
     /** Per-segment「引用上段」on v2v/rv2v segment panel (index>0 + master on). */
@@ -6741,6 +6785,20 @@ class MiniMaxH3DirectorEditor {
         sel.value = value;
         if (seg && seg.refImageSize !== value) seg.refImageSize = value;
         wrap.title = t("tooltip.refImageSize");
+    }
+
+    /** Read-only seed record chip shown next to the segment ref-image-size. */
+    syncSegmentSeedUI() {
+        const wrap = this.segLastSeedWrap;
+        if (!wrap) return;
+        const seg = this.timeline.segments?.[this.selectedIndex ?? 0];
+        const seed = Number(seg?.lastSeed);
+        const show = Number.isFinite(seed);
+        wrap.classList.toggle("hidden", !show);
+        wrap.hidden = !show;
+        if (!show) { wrap.textContent = ""; return; }
+        wrap.textContent = `${t("batch.seedLabel")} ${Math.trunc(seed)}`;
+        wrap.title = t("tooltip.batchSeedRecord");
     }
 
     /** Apply ResolutionSelector → fixed width/height on timeline + node widgets. */
@@ -10349,6 +10407,39 @@ class MiniMaxH3DirectorEditor {
         this.commit(false, { syncTimeline: true });
     }
 
+    /** 「选择运行」mode batch delete: remove every checked group/segment at once. */
+    deleteCheckedSegments() {
+        if (!this.isRunSelectEnabled?.()) return;
+        if (this.hasExternalI2vGroups?.() || this.hasExternalR2vGroups?.()) return;
+        const n = this.getRunnableSegmentCount();
+        const indices = [...(this.timeline.runSelection || [])]
+            .filter((i) => Number.isInteger(i) && i >= 0 && i < n)
+            .sort((a, b) => a - b);
+        if (!indices.length) { window.alert(t("batch.deleteCheckedNone")); return; }
+        // Full selection is allowed: every mode's single-delete path refuses to
+        // remove the last remaining group/segment, so exactly the first one stays.
+        const prevSel = this.selectedIndex;
+        // Descending so each removal does not shift the still-pending indices.
+        for (let k = indices.length - 1; k >= 0; k--) {
+            const idx = indices[k];
+            if (idx >= this.getRunnableSegmentCount()) continue;
+            this.selectedIndex = idx;
+            this.deleteSelectedSegment();
+        }
+        this.selectedIndex = clamp(prevSel ?? 0, 0, Math.max(0, this.getRunnableSegmentCount() - 1));
+        // Deleted entries were exactly the checked ones: re-arm a full selection
+        // so stale shifted indices never point at the wrong group.
+        if (this.isRunSelectEnabled()) {
+            this.timeline.runSelection = this.isFl2vMode()
+                ? fl2vStartIndices(this)
+                : Array.from({ length: this.getRunnableSegmentCount() }, (_, i) => i);
+        }
+        this.commit(false, { syncTimeline: true });
+        this.updateRunSelectUI();
+        if (this.isImageBatch()) this.renderImageBatchGroups?.();
+        else this.scheduleRender?.();
+    }
+
     compactSegmentsAfterDelete() {
         const total = this.getTotalFrames();
         if (total <= 0) {
@@ -13334,6 +13425,10 @@ app.registerExtension({
             const orig = app.queuePrompt.bind(app);
             app.queuePrompt = function (...args) {
                 flushDirectors();
+                const graphQ = app.graph ?? app.canvas?.graph;
+                for (const node of graphQ?._nodes ?? graphQ?.nodes ?? []) {
+                    node._minimaxEditor?.captureRunSeedSnapshot?.();
+                }
                 clearAllDirectorRunStatus();
                 return orig(...args);
             };
@@ -13367,10 +13462,18 @@ app.registerExtension({
         });
 
         api.addEventListener("executing", ({ detail }) => {
-            if (detail == null) return;
+            if (detail == null) {
+                // Whole queue finished: commit last-run seeds for directors that actually ran.
+                const graphEnd = app.graph ?? app.canvas?.graph;
+                for (const node of graphEnd?._nodes ?? graphEnd?.nodes ?? []) {
+                    node._minimaxEditor?.applyRunSeedSnapshot?.();
+                }
+                return;
+            }
             const node = findDirectorNode(detail);
             const editor = node?._minimaxEditor;
             if (!editor) return;
+            if (editor._pendingRunSeed) editor._runSeedConfirmed = true;
             editor.flushTimelineSync?.();
             editor.clearLiveSamplePreview?.();
             if (editor.isImageBatch?.()) {
@@ -13406,6 +13509,7 @@ app.registerExtension({
         api.addEventListener("execution_error", ({ detail }) => {
             const node = findDirectorNode(detail?.node_id);
             if (node?._minimaxEditor) {
+                node._minimaxEditor._runSeedAborted = true;
                 node._minimaxEditor.setRunError(detail?.exception_message || t("executing.error"));
             }
         });
