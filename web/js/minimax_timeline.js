@@ -4440,40 +4440,44 @@ class MiniMaxH3DirectorEditor {
         };
     }
 
-    /** Snapshot the seed the queued run will use, plus participating segment objects. */
-    captureRunSeedSnapshot() {
-        this._pendingRunSeed = null;
-        this._runSeedAborted = false;
-        this._runSeedConfirmed = false;
-        if (!this.timeline || this.isFl2vMode()) return;
-        const seed = Number(this.widget("seed")?.value);
-        if (!Number.isFinite(seed)) return;
-        const segs = this.timeline.segments || [];
-        const indices = this.isRunSelectEnabled()
-            ? [...(this.timeline.runSelection || [])]
-            : segs.map((_, i) => i);
-        const segRefs = indices.map((i) => segs[i]).filter(Boolean);
-        if (!segRefs.length) return;
-        this._pendingRunSeed = { seed: Math.trunc(seed), segRefs };
+    /**
+     * Seed ledger: the executor writes seg_XXXX.seed.json on the server the
+     * moment a segment's video FULLY completes (interrupted/failed segments
+     * keep their previous record). Records live in the node's segment-cache
+     * dir, so they survive restarts without the workflow being saved.
+     */
+    async loadSeedRecords() {
+        const node = this.node;
+        try {
+            const params = new URLSearchParams({ node_id: String(node.id) });
+            const cacheName = this.widget("cache_name")?.value;
+            if (cacheName) params.set("cache_name", String(cacheName));
+            const resp = await api.fetchApi(`/minimax/director/seed_records?${params}`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const map = {};
+            for (const row of data?.records || []) {
+                const idx = Number(row?.index);
+                const seed = Number(row?.seed);
+                if (Number.isFinite(idx) && Number.isFinite(seed)) {
+                    map[idx] = Math.trunc(seed);
+                }
+            }
+            this._seedRecords = map;
+            if (this.isImageBatch()) this.renderImageBatchGroups?.();
+            else this.scheduleRender?.();
+            this.syncSegmentSeedUI?.();
+        } catch {
+            /* Server offline: keep whatever is already displayed. */
+        }
     }
 
-    /** Commit the snapshotted seed onto the segments that took part in the run. */
-    applyRunSeedSnapshot() {
-        const snap = this._pendingRunSeed;
-        this._pendingRunSeed = null;
-        if (!snap || this._runSeedAborted || !this._runSeedConfirmed) return;
-        let changed = false;
-        for (const seg of snap.segRefs) {
-            if (seg.lastSeed !== snap.seed) {
-                seg.lastSeed = snap.seed;
-                changed = true;
-            }
-        }
-        if (!changed) return;
-        this.commit(false, { syncTimeline: true });
-        if (this.isImageBatch()) this.renderImageBatchGroups?.();
-        else this.scheduleRender?.();
-        this.syncSegmentSeedUI?.();
+    /** Seed to display for one segment: server ledger first, then legacy in-timeline record. */
+    resolveSegmentSeed(seg, index) {
+        const rec = this._seedRecords?.[Number(index)];
+        if (Number.isFinite(Number(rec))) return Math.trunc(Number(rec));
+        const legacy = Number(seg?.lastSeed);
+        return Number.isFinite(legacy) ? Math.trunc(legacy) : null;
     }
 
     getDirectorMode() {
@@ -6791,8 +6795,9 @@ class MiniMaxH3DirectorEditor {
     syncSegmentSeedUI() {
         const wrap = this.segLastSeedWrap;
         if (!wrap) return;
-        const seg = this.timeline.segments?.[this.selectedIndex ?? 0];
-        const seed = Number(seg?.lastSeed);
+        const idx = this.selectedIndex ?? 0;
+        const seg = this.timeline.segments?.[idx];
+        const seed = this.resolveSegmentSeed?.(seg, idx) ?? Number(seg?.lastSeed);
         const show = Number.isFinite(seed);
         wrap.classList.toggle("hidden", !show);
         wrap.hidden = !show;
@@ -13425,10 +13430,6 @@ app.registerExtension({
             const orig = app.queuePrompt.bind(app);
             app.queuePrompt = function (...args) {
                 flushDirectors();
-                const graphQ = app.graph ?? app.canvas?.graph;
-                for (const node of graphQ?._nodes ?? graphQ?.nodes ?? []) {
-                    node._minimaxEditor?.captureRunSeedSnapshot?.();
-                }
                 clearAllDirectorRunStatus();
                 return orig(...args);
             };
@@ -13463,17 +13464,17 @@ app.registerExtension({
 
         api.addEventListener("executing", ({ detail }) => {
             if (detail == null) {
-                // Whole queue finished: commit last-run seeds for directors that actually ran.
+                // Whole queue finished: re-read the server-side seed ledger so
+                // every fully completed segment shows the seed it finished with.
                 const graphEnd = app.graph ?? app.canvas?.graph;
                 for (const node of graphEnd?._nodes ?? graphEnd?.nodes ?? []) {
-                    node._minimaxEditor?.applyRunSeedSnapshot?.();
+                    node._minimaxEditor?.loadSeedRecords?.();
                 }
                 return;
             }
             const node = findDirectorNode(detail);
             const editor = node?._minimaxEditor;
             if (!editor) return;
-            if (editor._pendingRunSeed) editor._runSeedConfirmed = true;
             editor.flushTimelineSync?.();
             editor.clearLiveSamplePreview?.();
             if (editor.isImageBatch?.()) {
@@ -13509,7 +13510,6 @@ app.registerExtension({
         api.addEventListener("execution_error", ({ detail }) => {
             const node = findDirectorNode(detail?.node_id);
             if (node?._minimaxEditor) {
-                node._minimaxEditor._runSeedAborted = true;
                 node._minimaxEditor.setRunError(detail?.exception_message || t("executing.error"));
             }
         });
@@ -13527,6 +13527,7 @@ app.registerExtension({
         bindDirectorDomWidgetSizing(node, node._minimaxDomWidget, () => node._minimaxEditor);
         const editor = initDirectorEditor(node);
         editor?.scheduleRender?.();
+        editor?.loadSeedRecords?.();
         // Workflow size is already on node.size — settle fill after widgets arrange.
         scheduleDirectorLayoutSettle(editor);
     },

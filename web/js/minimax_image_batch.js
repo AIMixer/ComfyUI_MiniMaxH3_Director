@@ -2725,7 +2725,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         seedLabel.setAttribute("data-i18n", "batch.seedLabel");
         seedLabel.textContent = t("batch.seedLabel");
         const seedVal = document.createElement("b");
-        const seedNum = Number(seg.lastSeed);
+        const seedNum = editor.resolveSegmentSeed?.(seg, index) ?? Number(seg.lastSeed);
         seedVal.textContent = Number.isFinite(seedNum) ? String(Math.trunc(seedNum)) : "—";
         seedWrap.appendChild(seedLabel);
         seedWrap.appendChild(seedVal);

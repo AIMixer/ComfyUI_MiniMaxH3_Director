@@ -616,6 +616,30 @@ async def minimax_clear_segment_cache(request):
         return web.Response(status=500, text=str(exc))
 
 
+async def minimax_seed_records(request):
+    """List per-segment last-completed-run seeds for a Director node.
+
+    Read-only. ``GET /minimax/director/seed_records?node_id=NN[&cache_name=X]``.
+    Records are written by the executor the moment a segment's video fully
+    completes, and live in the node's segment-cache dir (restart-safe).
+    """
+    node_id = str(request.query.get("node_id") or "").strip()
+    if not re.fullmatch(r"\d+", node_id):
+        return web.Response(status=400, text="Invalid Director node id.")
+
+    from .segment_cache import read_seed_records, resolve_segment_cache_key
+
+    cache_key = resolve_segment_cache_key(request.query.get("cache_name"), node_id)
+    if not cache_key:
+        return web.Response(status=400, text="Invalid segment cache name.")
+
+    try:
+        return web.json_response({"records": read_seed_records(cache_key)})
+    except Exception as exc:
+        log.warning("MiniMax H3 Director seed records read failed: %s", exc)
+        return web.Response(status=500, text=str(exc))
+
+
 def _register_route(routes, method: str, path: str, handler) -> None:
     if hasattr(routes, "add_route"):
         routes.add_route(method, path, handler)
@@ -667,6 +691,12 @@ def register_routes() -> bool:
         "POST",
         "/minimax/director/clear_segment_cache",
         minimax_clear_segment_cache,
+    )
+    _register_route(
+        routes,
+        "GET",
+        "/minimax/director/seed_records",
+        minimax_seed_records,
     )
     from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
 
