@@ -472,7 +472,7 @@ export const IMAGE_BATCH_STYLES = `
 .bd-batch-run-all.hidden{display:none!important}
 .bd-batch-run-all input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#4fff8f}
 /* Default cap; batch-fill mode overrides via .bd-wrap.bd-batch-fill + JS max-height. */
-.bd-batch-list{display:flex;flex-direction:column;gap:8px;width:100%;max-height:640px;overflow-y:auto;padding-right:2px;min-height:0}
+.bd-batch-list{display:flex;flex-direction:column;gap:8px;width:100%;max-height:640px;overflow-y:auto;overscroll-behavior-y:contain;padding-right:2px;min-height:0}
 .bd-batch-card{background:linear-gradient(165deg,#1a1a1a 0%,#141414 55%,#111 100%);border:1px solid #2c2c2c;border-radius:10px;padding:12px 14px;display:grid;gap:10px;align-items:stretch;box-shadow:inset 0 1px 0 rgba(255,255,255,.03);flex:0 0 auto}
 /* t2v: 提示词为主，预览收成右侧窄栏 */
 .bd-batch-card.bd-batch-plain{grid-template-columns:minmax(0,1fr) minmax(132px,168px)}
@@ -703,6 +703,12 @@ function viewUrl(imageFile) {
     if (subfolder) params.set("subfolder", subfolder);
     return api.apiURL(`/view?${params.toString()}`);
 }
+
+// ComfyUI forwards wheel events to the canvas during overlay capture.
+// Stop them before that handler while retaining native list/text scrolling.
+document.addEventListener("wheel", (e) => {
+    if (e.target?.closest?.(".mmx-host .bd-batch-list")) e.stopPropagation();
+}, { capture: true, passive: true });
 
 export function mountImageBatchPanel(root) {
     const panel = document.createElement("div");
