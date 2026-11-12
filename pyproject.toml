@@ -1,7 +1,7 @@
 [project]
-name = "minimax-h3-director"
-description = "Multi-segment MiniMax H3 Director — official MiniMaxH3ImageToVideo / ReferenceToVideo pipeline."
-version = "1.0.0"
+name = "minimax-h3-director-pro"
+description = "Independently maintained MiniMax H3 and Pika H3 Flex timeline director, based on AIMixer."
+version = "1.1.0"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
 classifiers = [
@@ -14,12 +14,11 @@ dynamic = ["dependencies"]
 dependencies = {file = ["requirements.txt"]}
 
 [project.urls]
-Repository = "https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director"
-Documentation = "https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director#readme"
-"Bug Tracker" = "https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director/issues"
+Repository = "https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro"
+Documentation = "https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro#readme"
+"Bug Tracker" = "https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro/issues"
 
 [tool.comfy]
-PublisherId = "aimixer"
-DisplayName = "MiniMax H3 Director"
+DisplayName = "MiniMax H3 Director Pro"
 Icon = ""
 requires-comfyui = ">=0.30.0"

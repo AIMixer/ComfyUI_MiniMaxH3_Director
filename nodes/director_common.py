@@ -680,7 +680,10 @@ def finalize_director_outputs(
             "\n\nimages_pre_refine: same as images (Refine node not connected)."
         )
 
-    report = report + "\n\n有问题联系作者：AI搅拌手  QQ交流群：551482703"
+    report = report + (
+        "\n\nMiniMax H3 Director Pro · 基于 AIMixer，独立维护。"
+        "反馈：https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro/issues"
+    )
 
     fps_out = float(plan.frame_rate or 24.0)
     if block_final_images:

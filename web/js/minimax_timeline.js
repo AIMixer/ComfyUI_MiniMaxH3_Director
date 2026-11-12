@@ -1,3 +1,5 @@
+import { createUploadId } from "./minimax_upload_id.js";
+import { mergeDirectorValues, lostDirectorFrontendEdits, prepareDirectorSubmission, canonicalDirectorMergeState, formatDirectorMismatches, restoreDirectorWorkspaces } from "./minimax_mcp_merge.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
@@ -15,6 +17,7 @@ import {
     imageBatchRequiresFixedOutput,
     isContinuityMasterEnabled,
     isCustomAspectRatio,
+    isKeepAspectRatio,
     isPromptBatchTask,
     isSegmentContinuityFromPrev,
     isVideoBatchTask,
@@ -23,6 +26,8 @@ import {
     MAX_REFERENCE_IMAGES,
     MAX_REFERENCE_VIDEOS,
     MINIMAX_CANVAS_MULTIPLE,
+    KEEP_ASPECT_RATIO,
+    keepAspectResolution,
     minFrameCount,
     newBatchSegment,
     NO_VIDEO_UPLOAD_TASKS,
@@ -116,10 +121,12 @@ import {
     applyI18nDom,
     aspectDisplayLabel,
     getLocale,
+    getLocalePreference,
+    initializeLocale,
+    setLocale,
     onLocaleChange,
     t,
     taskDisplayLabel,
-    toggleLocale,
 } from "./minimax_i18n.js";
 import { bindPackActions } from "./minimax_pack.js";
 import {
@@ -127,6 +134,7 @@ import {
     injectExternalGroupsWitness,
     setExternalGroupSpecsProvider,
 } from "./minimax_external_witness.js";
+import { bindUpdateAction } from "./minimax_update.js";
 
 const RULER_H = 24;
 const SEG_LABEL_H = 20;
@@ -516,7 +524,7 @@ function stripTimelineEphemeralFields(timeline) {
 
 const HIDDEN_WIDGETS = [
     "timeline_data", "total_frames", "width", "height", "ref_max_size",
-    "task_type", "global_prompt", "frame_rate", "cfg",
+    "task_type", "global_prompt", "frame_rate", "cfg", "generation_family", "pika_flex", "audio_conditioning",
     "export_source_images",
     "export_pre_face_refine",
     // seed stays visible under 采样设置 (with control_after_generate)
@@ -610,53 +618,93 @@ function sanitizeDirectorCacheName(node) {
  * control_after_generate linked combo may exist — shifting optional widgets
  * (steps defaults back to 25). Re-apply saved values by name once widgets settle.
  */
+function isDirectorValueWidget(w) {
+    return !!w?.name && w.serialize !== false && w.options?.serialize !== false
+        && w.name !== DIRECTOR_DOM_WIDGET_NAME && !w.name.startsWith("bd_grp_")
+        && !w._bdGroupHeader && !["bdgroup", "dom", "director"].includes(String(w.type || "").toLowerCase());
+}
+
+function directorValueWidgets(node) {
+    const widgets = (node.widgets || []).flatMap((w) => [w, ...(w.linkedWidgets || [])]);
+    return [...new Set(widgets)].filter(isDirectorValueWidget);
+}
+
+function legacyDirectorWidgetValues(values) {
+    const prefix = ["task_type", "global_prompt", "cfg", "seed", "control_after_generate",
+        "frame_rate", "width", "height", "ref_max_size", "total_frames", "timeline_data",
+        "steps", "sampler", "scheduler", "shift_video", "shift_audio"];
+    const perf = ["clear_vram_between_segments", "clear_vram_before_refine",
+        "clear_vram_before_face_refine", "cache_frames_codec"];
+    const exports = ["export_source_images", "export_pre_face_refine"];
+    const pika = ["pika_flex", "video_decode"];
+    // Both backend order and the old frontend's relocated performance group
+    // were saved in the wild. Do not map a legacy suffix onto new Pro fields.
+    const layouts = [
+        [...prefix, ...perf, ...exports, "cache_name", ...pika],
+        [...prefix, ...perf, ...exports, "cache_name"],
+        [...prefix, ...exports, ...pika, ...perf, "cache_name"],
+        [...prefix, ...exports, ...perf, "cache_name"],
+        [...prefix, ...exports, ...pika, "generation_family", "audio_conditioning", ...perf, "cache_name"],
+    ];
+    for (const layout of layouts) {
+        for (const grouped of [false, true]) {
+            const names = layout.flatMap((name) => {
+                const group = { cfg: "bd_grp_sample", steps: "bd_grp_advanced",
+                    clear_vram_between_segments: "bd_grp_perf" }[name];
+                return grouped && group ? [group, name] : [name];
+            });
+            if (values.length !== names.length && values.length !== names.length + 1) continue;
+            const saved = Object.fromEntries(names.map((name, i) => [name, values[i]]));
+            if (typeof saved.seed !== "number" || typeof saved.timeline_data !== "string") continue;
+            if (!["raw", "ffv1"].includes(saved.cache_frames_codec)) continue;
+            if (pika.every((name) => names.includes(name))
+                && (typeof saved.pika_flex !== "boolean" || !["regular", "tiled"].includes(saved.video_decode))) continue;
+            return saved;
+        }
+    }
+    return null;
+}
+
 function restoreDirectorWidgetsFromSaved(node, data) {
     if (!node || !data) return false;
-
-    const named = data.widgets_values_named;
-    if (named && typeof named === "object") {
-        node._mmxRestoringSampleWidgets = true;
-        try {
-            for (const [name, value] of Object.entries(named)) {
-                if (name === DIRECTOR_DOM_WIDGET_NAME) continue;
-                if (value === undefined) continue;
-                const w = findDirectorWidget(node, name);
-                if (!w || w.serialize === false) continue;
-                w.value = value;
-            }
-            // ⛔ named 里**没有**的 widget = 保存这份工作流时还不存在的新控件。
-            //    configure 阶段 ComfyUI 是按**下标**塞 widgets_values 的，而本节点
-            //    运行期会重排 widget 顺序（性能组搬家），下标对不上就会把邻居的值
-            //    塞给新控件 —— 实测 cache_name 因此拿到了 BDGROUP「性能」的字符串。
-            //    这里按后端声明的默认值兜底，把新控件复位。
-            for (const w of node.widgets ?? []) {
-                if (!w?.name || w.serialize === false) continue;
-                if (w.name === DIRECTOR_DOM_WIDGET_NAME) continue;
-                if (Object.prototype.hasOwnProperty.call(named, w.name)) continue;
-                const def = w.options?.default;
-                if (def !== undefined) w.value = def;
-            }
-        } finally {
-            node._mmxRestoringSampleWidgets = false;
+    let named = data.widgets_values_named;
+    if (!named || typeof named !== "object" || Array.isArray(named)) {
+        const values = data.widgets_values;
+        if (!Array.isArray(values) || !values.length) return false;
+        named = legacyDirectorWidgetValues(values);
+        if (!named) {
+            const widgets = (node.widgets || []).filter((w) => w.serialize !== false);
+            named = Object.fromEntries(widgets.slice(0, values.length).map((w, i) => [w.name, values[i]]));
         }
-        return true;
     }
-
-    const values = data.widgets_values;
-    if (!Array.isArray(values) || !values.length) return false;
-
     node._mmxRestoringSampleWidgets = true;
     try {
-        let idx = 0;
-        for (const w of node.widgets ?? []) {
-            if (w.serialize === false) continue;
-            if (idx >= values.length) break;
-            w.value = values[idx++];
+        for (const w of directorValueWidgets(node)) {
+            const hasValue = Object.prototype.hasOwnProperty.call(named, w.name) && named[w.name] !== undefined;
+            const def = node._mmxDeclaredWidgetDefaults?.[w.name] ?? w.options?.default;
+            if (hasValue) w.value = named[w.name];
+            else if (def !== undefined) w.value = def;
         }
+        const family = widgetByName(node, "generation_family");
+        if (family && (!Object.prototype.hasOwnProperty.call(named, "generation_family")
+            || !["H3", "Pika-H3"].includes(family.value))) {
+            family.value = widgetByName(node, "pika_flex")?.value === true ? "Pika-H3" : "H3";
+        }
+        const audio = widgetByName(node, "audio_conditioning");
+        if (audio && (!Object.prototype.hasOwnProperty.call(named, "audio_conditioning")
+            || !["none", "source_lock"].includes(audio.value))) audio.value = "none";
     } finally {
         node._mmxRestoringSampleWidgets = false;
     }
     return true;
+}
+
+// [MMX-MCP-MERGE] A newer write supersedes all delayed work from an older configure.
+function invalidateDirectorConfigureRestore(node) {
+    if (!node) return;
+    node._mmxConfigureEpoch = (node._mmxConfigureEpoch || 0) + 1;
+    node._mmxPendingConfigureRestore = false;
+    node._mmxSavedConfigureData = null;
 }
 
 function applyDirectorConfigureRestore(node, data) {
@@ -838,6 +886,11 @@ function directorHasSigmasLink(node) {
     return Array.isArray(inp.links) && inp.links.length > 0;
 }
 
+function directorUsesPika(node) {
+    const family = widgetByName(node, "generation_family")?.value;
+    return family === "Pika-H3" || widgetByName(node, "pika_flex")?.value === true;
+}
+
 function syncDirectorSchedulerWidgets(node, { restore = false } = {}) {
     if (!node) return;
     hookDirectorSampleWidgetSnapshots(node);
@@ -845,8 +898,12 @@ function syncDirectorSchedulerWidgets(node, { restore = false } = {}) {
     hideDirectorSigmasWidget(node);
     if (restore) restoreDirectorSampleWidgets(node);
     const wired = directorHasSigmasLink(node);
-    setDirectorWidgetVisible(node, "steps", !wired);
-    setDirectorWidgetVisible(node, "scheduler", !wired);
+    const pika = directorUsesPika(node);
+    for (const name of ["steps", "scheduler", "sampler", "shift_video", "shift_audio"]) {
+        setDirectorWidgetVisible(node, name, !pika && (!wired || !["steps", "scheduler"].includes(name)));
+        const widget = widgetByName(node, name);
+        if (widget) widget.disabled = pika;
+    }
     if (restore) restoreDirectorSampleWidgets(node);
     node.setDirtyCanvas?.(true, true);
 }
@@ -1031,6 +1088,7 @@ const STYLES = `
   height:100%;min-height:0;max-height:100%;overflow:hidden;align-self:stretch
 }
 .bd-modal-overlay{position:absolute;inset:0;z-index:200;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:10px;box-sizing:border-box;border-radius:6px}
+.bd-modal-overlay.bd-modal-overlay-top{align-items:flex-start;overflow:auto}
 .bd-modal{background:#1e1e1e;border:1px solid #333;border-radius:6px;padding:12px;width:100%;max-width:460px;max-height:calc(100% - 8px);display:flex;flex-direction:column;gap:10px;box-shadow:0 10px 28px rgba(0,0,0,.5)}
 .bd-modal-title{color:#e0e0e0;font-size:12px;font-weight:600;line-height:1.35}
 .bd-modal-body{color:#aaa;font-size:11px;line-height:1.5;white-space:pre-wrap}
@@ -1087,6 +1145,8 @@ const STYLES = `
 .bd-toolbar-wrap{display:flex;flex-direction:column;gap:4px;width:100%}
 .bd-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;width:100%}
 .bd-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-width:0}
+.bd-pika-recipe{width:100%;box-sizing:border-box;font-size:12px;line-height:1.5;color:#bbb;padding:4px 2px}
+.bd-pika-recipe.hidden{display:none!important}
 .bd-smart-split-msg{width:100%;box-sizing:border-box;font-size:11px;line-height:1.4;color:#f66;padding:0 2px;min-height:0}
 .bd-smart-split-msg.hidden{display:none!important}
 .bd-smart-split-msg.ok{color:#8c8}
@@ -1232,6 +1292,10 @@ const STYLES = `
 .bd-seg-refsize select{max-width:132px}
 .bd-seg-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
 .bd-seg-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
+.bd-src-video-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0 8px;
+  padding:7px 10px;border:1px solid #3a3a3a;border-radius:8px;background:#191919}
+.bd-src-video-bar>.bd-label{color:#e8e8e8;font-size:12px;font-weight:600;white-space:nowrap}
+.bd-src-video-name{color:#8fd89a;font-size:12px;min-width:180px}
 .bd-seg-head .bd-meta,.bd-panel.bd-v2v-panel .bd-seg-head .bd-meta,.bd-panel.bd-rv2v-panel .bd-seg-head .bd-meta{color:#8a8a8a;font-size:11px;line-height:1.45;padding:0;min-width:0}
 .bd-prompt-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(110px,38%);gap:8px;align-items:stretch}
 .bd-prompt-layout>.bd-prompt-col{order:1}
@@ -1492,7 +1556,7 @@ async function uploadToInput(file) {
 
 async function uploadVideoChunked(file, onProgress) {
     const filename = safeUploadFilename(file?.name, file?.type);
-    const uploadId = crypto.randomUUID();
+    const uploadId = createUploadId();
     const totalChunks = Math.ceil(file.size / MINIMAX_CHUNK_SIZE);
     for (let i = 0; i < totalChunks; i++) {
         const start = i * MINIMAX_CHUNK_SIZE;
@@ -1541,6 +1605,11 @@ function inputViewUrl(relativePath, type = "input") {
     if (subfolder) params.set("subfolder", subfolder);
     return api.apiURL(`/view?${params.toString()}`);
 }
+
+// Sizes of pictures that came from somewhere else (phone / API): those refs carry only a
+// file name, so Keep aspect ratio reads the picture once and remembers it.
+const KEEP_DIMS = new Map();
+const KEEP_DIMS_PENDING = new Set();
 
 const MEDIA_PICKER_VIEW_KEY = "minimax.director.mediaPickerView";
 
@@ -2253,7 +2322,11 @@ class MiniMaxH3DirectorEditor {
         this.totalFramesWidget = this.widget("total_frames");
         this.frameRateWidget = this.widget("frame_rate");
         this.taskTypeWidget = this.widget("task_type");
+        this.familyWidget = this.widget("generation_family");
         this.globalPromptWidget = this.widget("global_prompt");
+        // [MMX-EXT] Local patch: external callers opt in through the setters below.
+        this._mmxExternalPrompt = null;
+        this._mmxExternalPromptStamp = 0;
         this.negativePromptWidget = null;
         this.widthWidget = this.widget("width");
         this.heightWidget = this.widget("height");
@@ -2295,6 +2368,7 @@ class MiniMaxH3DirectorEditor {
             this.ensureGenTimeline();
         }
         this.applyTaskLayout(this._directorMode);
+        this.syncGenerationFamily();
 
         this.updateDomWidgetHeight();
         this.applyZoomWidth();
@@ -2530,6 +2604,12 @@ class MiniMaxH3DirectorEditor {
                         : resolveSegmentRefImageSize(matched, this.timeline?.output),
                     ...(matched?.runEnabled != null ? { runEnabled: matched.runEnabled } : {}),
                     loras: matched?.loras,
+                    // Must survive syncExternalGroupsTimeline → newBatchSegment(); dropping it made
+                    // 段间引导 appear to spring back on after refresh (commit rebuilt segments and
+                    // the unset field defaulted to on). Same bug as the one fixed in newFl2vShot.
+                    ...(matched?.continuityFromPrev != null
+                        ? { continuityFromPrev: matched.continuityFromPrev }
+                        : {}),
                 });
             });
             for (const item of promptWriteBack) {
@@ -2908,6 +2988,11 @@ class MiniMaxH3DirectorEditor {
         toolbarWrap.innerHTML = `
             <div class="bd-toolbar">
                 <div class="bd-actions">
+                    <span class="bd-label">MiniMax H3 Director Pro</span>
+                    <label class="bd-label" data-i18n="toolbar.generationFamily" for="mmx-family-${this.node.id}">生成系列</label>
+                    <select class="bd-select" id="mmx-family-${this.node.id}" data-r="generation-family">
+                        <option value="H3">H3</option><option value="Pika-H3">Pika-H3</option>
+                    </select>
                     <button type="button" class="bd-btn bd-btn-primary hidden" data-a="r2v-add-group" data-i18n="toolbar.addRefGroup" data-i18n-title="tooltip.addRefGroup">添加素材组</button>
                     <button type="button" class="bd-btn bd-btn-primary" data-a="video" data-i18n="toolbar.uploadVideo">上传视频</button>
                     <button type="button" class="bd-btn" data-a="video-existing" data-i18n="mediaPicker.pickExistingVideo" data-i18n-title="mediaPicker.pickExistingHint">选已有视频</button>
@@ -2936,17 +3021,27 @@ class MiniMaxH3DirectorEditor {
                     </div>
                     <button type="button" class="bd-btn" data-a="pack-import" data-i18n="toolbar.importPack" data-i18n-title="tooltip.importPack">导入导演包</button>
                     <button type="button" class="bd-btn" data-a="pack-export" data-i18n="toolbar.exportPack" data-i18n-title="tooltip.exportPack">导出导演包</button>
-                    <button type="button" class="bd-btn" data-a="lang-toggle" data-i18n="toolbar.langToggle" data-i18n-title="toolbar.langToggleTitle">EN</button>
+                    <button type="button" class="bd-btn" data-a="check-update" data-i18n="toolbar.checkUpdate" data-i18n-title="tooltip.checkUpdate">检查更新</button>
+                    <label class="bd-label" data-i18n="toolbar.language" for="mmx-language-${this.node.id}">界面语言</label>
+                    <select class="bd-select" id="mmx-language-${this.node.id}" data-r="language">
+                        <option value="auto" data-i18n="toolbar.languageAuto">自动（跟随 ComfyUI）</option>
+                        <option value="zh">中文</option><option value="en">English</option>
+                    </select>
                     <div class="bd-bounds" data-r="bounds">起点: 0.00 | 终点: -</div>
                     <div class="bd-timecode" data-r="timecode">0.00s</div>
                 </div>
+            </div>
+            <div class="bd-pika-recipe hidden" data-r="pika-recipe" role="status">
+                <span data-i18n="pika.recipe"></span><br><span data-i18n="pika.keyframes"></span>
             </div>
             <div class="bd-smart-split-msg hidden" data-r="smart-split-msg" role="status"></div>
             <div class="bd-external-groups-msg hidden" data-r="external-groups-msg" role="status"></div>`;
         this.root.appendChild(toolbarWrap);
         this.smartSplitMsgEl = toolbarWrap.querySelector('[data-r="smart-split-msg"]');
         this.externalGroupsMsgEl = toolbarWrap.querySelector('[data-r="external-groups-msg"]');
-        this.langToggleBtn = toolbarWrap.querySelector('[data-a="lang-toggle"]');
+        this.languageSelect = toolbarWrap.querySelector('[data-r="language"]');
+        this.familySelect = toolbarWrap.querySelector('[data-r="generation-family"]');
+        this.pikaRecipe = toolbarWrap.querySelector('[data-r="pika-recipe"]');
 
         this.mainBody = document.createElement("div");
         this.mainBody.className = "bd-main";
@@ -3010,6 +3105,7 @@ class MiniMaxH3DirectorEditor {
             </span>
             <label data-i18n="output.resolution">输出分辨率</label>
             <select class="bd-select" data-r="out-aspect" data-i18n-title="tooltip.aspectRatio" style="max-width:200px">
+                <option value="${KEEP_ASPECT_RATIO}">${aspectDisplayLabel(KEEP_ASPECT_RATIO)}</option>
                 ${RESOLUTION_ASPECTS.map(([label]) => `<option value="${label}"${label === DEFAULT_ASPECT_RATIO ? " selected" : ""}>${aspectDisplayLabel(label)}</option>`).join("")}
                 <option value="${CUSTOM_ASPECT_RATIO}">${aspectDisplayLabel(CUSTOM_ASPECT_RATIO)}</option>
             </select>
@@ -3039,6 +3135,13 @@ class MiniMaxH3DirectorEditor {
                     <option value="generate" data-i18n="output.audio.generate">生成声音</option>
                     <option value="source" data-i18n="output.audio.source">使用原声</option>
                     <option value="mute" data-i18n="output.audio.mute">静音</option>
+                </select>
+            </span>
+            <span class="bd-out-audio-wrap" data-r="audio-conditioning-wrap" data-i18n-title="tooltip.audioConditioning">
+                <label for="mmx-audio-conditioning-${this.node.id}" data-i18n="output.audioConditioning">原声条件</label>
+                <select class="bd-select" id="mmx-audio-conditioning-${this.node.id}" data-r="audio-conditioning">
+                    <option value="none" data-i18n="output.audioConditioning.none">不锁定</option>
+                    <option value="source_lock" data-i18n="output.audioConditioning.sourceLock">锁定原声</option>
                 </select>
             </span>
             <span class="bd-out-source-wrap hidden" data-r="out-source-wrap" data-i18n-title="widget.tooltip.exportSourceImages">
@@ -3128,6 +3231,15 @@ class MiniMaxH3DirectorEditor {
                     <div class="bd-r2v-common-titles">
                         <b data-r="global-panel-title" data-i18n="panel.globalPromptAndRefs">全局提示词 & 参考图 (图片1–9)</b>
                     </div>
+                    <!-- [MMX-EXT] Local patch: manual release of external prompt ownership. -->
+                    <button type="button" class="bd-btn bd-btn-primary hidden" data-r="release-external-prompt" data-i18n="button.releaseExternalPrompt" hidden>解除外部锁定</button>
+                </div>
+                <div class="bd-src-video-bar" data-r="g-src-video-bar">
+                    <span class="bd-label">现成视频当某一段（不重新生成；后续片段从它续写）</span>
+                    <select class="bd-select" data-r="g-src-video-seg" style="max-width:190px"></select>
+                    <button type="button" class="bd-r2v-pick-existing" data-r="g-src-video-pick">选已有视频</button>
+                    <button type="button" class="bd-r2v-pick-existing" data-r="g-src-video-clear">清除</button>
+                    <span class="bd-meta bd-src-video-name" data-r="g-src-video-name"></span>
                 </div>
                 <div class="bd-r2v-common-body" data-r="r2v-common-body">
                     <div class="bd-meta bd-r2v-common-hint hidden" data-r="r2v-common-hint" data-i18n="panel.r2vCommonHint">公共参考图/视频/音频供各组读取；公共提示词会与每组提示词拼接成完整提示词。同槽位以组内素材优先。</div>
@@ -3223,6 +3335,12 @@ class MiniMaxH3DirectorEditor {
                             <option value="max" data-i18n="output.refImageSize.max">max</option>
                         </select>
                     </label>
+                </div>
+                <div class="bd-src-video-bar" data-r="seg-src-video-col">
+                    <span class="bd-label">现成视频当这一段（不重新生成；后续片段从它续写）</span>
+                    <button type="button" class="bd-r2v-pick-existing" data-r="seg-src-video-pick">选已有视频</button>
+                    <button type="button" class="bd-r2v-pick-existing" data-r="seg-src-video-clear">清除</button>
+                    <span class="bd-meta bd-src-video-name" data-r="seg-src-video-name"></span>
                 </div>
                 <div class="bd-prompt-layout" data-r="seg-prompt-layout">
                     <div class="bd-refs-col" data-r="seg-refs-col">
@@ -3356,6 +3474,7 @@ class MiniMaxH3DirectorEditor {
         this.r2vCommonToggle = this.root.querySelector('[data-r="r2v-common-toggle"]');
         this.segmentPanel = this.root.querySelector('[data-r="segment-panel"]');
         this.globalPrompt = this.root.querySelector('[data-r="global-prompt"]');
+        this.externalPromptReleaseButton = this.root.querySelector('[data-r="release-external-prompt"]');
         this.globalNegative = this.root.querySelector('[data-r="global-negative"]');
         this.globalPromptLayout = this.root.querySelector('[data-r="global-prompt-layout"]');
         this.segPromptLayout = this.root.querySelector('[data-r="seg-prompt-layout"]');
@@ -3390,6 +3509,11 @@ class MiniMaxH3DirectorEditor {
         this.segRefVideoCol = this.root.querySelector('[data-r="seg-ref-video-col"]');
         this.segRefVideo = this.root.querySelector('[data-r="seg-ref-video"]');
         this.segRefVideoNameEl = this.root.querySelector('[data-r="seg-ref-video-name"]');
+        this.segSrcVideoCol = this.root.querySelector('[data-r="seg-src-video-col"]');
+        this.segSrcVideoNameEl = this.root.querySelector('[data-r="seg-src-video-name"]');
+        this.gSrcVideoBar = this.root.querySelector('[data-r="g-src-video-bar"]');
+        this.gSrcVideoSeg = this.root.querySelector('[data-r="g-src-video-seg"]');
+        this.gSrcVideoNameEl = this.root.querySelector('[data-r="g-src-video-name"]');
         this.continuousRefWrap = this.root.querySelector('[data-r="continuous-ref-wrap"]');
         this.continuousRefCb = this.root.querySelector('[data-r="continuous-ref-cb"]');
         this.genGlobalImg = this.root.querySelector('[data-r="gen-global-img"]');
@@ -3416,6 +3540,9 @@ class MiniMaxH3DirectorEditor {
         this.fpsInput = this.root.querySelector('[data-r="timeline-fps"]');
         this.outAudioWrap = this.root.querySelector('[data-r="out-audio-wrap"]');
         this.outAudioMode = this.root.querySelector('[data-r="out-audio-mode"]');
+        this.audioConditioning = this.root.querySelector('[data-r="audio-conditioning"]');
+        this.audioConditioningWrap = this.root.querySelector('[data-r="audio-conditioning-wrap"]');
+        this.audioConditioning.value = this.widget("audio_conditioning")?.value || "none";
         this.exportSourceImagesWrap = this.root.querySelector('[data-r="out-source-wrap"]');
         this.exportSourceImagesCb = this.root.querySelector('[data-r="out-export-source"]');
         this.exportPreFaceRefineWrap = this.root.querySelector('[data-r="out-preface-wrap"]');
@@ -3492,9 +3619,11 @@ class MiniMaxH3DirectorEditor {
         bind('[data-a="del"]', () => this.deleteSelectedSegment());
         bind('[data-a="mode-global"]', () => this.setEditMode("global"));
         bind('[data-a="mode-segment"]', () => this.setEditMode("segment"));
-        bind('[data-a="lang-toggle"]', () => toggleLocale());
+        this.languageSelect.onchange = () => setLocale(this.languageSelect.value);
+        this.familySelect.onchange = () => this.setGenerationFamily(this.familySelect.value);
         bind('[data-a="zoom-toggle"]', () => this.toggleTimelineZoom());
         bindPackActions(this);
+        bindUpdateAction(this);
         bind('[data-a="play"]', () => this.togglePlay());
         bind('[data-a="loop"]', () => this.toggleLoop());
         bind('[data-a="live-tae-preview"]', () => this.toggleLiveTaePreview());
@@ -3616,6 +3745,11 @@ class MiniMaxH3DirectorEditor {
         }
         this.globalTask.onchange = () => this.onGlobalField("taskType", this.globalTask.value);
         this.globalPrompt.oninput = () => this.onGlobalField("prompt", this.globalPrompt.value);
+        // [MMX-EXT] Local patch; normal prompt input handling remains unchanged.
+        this.externalPromptReleaseButton.onclick = (e) => {
+            stopDomEvent(e);
+            this.clearExternalGlobalPrompt();
+        };
         if (this.mixedT2vPrompt) {
             this.mixedT2vPrompt.oninput = () => {
                 if (this.getTaskKey() !== "mixed") return;
@@ -3738,6 +3872,11 @@ class MiniMaxH3DirectorEditor {
         };
         this.outMaxFrames.onchange = () => this.onOutputField("maxExportFrames", +this.outMaxFrames.value);
         this.outExportMode.onchange = () => this.onOutputField("exportMode", this.outExportMode.value);
+        this.audioConditioning.onchange = () => {
+            const widget = this.widget("audio_conditioning");
+            if (widget) widget.value = this.audioConditioning.value;
+            this.commit(false, { syncTimeline: true });
+        };
         if (this.outAudioMode) {
             this.outAudioMode.onchange = () => this.onOutputField("audioMode", this.outAudioMode.value);
         }
@@ -3824,6 +3963,23 @@ class MiniMaxH3DirectorEditor {
             stopDomEvent(e);
             void this.pickExistingRef(false);
         });
+        this.root.querySelector('[data-r="seg-src-video-pick"]')?.addEventListener("click", (e) => {
+            stopDomEvent(e);
+            void this.pickSegmentSourceVideo();
+        });
+        this.root.querySelector('[data-r="seg-src-video-clear"]')?.addEventListener("click", (e) => {
+            stopDomEvent(e);
+            this.clearSegmentSourceVideo();
+        });
+        this.root.querySelector('[data-r="g-src-video-pick"]')?.addEventListener("click", (e) => {
+            stopDomEvent(e);
+            void this.pickGlobalSourceVideo();
+        });
+        this.root.querySelector('[data-r="g-src-video-clear"]')?.addEventListener("click", (e) => {
+            stopDomEvent(e);
+            this.clearGlobalSourceVideo();
+        });
+        this.gSrcVideoSeg?.addEventListener("change", () => { this._refreshGSourceVideoBar(); });
         this.root.querySelector('[data-r="global-videos-pick"]')?.addEventListener("click", (e) => {
             stopDomEvent(e);
             void this.pickExistingR2vCommonVideo();
@@ -4028,7 +4184,7 @@ class MiniMaxH3DirectorEditor {
             const taskType = widgets.task_type || widgets.taskType || data.global?.taskType || "";
             if (this.taskTypeWidget && taskType) this.taskTypeWidget.value = taskType;
             if (this.globalTask && taskType) this.globalTask.value = taskType;
-            for (const name of ["steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed"]) {
+            for (const name of ["steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed", "generation_family", "pika_flex", "audio_conditioning"]) {
                 if (widgets[name] == null || widgets[name] === "") continue;
                 const w = this.widget(name);
                 if (w) w.value = widgets[name];
@@ -4066,6 +4222,7 @@ class MiniMaxH3DirectorEditor {
             }
             this.applyTaskLayout(this._directorMode);
             this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value);
+            this.syncGenerationFamily();
             this.setEditMode(this.timeline.editMode || "global");
             this.selectedIndex = 0;
             this.updateSelectionUI();
@@ -5260,6 +5417,7 @@ class MiniMaxH3DirectorEditor {
         }
         const isVideoEditTask = isVideoEditTaskKey(taskKey) || taskKey === "r2v";
         this.outAudioWrap?.classList.toggle("hidden", !isVideoEditTask);
+        this.audioConditioningWrap?.classList.toggle("hidden", !isVideoEditTask && !["t2v", "i2v", "fl2v", "mixed"].includes(taskKey));
         this.syncExportSourceImagesUI();
         if (this.outExportMode) {
             this.outExportMode.disabled = (isBatch || isFl2v) && !showBatchExport;
@@ -6435,13 +6593,45 @@ class MiniMaxH3DirectorEditor {
         const prev = selected || el.value;
         el.innerHTML = "";
         for (const v of opts) {
+            const task = resolveTaskKey(v);
+            if (this.isPikaFamily() && !["t2v", "i2v", "fl2v", "r2v", "mixed"].includes(task)) continue;
             const o = document.createElement("option");
             o.value = v;
             const key = resolveTaskKey(v);
-            o.textContent = taskDisplayLabel(key) || v;
+            o.textContent = this.isPikaFamily() && ["fl2v", "mixed"].includes(key)
+                ? t(`pika.${key}`) : taskDisplayLabel(key) || v;
             el.appendChild(o);
         }
         if (prev) el.value = prev;
+    }
+
+    isPikaFamily() {
+        return directorUsesPika(this.node);
+    }
+
+    setGenerationFamily(value) {
+        if (!this.familyWidget) return;
+        this.familyWidget.value = value === "Pika-H3" ? "Pika-H3" : "H3";
+        const legacy = this.widget("pika_flex");
+        if (legacy) legacy.value = this.familyWidget.value === "Pika-H3";
+        this.syncGenerationFamily();
+        this.commit(false, { syncTimeline: true });
+    }
+
+    syncGenerationFamily() {
+        const pika = this.isPikaFamily();
+        this.root?.classList.toggle("pika-family", pika);
+        if (this.familySelect) this.familySelect.value = pika ? "Pika-H3" : "H3";
+        this.pikaRecipe?.classList.toggle("hidden", !pika);
+        if (this.audioConditioning) this.audioConditioning.value = this.widget("audio_conditioning")?.value || "none";
+        syncDirectorSchedulerWidgets(this.node);
+        this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value);
+        if (pika && !["t2v", "i2v", "fl2v", "r2v", "mixed"].includes(this.getTaskKey())) {
+            const fallback = [...(this.globalTask?.options || [])].find((option) => resolveTaskKey(option.value) === "t2v");
+            if (fallback) this.onGlobalField("taskType", fallback.value);
+        }
+        this.renderImageBatchGroups?.();
+        this.node.setDirtyCanvas?.(true, true);
     }
 
     refreshAspectSelectLabels() {
@@ -6457,6 +6647,7 @@ class MiniMaxH3DirectorEditor {
         this.root?.classList.toggle("locale-en", getLocale() === "en");
         this.root?.classList.toggle("locale-zh", getLocale() !== "en");
         applyI18nDom(this.root);
+        if (this.languageSelect) this.languageSelect.value = getLocalePreference();
         applyDirectorWidgetLabels(this.node);
         this.populateTaskSelect(this.globalTask, this.taskTypeWidget?.value || this.globalTask?.value);
         this.refreshAspectSelectLabels();
@@ -6753,6 +6944,9 @@ class MiniMaxH3DirectorEditor {
         if (isCustomAspectRatio(ar)) {
             return this.applyCustomResolution(out.width, out.height);
         }
+        if (isKeepAspectRatio(ar)) {
+            return this.applyKeepAspectResolution(megapixels);
+        }
         const resolved = resolutionFromSelector(
             ar,
             megapixels ?? out.megapixels ?? this.outMp?.value ?? DEFAULT_MEGAPIXELS,
@@ -6782,6 +6976,87 @@ class MiniMaxH3DirectorEditor {
             this.outMp.value = String(resolved.megapixels);
         }
         return resolved;
+    }
+
+    /**
+     * 跟随图片 / Keep aspect ratio: the canvas takes the first picture's shape at the
+     * megapixel budget. With no picture yet (or t2v) the current width × height stay;
+     * the backend works it out again from the picture file at run time.
+     */
+    applyKeepAspectResolution(megapixels = null) {
+        const out = this.timeline.output || {};
+        const mult = out.multiple ?? MINIMAX_CANVAS_MULTIPLE;
+        const mp = clampMegapixels(megapixels ?? out.megapixels ?? this.outMp?.value ?? DEFAULT_MEGAPIXELS);
+        const source = this.getKeepAspectSourceDimensions();
+        const kept = keepAspectResolution(source.width, source.height, mp, mult);
+        const width = kept ? kept.width : snapResolutionDim(out.width ?? this.widthWidget?.value ?? 864, mult);
+        const height = kept ? kept.height : snapResolutionDim(out.height ?? this.heightWidget?.value ?? 480, mult);
+        this.timeline.output = {
+            ...out,
+            mode: "fixed",
+            aspectRatio: KEEP_ASPECT_RATIO,
+            megapixels: mp,
+            multiple: mult,
+            width,
+            height,
+            longEdge: Math.max(width, height),
+        };
+        if (this.widthWidget) this.widthWidget.value = width;
+        if (this.heightWidget) this.heightWidget.value = height;
+        if (this.refMaxWidget) this.refMaxWidget.value = Math.max(width, height);
+        if (this.outW) this.outW.value = String(width);
+        if (this.outH) this.outH.value = String(height);
+        if (this.outAspect) this.outAspect.value = KEEP_ASPECT_RATIO;
+        if (this.outMp && document.activeElement !== this.outMp) {
+            this.outMp.value = String(mp);
+        }
+        return { width, height, megapixels: mp, aspectRatio: KEEP_ASPECT_RATIO, multiple: mult, fromPicture: !!kept, source };
+    }
+
+    /** Size of the first picture the run uses (the backend picks the same one): (0, 0) when unknown. */
+    getKeepAspectSourceDimensions() {
+        const tl = this.timeline || {};
+        const segs = [];
+        for (const seg of tl.segments || []) segs.push(seg.genImage, seg.startImage, ...(seg.refs || []));
+        const shots = [];
+        for (const shot of tl.shots || []) shots.push(shot.startImage, shot.endImage);
+        const globals = [tl.global?.genImage, ...(tl.global?.refs || [])];
+        const cands = this.isFl2vMode?.() ? [...shots, ...segs, ...globals] : [...segs, ...shots, ...globals];
+        for (const c of cands) {
+            if (!c || !(c.imageFile || c.imageB64)) continue;
+            const w = +(c.width || 0);
+            const h = +(c.height || 0);
+            if (w > 0 && h > 0) return { width: w, height: h };
+            const known = KEEP_DIMS.get(c.imageFile);
+            if (known) {
+                c.width = known.width;
+                c.height = known.height;
+                return known;
+            }
+            this.loadKeepAspectDims(c);
+            return { width: 0, height: 0 };
+        }
+        return { width: 0, height: 0 };
+    }
+
+    /** Read a picture's size once, then re-apply Keep aspect ratio with it. */
+    loadKeepAspectDims(ref) {
+        const file = ref?.imageFile;
+        if (!file || KEEP_DIMS_PENDING.has(file)) return;
+        KEEP_DIMS_PENDING.add(file);
+        const img = new Image();
+        img.onload = () => {
+            KEEP_DIMS_PENDING.delete(file);
+            if (!img.naturalWidth || !img.naturalHeight) return;
+            KEEP_DIMS.set(file, { width: img.naturalWidth, height: img.naturalHeight });
+            if (isKeepAspectRatio(this.timeline?.output?.aspectRatio)) {
+                this.applyKeepAspectResolution();
+                this.updateOutputPreview();
+                this.scheduleTimelineSync?.();
+            }
+        };
+        img.onerror = () => KEEP_DIMS_PENDING.delete(file);
+        img.src = inputViewUrl(file);
     }
 
     /** Apply explicit custom width × height (snapped to canvas multiple). */
@@ -6843,6 +7118,16 @@ class MiniMaxH3DirectorEditor {
 
     updateOutputPreview() {
         if (!this.outPreview) return;
+        const selectorMode = this.isImageBatch() || this.isGenMode() || this.isFl2vMode()
+            || NO_VIDEO_UPLOAD_TASKS.has(this.getTaskKey());
+        if (selectorMode && isKeepAspectRatio(this.timeline.output?.aspectRatio)) {
+            // Pictures report their size after loading and call this — the canvas follows them here.
+            const kept = this.applyKeepAspectResolution();
+            this.outPreview.textContent = (kept.fromPicture
+                ? t("output.preview.keep", { w: kept.width, h: kept.height, sw: kept.source.width, sh: kept.source.height, mp: kept.megapixels })
+                : t("output.preview.keepNoPicture", { mp: kept.megapixels })) + this._exportPreviewSuffix();
+            return;
+        }
         if (this.isImageBatch() && (this.getTaskKey() === "i2i" || this.getTaskKey() === "i2v")) {
             const out = this.timeline.output || {};
             if ((out.mode || "long_edge") === "long_edge") {
@@ -7091,7 +7376,15 @@ class MiniMaxH3DirectorEditor {
     syncFromWidgets() {
         this.timeline.global = this.timeline.global || { refs: [], referenceVideo: {}, continuousReference: false };
         this.timeline.global.taskType = this.globalTask?.value || this.taskTypeWidget?.value || "";
-        this.timeline.global.prompt = this.globalPrompt?.value ?? this.globalPromptWidget?.value ?? "";
+        // [MMX-MCP-MERGE] Setters hydrate the DOM synchronously. A later DOM change
+        // is a frontend draft, even while externally latched; never reapply the old lock.
+        const promptDraft = this.globalPrompt?.value ?? this.globalPromptWidget?.value
+            ?? this.timeline.global.prompt ?? "";
+        if (this._mmxExternalPrompt !== null && promptDraft !== this._mmxExternalPrompt) {
+            this._mmxExternalPrompt = promptDraft;
+            this._mmxExternalPromptStamp = Math.max(Date.now(), this._mmxExternalPromptStamp + 1);
+        }
+        this.timeline.global.prompt = promptDraft;
         if (this.continuousRefCb) {
             this.timeline.global.continuousReference = !!this.continuousRefCb.checked;
         }
@@ -7183,7 +7476,15 @@ class MiniMaxH3DirectorEditor {
         this.updateRunSelectUI();
         this.updateSegmentContinuityUI();
         if (this.taskTypeWidget) this.taskTypeWidget.value = this.timeline.global.taskType;
-        if (this.globalPromptWidget) this.globalPromptWidget.value = this.timeline.global.prompt;
+        if (this.globalPromptWidget) {
+            // [MMX-EXT] Do not silently undo an externally latched prompt.
+            if (this._mmxExternalPrompt === null) {
+                this.globalPromptWidget.value = this.timeline.global.prompt;
+            } else {
+                this.timeline.global.prompt = this._mmxExternalPrompt;
+                this.globalPromptWidget.value = this._mmxExternalPrompt;
+            }
+        }
         if (this.negativePromptWidget) {
             const neg = this.globalNegative?.value ?? this.segNegative?.value ?? this.negativePromptWidget.value ?? "";
             this.negativePromptWidget.value = neg;
@@ -7205,6 +7506,206 @@ class MiniMaxH3DirectorEditor {
         }
         if (this.isImageBatch()) this.renderImageBatchGroups();
         else this.updateSelectionUI();
+    }
+
+    // [MMX-EXT] Local patch: explicit setters activate ownership; raw widget writes do not.
+    updateExternalPromptLock() {
+        const button = this.externalPromptReleaseButton;
+        if (!button) return;
+        // Keep release reachable even when shared parameters are disabled or folded.
+        const toolbar = this.usesSharedParamsPanel?.()
+            ? this.r2vCommonToggle?.parentElement
+            : this.r2vCommonHead;
+        if (toolbar && button.parentElement !== toolbar) toolbar.appendChild(button);
+        const latched = this._mmxExternalPrompt !== null;
+        button.hidden = !latched;
+        button.classList.toggle("hidden", !latched);
+    }
+
+    // A read snapshot is scoped to this editor instance, bounded, and single-use.
+    // It is never saved in the workflow. Returning the token inside the read JSON
+    // lets the existing MCP value transport carry it without a backend schema change.
+    _captureExternalWriteState() {
+        clearTimeout(this._syncTimer);
+        this._syncTimer = null;
+        // Unlike flushTimelineSync(), harvest drafts BEFORE updating checkbox UI.
+        this._writeTimelineWidget();
+        return JSON.parse(this.timelineWidget.value);
+    }
+
+    getExternalWriteSnapshot() {
+        return this._issueExternalWriteSnapshot(this._captureExternalWriteState());
+    }
+
+    _issueExternalWriteSnapshot(baseline) {
+        this._mmxMcpBaselines ||= new Map();
+        this._mmxMcpInstanceId ||= `mmx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const token = globalThis.crypto?.randomUUID?.()
+            || `${this._mmxMcpInstanceId}-${this._mmxMcpSnapshotSeq = (this._mmxMcpSnapshotSeq || 0) + 1}`;
+        this._mmxMcpBaselines.set(token, baseline);
+        while (this._mmxMcpBaselines.size > 16) this._mmxMcpBaselines.delete(this._mmxMcpBaselines.keys().next().value);
+        return {
+            protocol: "mmx-three-way-v1",
+            write_mode: "patch", revision: "mmx-patch-20261009",
+            baseline_token: token,
+            baseline_handoff: "post-write-v1", single_use: true,
+            token_scope: "timeline_data+global_prompt",
+            timeline_data: JSON.stringify({ ...baseline, __mcp_write: { baseline_token: token, write_mode: "patch", revision: "mmx-patch-20261009" } }),
+            global_prompt: String(baseline.global?.prompt ?? ""),
+        };
+    }
+
+    _externalWriteBaseline(token) {
+        const retry = "Use the fresh minimax_h3_director_write.baseline_token from the successful write receipt, or read this live node again with panel_query_graph fields=detail. For global_prompt edit text in minimax_h3_director_write.global_prompt_value.";
+        if (typeof token !== "string" || !token) {
+            throw new Error("[DIRECTOR_BASELINE_MISSING] Include __mcp_write.baseline_token from a successful detail read or write receipt. " + retry);
+        }
+        const usedBy = this._mmxMcpConsumedBaselines?.get(token);
+        if (usedBy) {
+            throw new Error("[DIRECTOR_BASELINE_CONSUMED] Director baseline already consumed by " + usedBy
+                + ". timeline_data and global_prompt share ONE single-use baseline; changing widget names does not renew it. " + retry);
+        }
+        if (!this._mmxMcpBaselines?.has(token)) {
+            throw new Error("[DIRECTOR_BASELINE_UNKNOWN] Director baseline is expired, evicted, or belongs to another editor/workflow instance. " + retry);
+        }
+        return this._mmxMcpBaselines.get(token);
+    }
+
+    setExternalGlobalPrompt(text, options = {}) {
+        try {
+            let envelope = text && typeof text === "object" && !Array.isArray(text) ? text : null;
+            if (!envelope && typeof text === "string") {
+                try {
+                    const candidate = JSON.parse(text);
+                    if (candidate?.__mcp_write?.baseline_token) envelope = candidate;
+                } catch { /* ordinary prompt text uses an explicit options token */ }
+            }
+            if (envelope && typeof envelope.text !== "string") throw new Error("global_prompt envelope requires string text");
+            const token = envelope?.__mcp_write?.baseline_token ?? envelope?.baseline_token ?? options.baseline_token;
+            const baseline = this._externalWriteBaseline(token);
+            const v = envelope ? envelope.text : String(text ?? "");
+            const candidate = JSON.parse(JSON.stringify(baseline));
+            candidate.global ||= {};
+            candidate.global.prompt = v;
+            // Same merge/import/verification path, including untouched timeline fields.
+            return this.setExternalTimelineData(candidate, { baseline_token: token, via: "setExternalGlobalPrompt" });
+        } catch (e) {
+            return { ok: false, error: String(e), conflicts: [] };
+        }
+    }
+
+    clearExternalGlobalPrompt() {
+        // Releasing a latch is not a text replacement. Keep any current DOM draft.
+        invalidateDirectorConfigureRestore(this.node);
+        this._captureExternalWriteState();
+        this._mmxExternalPrompt = null;
+        this._mmxExternalPromptStamp = Math.max(Date.now(), this._mmxExternalPromptStamp + 1);
+        this.updateExternalPromptLock();
+        this.commit(true, { syncTimeline: true });
+        this.flushTimelineSync();
+        return { ok: true, cleared: true, via: "clearExternalGlobalPrompt", latched: false, conflicts: [] };
+    }
+
+    getExternalPromptState() {
+        return {
+            protocol: "mmx-three-way-v1",
+            write_mode: "patch", revision: "mmx-patch-20261009",
+            latched: this._mmxExternalPrompt !== null,
+            chars: (this._mmxExternalPrompt || "").length,
+            stamp: this._mmxExternalPromptStamp,
+            sameAsTimeline: this._mmxExternalPrompt === (this.timeline?.global?.prompt ?? null),
+        };
+    }
+
+    setExternalTimelineData(jsonText, options = {}) {
+        try {
+            const parsed = JSON.parse(typeof jsonText === "string" ? jsonText : JSON.stringify(jsonText));
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+                || (parsed.global != null && (typeof parsed.global !== "object" || Array.isArray(parsed.global)))) {
+                return { ok: false, error: "timeline_data must be a JSON object with an object-valued global", conflicts: [] };
+            }
+            const token = parsed.__mcp_write?.baseline_token ?? options.baseline_token;
+            if (options.baseline_token && parsed.__mcp_write?.baseline_token
+                && options.baseline_token !== parsed.__mcp_write.baseline_token) throw new Error("Director baseline tokens disagree");
+            const baseline = this._externalWriteBaseline(token);
+            delete parsed.__mcp_write;
+            invalidateDirectorConfigureRestore(this.node);
+            const current = this._captureExternalWriteState();
+            const prepared = prepareDirectorSubmission(baseline, parsed);
+            const taskKey = baseline.global?.taskType === prepared.global?.taskType
+                ? this.getTaskKey?.() : resolveTaskKey(prepared.global?.taskType);
+            const merged = mergeDirectorValues(canonicalDirectorMergeState(baseline),
+                canonicalDirectorMergeState(prepared), canonicalDirectorMergeState(current));
+            const expected = JSON.parse(JSON.stringify(merged.value));
+            restoreDirectorWorkspaces(merged.value, current, taskKey);
+            const previousLatch = this._mmxExternalPrompt;
+            try {
+                this._mmxExternalPrompt = String(merged.value.global?.prompt ?? "");
+                this._mmxExternalPromptStamp = Math.max(Date.now(), this._mmxExternalPromptStamp + 1);
+                if (options.via === "setExternalGlobalPrompt") {
+                    // A scalar prompt write does not need to rebuild the timeline UI.
+                    this.timeline.global.prompt = this._mmxExternalPrompt;
+                    if (this.globalPrompt) {
+                        this.globalPrompt.value = this._mmxExternalPrompt;
+                        this.globalPrompt.__bdTokenApi?.hydrateFromValue?.(this._mmxExternalPrompt);
+                    }
+                    if (this.globalPromptWidget) this.globalPromptWidget.value = this._mmxExternalPrompt;
+                    this.commit(true, { syncTimeline: true });
+                } else {
+                    this.applyImportedTimeline(merged.value);
+                }
+                this.updateExternalPromptLock();
+                this.flushTimelineSync();
+                const actual = JSON.parse(this.timelineWidget.value);
+                    const canonicalActual = canonicalDirectorMergeState(actual);
+                    const lost = lostDirectorFrontendEdits(expected, canonicalActual, merged.preservedPaths);
+                    const unapplied = lostDirectorFrontendEdits(expected, canonicalActual, merged.changedPaths);
+                if (lost.length || unapplied.length) {
+                    // Do not confirm a write if normalization or hydration lost a frontend edit.
+                    throw new Error(`Director readback mismatch; preserved frontend fields: ${formatDirectorMismatches(expected, canonicalActual, lost, "frontend")}; unapplied Agent fields: ${formatDirectorMismatches(expected, canonicalActual, unapplied)}`);
+                }
+                // Hand off a NEW pinned post-write snapshot. Never retarget or
+                // reuse the old baseline: that could turn stale fields into edits.
+                const next = this._issueExternalWriteSnapshot(actual);
+                this._mmxMcpBaselines.delete(token);
+                this._mmxMcpConsumedBaselines ||= new Map();
+                this._mmxMcpConsumedBaselines.set(token, options.via || "setExternalTimelineData");
+                while (this._mmxMcpConsumedBaselines.size > 16) {
+                    this._mmxMcpConsumedBaselines.delete(this._mmxMcpConsumedBaselines.keys().next().value);
+                }
+                return {
+                    ok: true, via: options.via || "setExternalTimelineData", latched: true,
+                    version: this.timeline.version, totalFrames: this.timeline.totalFrames,
+                    conflicts: merged.conflicts,
+                    changed_paths: merged.changedPaths,
+                    preserved_frontend_paths: merged.preservedPaths,
+                    minimax_h3_director_write: {
+                        protocol: next.protocol, write_mode: next.write_mode, revision: next.revision,
+                        baseline_handoff: next.baseline_handoff,
+                        baseline_token: next.baseline_token, single_use: true,
+                        token_scope: next.token_scope, previous_baseline_consumed: true,
+                        global_prompt_value: JSON.stringify({
+                            text: next.global_prompt, __mcp_write: { baseline_token: next.baseline_token },
+                        }),
+                        next_write: "Use this NEW token for the next timeline_data PATCH or edit the returned global_prompt_value envelope. Do not reuse the token passed to this successful write.",
+                    },
+                    timeline_data: this.timelineWidget.value,
+                };
+            } catch (error) {
+                try {
+                    this._mmxExternalPrompt = String(current.global?.prompt ?? "");
+                    this.applyImportedTimeline(current);
+                    this._mmxExternalPrompt = previousLatch === null ? null : String(current.global?.prompt ?? "");
+                    this.updateExternalPromptLock();
+                    this.flushTimelineSync();
+                } catch (restoreError) {
+                    throw new Error(`${error}; restoration failed: ${restoreError}; re-read current node state before any retry`);
+                }
+                throw new Error(`${error}; write rolled back to current frontend snapshot`);
+            }
+        } catch (e) {
+            return { ok: false, error: String(e), conflicts: [] };
+        }
     }
 
     normalizeSegments() {
@@ -7860,6 +8361,124 @@ class MiniMaxH3DirectorEditor {
         }
     }
 
+    /** Current segment's finished-video source, or null. */
+    _segSourceVideo() {
+        const seg = this.timeline?.segments?.[this.selectedIndex];
+        const sv = seg?.sourceVideo;
+        return sv && (sv.videoFile || sv.fileName) ? sv : null;
+    }
+
+    /** Refresh the segment panel's source-video status line. */
+    _refreshSegSourceVideoLabel(seg = null) {
+        const el = this.segSrcVideoNameEl;
+        if (!el) return;
+        const target = seg || this.timeline?.segments?.[this.selectedIndex];
+        const sv = target?.sourceVideo;
+        el.textContent = sv && (sv.videoFile || sv.fileName)
+            ? `✓ 本片段直接采用：${sv.videoFile || sv.fileName}（不采样）`
+            : "（未设置：本片段正常生成）";
+        el.style.color = sv && (sv.videoFile || sv.fileName) ? "#7fd18a" : "";
+    }
+
+    /** Fill the global bar's segment picker and its status text. */
+    _refreshGSourceVideoBar() {
+        const sel = this.gSrcVideoSeg;
+        if (!sel) return;
+        const segs = this.timeline?.segments || [];
+        const keep = sel.value;
+        if (sel.options.length !== segs.length) {
+            sel.innerHTML = "";
+            segs.forEach((s, i) => {
+                const o = document.createElement("option");
+                o.value = String(i);
+                const sv = s?.sourceVideo;
+                const mark = sv && (sv.videoFile || sv.fileName) ? " ★" : "";
+                o.textContent = `片段 ${i + 1}${mark}`;
+                sel.appendChild(o);
+            });
+        }
+        const want = keep && keep !== "" ? keep : String(this.selectedIndex ?? 0);
+        if (sel.value !== want && sel.querySelector(`option[value="${want}"]`)) sel.value = want;
+        const seg = segs[Number(sel.value) || 0];
+        const sv = seg?.sourceVideo;
+        if (this.gSrcVideoNameEl) {
+            this.gSrcVideoNameEl.textContent = sv && (sv.videoFile || sv.fileName)
+                ? `✓ 片段 ${Number(sel.value) + 1} 直接采用：${sv.videoFile || sv.fileName}（不采样）`
+                : `（片段 ${(Number(sel.value) || 0) + 1} 未设置：正常生成）`;
+            this.gSrcVideoNameEl.style.color = sv && (sv.videoFile || sv.fileName) ? "#7fd18a" : "";
+        }
+    }
+
+    /** Pick an existing video for the segment chosen in the global bar. */
+    async pickGlobalSourceVideo() {
+        const idx = Number(this.gSrcVideoSeg?.value || 0);
+        const seg = this.timeline?.segments?.[idx];
+        if (!seg) return;
+        try {
+            const picked = await this.chooseVideoInput({
+                title: t("mediaPicker.pickVideo"),
+                currentValue: seg.sourceVideo?.videoFile || "",
+            });
+            if (!picked?.relPath) return;
+            const name = picked.fileName || picked.relPath;
+            seg.sourceVideo = {
+                videoFile: name, fileName: name,
+                type: picked.type || "input", subfolder: picked.subfolder || "",
+            };
+            this.commit();
+            this._refreshGSourceVideoBar();
+            this._refreshSegSourceVideoLabel(seg);
+        } catch (err) {
+            console.error("[MiniMax H3Director] source video pick failed:", err);
+        }
+    }
+
+    /** Clear the chosen segment's source video. */
+    clearGlobalSourceVideo() {
+        const idx = Number(this.gSrcVideoSeg?.value || 0);
+        const seg = this.timeline?.segments?.[idx];
+        if (!seg || !seg.sourceVideo) return;
+        delete seg.sourceVideo;
+        this.commit();
+        this._refreshGSourceVideoBar();
+        this._refreshSegSourceVideoLabel(seg);
+    }
+
+    /** Pick an existing video and use it AS this segment (no sampling). */
+    async pickSegmentSourceVideo() {
+        const seg = this.timeline?.segments?.[this.selectedIndex];
+        if (!seg) return;
+        try {
+            const picked = await this.chooseVideoInput({
+                title: t("mediaPicker.pickVideo"),
+                currentValue: seg.sourceVideo?.videoFile || "",
+            });
+            if (!picked?.relPath) return;
+            const name = picked.fileName || picked.relPath;
+            seg.sourceVideo = {
+                videoFile: name,
+                fileName: name,
+                type: picked.type || "input",
+                subfolder: picked.subfolder || "",
+            };
+            this.commit();
+            this._refreshSegSourceVideoLabel(seg);
+            this.scheduleRender?.();
+        } catch (err) {
+            console.error("[MiniMax H3Director] source video pick failed:", err);
+        }
+    }
+
+    /** Drop the segment's source video so it is generated normally again. */
+    clearSegmentSourceVideo() {
+        const seg = this.timeline?.segments?.[this.selectedIndex];
+        if (!seg || !seg.sourceVideo) return;
+        delete seg.sourceVideo;
+        this.commit();
+        this._refreshSegSourceVideoLabel(seg);
+        this.scheduleRender?.();
+    }
+
     pickAppendVideoFile() {
         if (!this.hasVideo()) {
             this.showBdMessage(
@@ -7969,6 +8588,7 @@ class MiniMaxH3DirectorEditor {
 
             const overlay = document.createElement("div");
             overlay.className = "bd-modal-overlay";
+            if (opts.overlayClass) overlay.classList.add(opts.overlayClass);
             const panel = document.createElement("div");
             panel.className = "bd-modal";
             panel.innerHTML = `
@@ -9702,6 +10322,8 @@ class MiniMaxH3DirectorEditor {
             }
         }
         this.segInfo.textContent = info;
+        this._refreshSegSourceVideoLabel(seg);
+        this._refreshGSourceVideoBar();
     }
 
     onMouseUp() {
@@ -12673,6 +13295,9 @@ function graphLinkRecord(graph, linkId) {
     const links = graph.links;
     if (!links) return null;
     let link = links[linkId];
+    if (!link && typeof links.get === "function") {
+        link = links.get(linkId) || links.get(Number(linkId)) || links.get(String(linkId));
+    }
     if (!link && typeof links.find === "function") {
         link = links.find((l) => l && (l.id === linkId || l[0] === linkId));
     }
@@ -13097,6 +13722,33 @@ function combineGroupSlotIndex(name) {
     return m ? parseInt(m[1], 10) : null;
 }
 
+function compareCombineInputs(a, b) {
+    const ai = combineGroupSlotIndex(a.name);
+    const bi = combineGroupSlotIndex(b.name);
+    if (ai != null && bi != null) return ai - bi;
+    if (ai != null) return -1;
+    if (bi != null) return 1;
+    return String(a.name) < String(b.name) ? -1 : String(a.name) > String(b.name) ? 1 : 0;
+}
+
+function fixCombineNodeTargetSlots(node) {
+    const links = node.graph?.links;
+    if (!links) return;
+    let changed = false;
+    for (const [slot, input] of (node.inputs || []).entries()) {
+        if (input.link == null) continue;
+        const link = typeof links.get === "function" ? links.get(input.link) : links[input.link];
+        if (!link || String(link.target_id ?? link[3]) !== String(node.id)) continue;
+        if (Array.isArray(link)) {
+            if (link[4] !== slot) { link[4] = slot; changed = true; }
+        } else if (link.target_slot !== slot) {
+            link.target_slot = slot;
+            changed = true;
+        }
+    }
+    if (changed) node.graph.setDirtyCanvas?.(true, true);
+}
+
 function isCombineGroupSlot(input) {
     if (!input) return false;
     if (combineGroupSlotIndex(input.name) != null) return true;
@@ -13173,12 +13825,7 @@ function expandExternalGroupLink(graph, linkId, depth = 0, mode = "specs", slotL
         const out = [];
         const slots = (node.inputs || [])
             .filter(isCombineGroupSlot)
-            .sort((a, b) => {
-                const ai = combineGroupSlotIndex(a.name);
-                const bi = combineGroupSlotIndex(b.name);
-                if (ai != null && bi != null) return ai - bi;
-                return 0;
-            });
+            .sort(compareCombineInputs);
         for (const input of slots) {
             if (input.link == null) continue;
             const label = slotLabel || String(input.name || "");
@@ -13359,6 +14006,7 @@ function normalizeDirectorOutputs(node) {
 app.registerExtension({
     name: "ComfyUI.MiniMaxH3DirectorPlugin",
     async setup() {
+        initializeLocale();
         installDirectorClipboardGuard();
         const flushDirectors = () => {
             const graph = app.graph ?? app.canvas?.graph;
@@ -13483,7 +14131,10 @@ app.registerExtension({
             nodeType.prototype.onConnectionsChange = function (...args) {
                 const out = onConnectionsChange?.apply(this, args);
                 // Combine/Group wiring changes do not fire Director.onConnectionsChange.
-                queueMicrotask(() => notifyDirectorsSyncExternalGroups());
+                queueMicrotask(() => {
+                    if (cls === EXTERNAL_COMBINE_NODE_TYPE) fixCombineNodeTargetSlots(this);
+                    notifyDirectorsSyncExternalGroups();
+                });
                 return out;
             };
             const onWidgetChanged = nodeType.prototype.onWidgetChanged;
@@ -13529,13 +14180,36 @@ app.registerExtension({
         }
 
         if (!isDirectorNodeDef(nodeType, nodeData)) return;
+
+        const widgetDefaults = {};
+        for (const inputs of [nodeData.input?.required, nodeData.input?.optional]) {
+            for (const [name, spec] of Object.entries(inputs || {})) {
+                const def = spec[1]?.default ?? (Array.isArray(spec[0]) ? spec[0][0] : undefined);
+                if (def !== undefined) widgetDefaults[name] = def;
+            }
+        }
+        nodeType.prototype._mmxDeclaredWidgetDefaults = widgetDefaults;
+
+        // [MMX-EXT] Install forwarding independently of the UI guard so an older
+        // patched prototype can acquire or repair the external methods on re-registration.
+        for (const method of ["setExternalGlobalPrompt", "clearExternalGlobalPrompt",
+            "getExternalPromptState", "getExternalWriteSnapshot", "setExternalTimelineData", "commit"]) {
+            nodeType.prototype[method] = function (...args) {
+                // An existing editor contains unsaved state; do not initialize it from
+                // an older pending onConfigure snapshot before an external write.
+                const editor = this._minimaxEditor || initDirectorEditor(this);
+                if (!editor) return { ok: false, error: "Director editor is not ready" };
+                return editor[method](...args);
+            };
+        }
+
         if (nodeType.prototype._minimaxDirectorPatched) return;
         nodeType.prototype._minimaxDirectorPatched = true;
-
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = onCreated?.apply(this, arguments);
             normalizeDirectorOutputs(this);
+            if (!this.title || this.title === "MiniMax H3 Director") this.title = "MiniMax H3 Director Pro";
             applyDirectorWidgetLabels(this);
             // ComfyUI may attach seed's control_after_generate combo after onNodeCreated.
             queueMicrotask(() => applyDirectorWidgetLabels(this));
@@ -13626,6 +14300,9 @@ app.registerExtension({
         const onWidgetChanged = nodeType.prototype.onWidgetChanged;
         nodeType.prototype.onWidgetChanged = function (name, ...rest) {
             const out = onWidgetChanged?.apply(this, [name, ...rest]);
+            if (["generation_family", "pika_flex", "audio_conditioning"].includes(String(name || ""))) {
+                this._minimaxEditor?.syncGenerationFamily();
+            }
             if (DIRECTOR_SAMPLE_VALUE_WIDGETS.includes(String(name || ""))) {
                 snapshotDirectorSampleWidgets(this);
             }
@@ -13645,17 +14322,31 @@ app.registerExtension({
             return onRemoved?.apply(this, arguments);
         };
 
+        const onSerialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function (data) {
+            const out = onSerialize?.apply(this, arguments);
+            data.widgets_values_named = Object.fromEntries(directorValueWidgets(this).map((w) => [
+                w.name, typeof w.serializeValue === "function" ? w.serializeValue(this) : w.value,
+            ]));
+            return out;
+        };
+
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (...args) {
             normalizeDirectorOutputs(this);
             const saved = args[0];
+            const configureEpoch = this._mmxConfigureEpoch = (this._mmxConfigureEpoch || 0) + 1;
             if (saved) this._mmxSavedConfigureData = saved;
             this._mmxPendingConfigureRestore = true;
             const out = onConfigure?.apply(this, args);
-            const runRestore = () => applyDirectorConfigureRestore(this, this._mmxSavedConfigureData);
+            const runRestore = () => {
+                if (this._mmxConfigureEpoch !== configureEpoch) return;
+                applyDirectorConfigureRestore(this, saved);
+            };
             queueMicrotask(runRestore);
             setTimeout(runRestore, 0);
             setTimeout(() => {
+                if (this._mmxConfigureEpoch !== configureEpoch) return;
                 finishDirectorConfigureRestore(this);
                 syncDirectorSchedulerWidgets(this, { restore: false });
                 const ed = initDirectorEditor(this) || this._minimaxEditor;
@@ -13669,11 +14360,14 @@ app.registerExtension({
                     ed.restoreVideoFromTimeline();
                 } else if (ed._directorMode === "prompt_batch" || ed._directorMode === "image_batch") {
                     ensureImageBatchTimeline(ed);
+                } else if (ed._directorMode === "fl2v") {
+                    ensureFl2vTimeline(ed);
                 } else {
                     ed.ensureGenTimeline();
                 }
                 ed.applyTaskLayout(ed._directorMode);
                 ed.populateTaskSelect(ed.globalTask, ed.taskTypeWidget?.value);
+                ed.syncGenerationFamily();
                 ed.setEditMode(ed.timeline.editMode || "global");
                 ed.selectedIndex = 0;
                 ed.updateSelectionUI();
@@ -13686,4 +14380,3 @@ app.registerExtension({
         };
     },
 });
-

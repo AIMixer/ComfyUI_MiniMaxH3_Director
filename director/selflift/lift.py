@@ -29,7 +29,6 @@ def lift_video_tensor(
     model_name: str = "",
     model=None,
     enable_chunking: bool = False,
-    fallback: str = "bilinear",
     prefix_steps: int = 0,
 ) -> torch.Tensor:
     """Spatially lift a BCTHW / CTHW video latent to the target canvas.
@@ -59,8 +58,7 @@ def lift_video_tensor(
         )
         out = packed["samples"]
     except Exception as exc:
-        log.warning("SelfLift 3D lift failed (%s); falling back to %s interpolate.", exc, fallback)
-        out = interpolate_video_5d(work, dst_lat_h, dst_lat_w, fallback)
+        raise RuntimeError("SelfLift 3D latent upscale failed; no interpolation fallback was applied. Check the upscaler model and available memory.") from exc
     if squeezed and torch.is_tensor(out) and out.ndim == 5 and out.shape[0] == 1:
         out = out.squeeze(0)
     return out
@@ -166,7 +164,6 @@ def lift_av_x0(
     model_name: str = "",
     model=None,
     enable_chunking: bool = False,
-    fallback: str = "bilinear",
     prefix_steps: int = 0,
     rho: float = 0.0,
     w_min: float = 0.5,
@@ -202,7 +199,6 @@ def lift_av_x0(
         model_name=model_name,
         model=model,
         enable_chunking=enable_chunking,
-        fallback=fallback,
         prefix_steps=prefix_steps,
     )
     if float(rho) > 1e-8:

@@ -1754,6 +1754,30 @@ def continuity_merged_frame_count(plan: DirectorPlan) -> int:
     return int(plan.total_frames)
 
 
+def join_continuous_pair(
+    current: torch.Tensor,
+    body: torch.Tensor,
+    plan: DirectorPlan,
+    *,
+    segment: SegmentPlan | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply continuity only across an explicitly continuous seam."""
+    if segment is not None and not segment.continuity_from_prev:
+        return current, body
+    if not getattr(plan, 'continuity_enabled', False):
+        return current, body
+    left = _unfreeze_held_tail(current)
+    if CONTINUITY_HOLD_POP_ON_TAIL:
+        left = _break_hold_pop_window(left, from_end=True)
+    body = _break_hold_pop_window(body, from_end=False)
+    if float(CONTINUITY_SPIKE_WEIGHT) > 0:
+        body = _ease_opening_spikes(body)
+    body = _soften_body0_toward_prev(body, left)
+    body = _additive_opening_luma(body, left)
+    left, body = _micro_seam_bridge(left, body)
+    return left, body
+
+
 def concat_continuous_chunks(
     chunks: list[torch.Tensor],
     segments: list[SegmentPlan],
@@ -1763,23 +1787,20 @@ def concat_continuous_chunks(
 
     Generation settling burn-in handles flash/pulse. Concat RGB morphs are OFF
     (00035: body0/hold→pop caused 拖影 and stutter pulses).
+
+    A segment with ``continuity_from_prev = False`` is an intentional hard cut
+    (a new shot): its seam gets **no** exposure/soften/bridge pass. Otherwise the
+    first frames of the new shot are pulled toward the previous shot's tail
+    brightness, which reads as a visible brightness flash exactly at the cut.
     """
-    del segments
     if not chunks:
         raise ValueError("concat_continuous_chunks: no chunks")
     if not getattr(plan, "continuity_enabled", False) or len(chunks) < 2:
         return cat_frames_variable_size(chunks)
     fixed: list[torch.Tensor] = [chunks[0]]
     for i in range(1, len(chunks)):
-        left = _unfreeze_held_tail(fixed[-1])
-        if CONTINUITY_HOLD_POP_ON_TAIL:
-            left = _break_hold_pop_window(left, from_end=True)
-        body = _break_hold_pop_window(chunks[i], from_end=False)
-        if float(CONTINUITY_SPIKE_WEIGHT) > 0:
-            body = _ease_opening_spikes(body)
-        body = _soften_body0_toward_prev(body, left)
-        body = _additive_opening_luma(body, left)
-        left, body = _micro_seam_bridge(left, body)
+        seg = segments[i] if i < len(segments) else None
+        left, body = join_continuous_pair(fixed[-1], chunks[i], plan, segment=seg)
         fixed[-1] = left
         fixed.append(body)
     return cat_frames_variable_size(fixed)

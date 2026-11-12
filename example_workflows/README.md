@@ -1,6 +1,8 @@
 # MiniMax H3 Director — 示例工作流
 
-拖入 ComfyUI 画布即可使用。需已安装本插件，且 ComfyUI 主干含 MiniMax H3（v0.30.0+）。
+本页表格中的 H3 JSON 可拖入 ComfyUI 画布。需已安装本插件，且 ComfyUI 主干含 MiniMax H3（v0.30.0+）。
+
+[Pika 五任务示例与调用说明](pika_pro/README.md) 位于 `pika_pro/`，属于用于 `POST /prompt` 的 API 图，不能按 UI 工作流拖入画布。
 
 | 文件 | 任务 | UNET | 说明 |
 |------|------|------|------|
@@ -13,17 +15,9 @@
 | `minimax_h3_director_external_groups_r2v.json` | r2v | **ref2va** | 外部 Group（Reference to Video）→ Combine → Director.`r2v_groups`；可用「选择运行」勾选组序 |
 | `minimax_h3_director_二采_加速.json` | r2v | **ref2va** | 外接 **MiniMax H3 Director Refine** → Director.`refine`（SIGMAS + H3 latent）。`images` 为二采后成片，`images_pre_refine` 为一采对比片 |
 
-## 模型路径（与官方模板一致）
+## 模型下载与安装
 
-| 用途 | 文件名 | 目录 |
-|------|--------|------|
-| UNET (t2v/i2v/fl2v) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| UNET (r2v / v2v / rv2v) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` |
-| Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
-| Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` |
-
-CLIP Loader 的 **type 必须选 `minimax`**。
+[完整模型下载、安装目录与任务配对](../docs/models.md) 为统一入口，包含 H3／Pika 共用基础模型和 Pika 所需 LoRA，以及官方教程组合与本机 hybrid／INT4 示例组合的区别。CLIP Loader 的 **type 必须选 `minimax`**。
 
 ## 默认采样参数
 

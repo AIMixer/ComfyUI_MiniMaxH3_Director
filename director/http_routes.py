@@ -542,6 +542,11 @@ async def minimax_first_pass_cache_status(request):
         from .plan import build_director_plan
         from .segment_cache import inspect_first_pass_cache
 
+        if str(timeline_data).strip():
+            timeline = json.loads(timeline_data)
+            timeline["generationFamily"] = "Pika-H3" if body.get("generation_family") == "Pika-H3" or body.get("pika_flex") is True else "H3"
+            timeline_data = json.dumps(timeline, ensure_ascii=False)
+
         plan = build_director_plan(
             str(timeline_data),
             global_task_type=str(body.get("task_type") or ""),
@@ -551,6 +556,9 @@ async def minimax_first_pass_cache_status(request):
             width=int(body.get("width") or 864),
             height=int(body.get("height") or 480),
             ref_max_size=int(body.get("ref_max_size") or 864),
+            # Cache status only needs identity fields.  Avoid decoding source
+            # and reference media on the ComfyUI request loop.
+            materialize_media=False,
         )
         plan.sample_seed = int(body.get("seed") or 0)
         plan.sample_cfg = float(body.get("cfg") or 1.0)
@@ -560,6 +568,15 @@ async def minimax_first_pass_cache_status(request):
         plan.sample_sigmas_linked = bool(body.get("sigmas_linked"))
         plan.sample_shift_video = float(body.get("shift_video") or 12.0)
         plan.sample_shift_audio = float(body.get("shift_audio") or 3.0)
+        plan.raw.setdefault("output", {})["audioConditioning"] = str(body.get("audio_conditioning") or "none")
+        if body.get("generation_family") == "Pika-H3" or body.get("pika_flex") is True:
+            from .pika import configure_pika_plan, pika_sigmas
+
+            configure_pika_plan(plan, materialize_media=False)
+            plan.sample_cfg, plan.sample_steps, plan.sample_sampler = 1.0, 6, "lcm"
+            plan.sample_shift_video, plan.sample_shift_audio = 12.0, 3.0
+            plan.sample_sigmas = pika_sigmas().tolist()
+            plan.sample_sigmas_linked = True
         from .selflift.pack import normalize_selflift_pack
         from .semantic_bridge import normalize_semantic_bridge_pack
         from .refine_pack import normalize_refine_pack
@@ -669,6 +686,7 @@ def register_routes() -> bool:
         minimax_clear_segment_cache,
     )
     from .pack import minimax_download_pack, minimax_export_pack, minimax_import_pack
+    from .update import minimax_apply_update, minimax_check_update
 
     _register_route(routes, "POST", "/minimax/director/export_pack", minimax_export_pack)
     _register_route(routes, "GET", "/minimax/director/download_pack", minimax_download_pack)
@@ -677,6 +695,8 @@ def register_routes() -> bool:
 
     _register_route(routes, "GET", "/minimax/director/lora_previews", minimax_lora_previews)
     _register_route(routes, "GET", "/minimax/director/lora_preview", minimax_lora_preview)
+    _register_route(routes, "POST", "/minimax/director/update/status", minimax_check_update)
+    _register_route(routes, "POST", "/minimax/director/update/apply", minimax_apply_update)
     _ROUTES_REGISTERED = True
     log.info("MiniMax H3 Director HTTP routes registered")
     return True

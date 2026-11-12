@@ -1,10 +1,11 @@
+import { createUploadId } from "./minimax_upload_id.js";
 /** Director pack (script + assets) import/export UI. */
 
 import { api } from "../../scripts/api.js";
 import { t } from "./minimax_i18n.js";
 import { safeUploadFilename } from "./minimax_gen_timeline.js";
 
-const PACK_WIDGET_NAMES = ["steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed"];
+const PACK_WIDGET_NAMES = ["steps", "sampler", "scheduler", "cfg", "shift_video", "shift_audio", "seed", "generation_family", "pika_flex", "audio_conditioning"];
 const LARGE_PACK_BYTES = 500 * 1024 * 1024;
 const CHUNK_SOFT_LIMIT = 95 * 1024 * 1024;
 const CHUNK_SIZE = 8 * 1024 * 1024;
@@ -208,7 +209,7 @@ function pickZipFile() {
 async function uploadZipChunked(file, onProgress) {
     const filename = safeUploadFilename(file?.name || "pack.mmxpack.zip", "application/zip");
     const zipName = filename.toLowerCase().endsWith(".zip") ? filename : `${filename}.zip`;
-    const uploadId = crypto.randomUUID();
+    const uploadId = createUploadId();
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;

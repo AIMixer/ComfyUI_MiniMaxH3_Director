@@ -1,3 +1,4 @@
+import { createUploadId } from "./minimax_upload_id.js";
 /** Multi prompt-group UI for t2i / i2i / r2i / t2v / i2v / r2v (prompt batch mode). */
 
 import { api } from "../../scripts/api.js";
@@ -38,7 +39,7 @@ import {
     safeUploadFilename,
 } from "./minimax_gen_timeline.js";
 import { refreshPromptTokenEditors, teardownPromptImageMentions, wirePromptImageMentions } from "./minimax_prompt_mentions.js";
-import { t } from "./minimax_i18n.js";
+import { t, taskDisplayLabel } from "./minimax_i18n.js";
 import { createFl2vSlotPair, normalizeImageRef } from "./minimax_fl2v.js";
 import {
     hasDuplicateReferenceAudio,
@@ -472,7 +473,7 @@ export const IMAGE_BATCH_STYLES = `
 .bd-batch-run-all.hidden{display:none!important}
 .bd-batch-run-all input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#4fff8f}
 /* Default cap; batch-fill mode overrides via .bd-wrap.bd-batch-fill + JS max-height. */
-.bd-batch-list{display:flex;flex-direction:column;gap:8px;width:100%;max-height:640px;overflow-y:auto;padding-right:2px;min-height:0}
+.bd-batch-list{display:flex;flex-direction:column;gap:8px;width:100%;max-height:640px;overflow-y:auto;overscroll-behavior-y:contain;padding-right:2px;min-height:0}
 .bd-batch-card{background:linear-gradient(165deg,#1a1a1a 0%,#141414 55%,#111 100%);border:1px solid #2c2c2c;border-radius:10px;padding:12px 14px;display:grid;gap:10px;align-items:stretch;box-shadow:inset 0 1px 0 rgba(255,255,255,.03);flex:0 0 auto}
 /* t2v: 提示词为主，预览收成右侧窄栏 */
 .bd-batch-card.bd-batch-plain{grid-template-columns:minmax(0,1fr) minmax(132px,168px)}
@@ -657,7 +658,7 @@ async function uploadImage(file) {
 
 async function uploadChunked(file) {
     const filename = safeUploadFilename(file?.name, file?.type);
-    const uploadId = crypto.randomUUID();
+    const uploadId = createUploadId();
     const totalChunks = Math.ceil(file.size / BATCH_CHUNK_SIZE);
     for (let i = 0; i < totalChunks; i++) {
         const start = i * BATCH_CHUNK_SIZE;
@@ -703,6 +704,12 @@ function viewUrl(imageFile) {
     if (subfolder) params.set("subfolder", subfolder);
     return api.apiURL(`/view?${params.toString()}`);
 }
+
+// ComfyUI forwards wheel events to the canvas during overlay capture.
+// Stop them before that handler while retaining native list/text scrolling.
+document.addEventListener("wheel", (e) => {
+    if (e.target?.closest?.(".mmx-host .bd-batch-list")) e.stopPropagation();
+}, { capture: true, passive: true });
 
 export function mountImageBatchPanel(root) {
     const panel = document.createElement("div");
@@ -1478,6 +1485,41 @@ async function uploadSegVideo(editor, index, slot) {
     });
 }
 
+/** Video-as-segment: use a finished video AS this group's clip (no sampling). */
+async function pickSourceVideoForGroup(editor, index) {
+    const seg = editor.timeline.segments[index];
+    if (!seg) return;
+    try {
+        const picked = await editor.chooseVideoInput({
+            title: t("mediaPicker.pickReferenceVideo"),
+            currentValue: seg.sourceVideo?.videoFile || "",
+        });
+        if (!picked?.relPath) return;
+        const live = editor.timeline.segments[index];
+        if (!live) return;
+        live.sourceVideo = {
+            videoFile: picked.relPath,
+            fileName: picked.fileName || picked.relPath,
+            type: picked.type || "input",
+            subfolder: picked.subfolder || "",
+        };
+        editor.renderImageBatchGroups();
+        editor.commit();
+    } catch (err) {
+        console.error("[MiniMax H3Director] source video pick failed:", err);
+        alert(t("upload.refVideoBatchFailed", { err: err?.message || err }));
+    }
+}
+
+/** Drop the group's finished-video source so it is generated normally again. */
+function clearSourceVideoForGroup(editor, index) {
+    const seg = editor.timeline.segments[index];
+    if (!seg || !seg.sourceVideo) return;
+    delete seg.sourceVideo;
+    editor.renderImageBatchGroups();
+    editor.commit();
+}
+
 async function pickExistingSegVideo(editor, index, offset, slots) {
     const seg = editor.timeline.segments[index];
     if (!seg) return;
@@ -2102,6 +2144,38 @@ function appendR2vMediaSections(card, seg, index, editor) {
     }
     assets.appendChild(videoSection);
 
+    // ---- 现成视频当这一段（video-as-segment）----
+    // 本段像素/潜变量直接取自该视频、不重新生成；后面段从它续写。
+    {
+        const srcSeg = editor.timeline.segments[index];
+        const srcRef = srcSeg?.sourceVideo;
+        const srcName = srcRef && (srcRef.videoFile || srcRef.fileName)
+            ? (srcRef.videoFile || srcRef.fileName) : "";
+        const srcSection = createR2vSection(
+            "现成视频当这一段 / Finished video AS this clip",
+            srcName ? "✓ 已设置" : "未设置",
+            { onPickExisting: () => { void pickSourceVideoForGroup(editor, index); } },
+        );
+        const srcRow = document.createElement("div");
+        srcRow.className = "bd-meta";
+        srcRow.style.cssText = "padding:6px 8px;font-size:11px;line-height:1.6;"
+            + "word-break:break-all;color:" + (srcName ? "#7fd18a" : "#8a8a8a");
+        srcRow.textContent = srcName
+            ? `✓ 本段直接采用：${srcName}　（不采样；后续段从它续写）`
+            : "未设置：本段正常生成。设置后本段不采样、直接采用该视频，后面段从它续写。";
+        if (srcName) {
+            const clr = document.createElement("button");
+            clr.type = "button";
+            clr.className = "bd-r2v-pick-existing";
+            clr.textContent = "清除 / Clear";
+            clr.style.marginLeft = "10px";
+            clr.onclick = (ev) => { ev.stopPropagation(); clearSourceVideoForGroup(editor, index); };
+            srcRow.appendChild(clr);
+        }
+        srcSection.appendChild(srcRow);
+        assets.appendChild(srcSection);
+    }
+
     const groupAudTitle = audOffset > 0
         ? t("batch.r2v.sectionAudiosFrom", { n: audOffset + 1 })
         : t("batch.r2v.sectionAudios");
@@ -2676,7 +2750,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             for (const opt of MIXED_SEGMENT_TASKS) {
                 const o = document.createElement("option");
                 o.value = opt;
-                o.textContent = opt;
+                o.textContent = editor.isPikaFamily?.() && opt === "fl2v" ? t("pika.fl2v") : taskDisplayLabel(opt);
                 if (opt === key) o.selected = true;
                 taskSel.appendChild(o);
             }

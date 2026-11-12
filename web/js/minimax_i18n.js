@@ -1,8 +1,22 @@
-/** MiniMax H3 Director UI i18n (zh / en) with localStorage persistence. */
+/** Director UI language preference: follow ComfyUI or use a saved override. */
+
+import { app } from "../../scripts/app.js";
 
 export const LOCALE_STORAGE_KEY = "mmx_director_ui_locale";
 
 const ZH = {
+    "output.audioConditioning": "原声条件",
+    "output.audioConditioning.none": "不锁定",
+    "output.audioConditioning.sourceLock": "锁定原声",
+    "tooltip.audioConditioning": "将原声作为生成条件；与成片选用生成声音、原声或静音分别设置。锁定需提供原声。",
+    "toolbar.language": "界面语言",
+    "toolbar.languageAuto": "自动（跟随 ComfyUI）",
+    "toolbar.generationFamily": "生成系列",
+    "pika.recipe": "Pika-H3 · 固定 6 步 · lcm · CFG 1 · video shift 12 / audio shift 3 · 自动匹配 LoRA",
+    "pika.keyframes": "首帧：只上传首帧；尾帧：只上传尾帧；首尾帧：两个图片槽都上传。都不上传则文生视频。",
+    "pika.fl2v": "首帧 / 尾帧 / 首尾帧（按图片槽选择）",
+    "pika.mixed": "混合片段（逐组选择任务）",
+
     "toolbar.addRefGroup": "添加素材组",
     "toolbar.uploadVideo": "上传视频",
     "toolbar.addShot": "添加一组",
@@ -27,8 +41,10 @@ const ZH = {
     "toolbar.noVideo": "未上传视频",
     "toolbar.exportPack": "导出导演包",
     "toolbar.importPack": "导入导演包",
+    "toolbar.checkUpdate": "检查更新",
     "tooltip.exportPack": "导出当前时间轴与参考素材为 zip（英文目录名，可换机器再导入）",
     "tooltip.importPack": "导入导演包，覆盖当前时间轴与素材槽",
+    "tooltip.checkUpdate": "检查并安全更新导演台插件；只支持干净、可快进的 Git 安装",
 
     "tooltip.addRefGroup": "添加一组参考素材（图片 / 音频 / 视频）",
     "tooltip.addShot": "添加一组（可只写提示词文生，或上传首帧/尾帧；支持只传尾帧）",
@@ -51,7 +67,7 @@ const ZH = {
     "tooltip.fl2vShotDuration": "本镜时长（秒）",
     "tooltip.fl2vTotalDuration": "总时长 = 各组时长之和（只读）",
     "tooltip.fl2vTotalInput": "总时长 = 各组之和，请在镜卡片或时间轴上改各镜时长",
-    "tooltip.aspectRatio": "宽高比（同官方 ResolutionSelector）；选「自定义」可直接设宽高",
+    "tooltip.aspectRatio": "宽高比（同官方 ResolutionSelector）；选「跟随图片」按第一张图片的比例；选「自定义」可直接设宽高",
     "tooltip.megapixels": "百万像素 · 同 ResolutionSelector.megapixels；1.0 MP ≈ 1024×1024",
     "tooltip.longEdge": "缩放上限（可填 848 等任意值）；实际宽高再对齐到 32",
     "tooltip.customWH": "自定义宽高（对齐到 32 的倍数）",
@@ -119,6 +135,8 @@ const ZH = {
     "output.preview.scaleKeepAspect": " · 等比缩放",
     "output.preview.fixedCrop": " · 固定画布（可能裁剪）",
     "output.preview.mp": "→ {w}×{h} · {ar} · {mp}MP{suffix}",
+    "output.preview.keep": "→ {w}×{h} · 跟随图片 {sw}×{sh} · {mp}MP",
+    "output.preview.keepNoPicture": "→ 跟随第一张图片 · {mp}MP（无图时沿用当前宽高）",
 
     "panel.globalPromptAndRefs": "全局提示词 & 参考图 (图片1–9)",
     "panel.globalPromptAndRefsMedia": "全局提示词 & 参考素材 (图片 / 音频)",
@@ -465,6 +483,7 @@ const ZH = {
     "aspect.16_9": "16:9 (宽屏)",
     "aspect.21_9": "21:9 (超宽)",
     "aspect.custom": "自定义",
+    "aspect.keep": "跟随图片（保持比例）",
 
     "slot.picture": "图片{n}",
     "slot.audio": "音频{n}",
@@ -578,9 +597,46 @@ const ZH = {
     "pack.importDoneMissing": "已导入，但以下素材缺失：",
     "pack.alertFailed": "导演包操作失败：{err}",
     "pack.failedTitle": "导演包操作失败",
+    "update.title": "导演台更新",
+    "update.availableTitle": "发现导演台更新",
+    "update.checking": "检查中…",
+    "update.updating": "更新中…",
+    "update.installNow": "立即更新",
+    "update.current": "已是最新版本。\n当前提交：{head}",
+    "update.available": "发现 {count} 个新提交。\n当前：{local}\n最新：{remote}\n\n最近提交：\n{commits}\n\n更新只会修改导演台插件文件；完成后需要重启 ComfyUI。",
+    "update.dependenciesWarning": "本次还修改了依赖文件：{files}。更新后需要重新安装依赖。",
+    "update.done": "更新完成：{from} → {to}（{count} 个提交）。\n请重启 ComfyUI 后使用新版本。",
+    "update.dependenciesAfter": "依赖文件已变化：{files}。请在重启前重新安装依赖。",
+    "update.reason.git_not_found": "未找到 Git，无法自动更新。请手动更新或安装 Git。",
+    "update.reason.git_timeout": "连接更新源超时，请检查网络后重试。",
+    "update.reason.not_git_checkout": "当前导演台不是独立的 Git 安装，无法安全自动更新。",
+    "update.reason.detached_head": "当前导演台处于游离提交状态，请先切回正常分支。",
+    "update.reason.no_upstream": "当前分支没有配置上游分支，无法确定更新来源。",
+    "update.reason.unsupported_upstream": "当前分支未跟踪同名远程分支，请手动确认后更新。",
+    "update.reason.fetch_failed": "无法检查远程更新。",
+    "update.reason.dirty_worktree": "检测到本地未提交修改。为避免覆盖内容，已拒绝自动更新。",
+    "update.reason.diverged_history": "本地与远程历史已经分叉，无法安全快进更新。",
+    "update.reason.local_commits": "本地分支含有尚未推送或合并的提交，无法安全自动更新。",
+    "update.reason.queue_busy": "生成队列不为空（运行 {running}，等待 {pending}）。请等待任务结束后再更新。",
+    "update.reason.state_changed": "检查后本地版本发生了变化，请重新检查更新。",
+    "update.reason.remote_changed": "检查后远程版本发生了变化，请重新检查并确认。",
+    "update.reason.invalid_request": "更新请求无效，请刷新页面后重试。",
+    "update.reason.update_failed": "自动更新失败，工作区未被强制覆盖。",
 };
 
 const EN = {
+    "output.audioConditioning": "Source audio conditioning",
+    "output.audioConditioning.none": "No lock",
+    "output.audioConditioning.sourceLock": "Lock source audio",
+    "tooltip.audioConditioning": "Use source audio as a generation condition. This is separate from choosing generated, source, or muted export audio. Source audio is required to lock.",
+    "toolbar.language": "UI language",
+    "toolbar.languageAuto": "Auto (follow ComfyUI)",
+    "toolbar.generationFamily": "Generation family",
+    "pika.recipe": "Pika-H3 · Fixed 6 steps · lcm · CFG 1 · video shift 12 / audio shift 3 · Automatic task LoRA",
+    "pika.keyframes": "First frame: fill only the first slot. Last frame: fill only the last slot. First + last: fill both. Empty slots generate from text.",
+    "pika.fl2v": "First / last / first + last (choose image slots)",
+    "pika.mixed": "Mixed segments (choose each group's task)",
+
     "toolbar.addRefGroup": "Add asset group",
     "toolbar.uploadVideo": "Upload video",
     "toolbar.addShot": "Add shot",
@@ -605,8 +661,10 @@ const EN = {
     "toolbar.noVideo": "No video uploaded",
     "toolbar.exportPack": "Export pack",
     "toolbar.importPack": "Import pack",
+    "toolbar.checkUpdate": "Check update",
     "tooltip.exportPack": "Export the current timeline and reference media as a zip (ASCII folders; portable)",
     "tooltip.importPack": "Import a director pack, replacing the current timeline and media slots",
+    "tooltip.checkUpdate": "Safely update the Director plugin; requires a clean, fast-forwardable Git checkout",
 
     "tooltip.addRefGroup": "Add a reference group (images / audio / video)",
     "tooltip.addShot": "Add a shot (prompt-only text-to-video, or start and/or end; end-only OK)",
@@ -629,7 +687,7 @@ const EN = {
     "tooltip.fl2vShotDuration": "This shot duration (seconds)",
     "tooltip.fl2vTotalDuration": "Total duration = sum of shot durations (read-only)",
     "tooltip.fl2vTotalInput": "Total = sum of shots; edit per-shot duration on cards or timeline",
-    "tooltip.aspectRatio": "Aspect ratio (same as official ResolutionSelector); choose Custom for W×H",
+    "tooltip.aspectRatio": "Aspect ratio (same as official ResolutionSelector); Keep aspect ratio follows the first picture; Custom for W×H",
     "tooltip.megapixels": "Megapixels · same as ResolutionSelector; 1.0 MP ≈ 1024×1024",
     "tooltip.longEdge": "Scale cap (e.g. 848); final W/H snapped to 32",
     "tooltip.customWH": "Custom W×H (snapped to multiples of 32)",
@@ -697,6 +755,8 @@ const EN = {
     "output.preview.scaleKeepAspect": " · keep aspect",
     "output.preview.fixedCrop": " · fixed canvas (may crop)",
     "output.preview.mp": "→ {w}×{h} · {ar} · {mp}MP{suffix}",
+    "output.preview.keep": "→ {w}×{h} · follows the picture {sw}×{sh} · {mp}MP",
+    "output.preview.keepNoPicture": "→ follows the first picture · {mp}MP (no picture: current width × height)",
 
     "panel.globalPromptAndRefs": "Global prompt & refs (Picture 1–9)",
     "panel.globalPromptAndRefsMedia": "Global prompt & assets (images / audio)",
@@ -1043,6 +1103,7 @@ const EN = {
     "aspect.16_9": "16:9 (Widescreen)",
     "aspect.21_9": "21:9 (Ultrawide)",
     "aspect.custom": "Custom",
+    "aspect.keep": "Keep aspect ratio (follow picture)",
 
     "slot.picture": "Picture {n}",
     "slot.audio": "Audio {n}",
@@ -1156,6 +1217,31 @@ const EN = {
     "pack.importDoneMissing": "Imported, but these media files were missing:",
     "pack.alertFailed": "Director pack failed: {err}",
     "pack.failedTitle": "Director pack failed",
+    "update.title": "Director update",
+    "update.availableTitle": "Director update available",
+    "update.checking": "Checking…",
+    "update.updating": "Updating…",
+    "update.installNow": "Update now",
+    "update.current": "You already have the latest version.\nCurrent commit: {head}",
+    "update.available": "Found {count} new commit(s).\nCurrent: {local}\nLatest: {remote}\n\nRecent commits:\n{commits}\n\nOnly Director plugin files will change. Restart ComfyUI after the update.",
+    "update.dependenciesWarning": "Dependency files also changed: {files}. Reinstall dependencies after updating.",
+    "update.done": "Updated {from} → {to} ({count} commit(s)).\nRestart ComfyUI to use the new version.",
+    "update.dependenciesAfter": "Dependency files changed: {files}. Reinstall dependencies before restarting.",
+    "update.reason.git_not_found": "Git was not found. Update manually or install Git first.",
+    "update.reason.git_timeout": "The update source timed out. Check your network and try again.",
+    "update.reason.not_git_checkout": "This Director installation is not an independent Git checkout, so it cannot be updated safely.",
+    "update.reason.detached_head": "The Director checkout is on a detached commit. Switch to a normal branch first.",
+    "update.reason.no_upstream": "The current branch has no upstream branch, so the update source is unknown.",
+    "update.reason.unsupported_upstream": "The current branch does not track a same-named remote branch. Update it manually after review.",
+    "update.reason.fetch_failed": "Could not check the remote for updates.",
+    "update.reason.dirty_worktree": "Local uncommitted changes were found. Automatic update was refused to avoid overwriting them.",
+    "update.reason.diverged_history": "Local and remote history have diverged, so a safe fast-forward update is not possible.",
+    "update.reason.local_commits": "The local branch contains commits that are not on its upstream. Automatic update was refused.",
+    "update.reason.queue_busy": "The generation queue is not empty ({running} running, {pending} pending). Update after it finishes.",
+    "update.reason.state_changed": "The local version changed after the check. Check again before updating.",
+    "update.reason.remote_changed": "The remote version changed after the check. Check and confirm again.",
+    "update.reason.invalid_request": "The update request was invalid. Refresh the page and try again.",
+    "update.reason.update_failed": "Automatic update failed. The worktree was not forcibly overwritten.",
 };
 
 const DICTS = { zh: ZH, en: EN };
@@ -1171,44 +1257,64 @@ export const ASPECT_I18N_KEYS = {
     "16:9 (宽屏)": "aspect.16_9",
     "21:9 (超宽)": "aspect.21_9",
     "自定义": "aspect.custom",
+    "跟随图片": "aspect.keep",
 };
 
 let _locale = null;
+let _preference = null;
+let _initialized = false;
 const _listeners = new Set();
 
 function detectDefaultLocale() {
+    const comfy = app.ui?.settings?.getSettingValue?.("Comfy.Locale");
+    const browser = typeof navigator !== "undefined" ? navigator.language : "";
+    return String(comfy || browser || "en").toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+export function getLocalePreference() {
+    if (_preference) return _preference;
     try {
-        const nav = (typeof navigator !== "undefined" && (navigator.language || navigator.userLanguage)) || "zh";
-        return String(nav).toLowerCase().startsWith("zh") ? "zh" : "en";
-    } catch {
-        return "zh";
-    }
+        const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
+        if (["auto", "zh", "en"].includes(saved)) _preference = saved;
+    } catch { /* storage may be unavailable */ }
+    return _preference ||= "auto";
 }
 
 export function getLocale() {
-    if (_locale) return _locale;
-    try {
-        const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
-        if (saved === "zh" || saved === "en") {
-            _locale = saved;
-            return _locale;
-        }
-    } catch { /* ignore */ }
-    _locale = detectDefaultLocale();
-    return _locale;
+    const preference = getLocalePreference();
+    return preference === "auto" ? detectDefaultLocale() : preference;
+}
+
+function notifyLocaleChange() {
+    _locale = getLocale();
+    for (const fn of _listeners) {
+        try { fn(_locale); } catch { /* one editor must not block the others */ }
+    }
 }
 
 export function setLocale(lang) {
-    const next = lang === "en" ? "en" : "zh";
-    if (_locale === next) return _locale;
-    _locale = next;
+    _preference = ["zh", "en"].includes(lang) ? lang : "auto";
     try {
-        localStorage.setItem(LOCALE_STORAGE_KEY, next);
-    } catch { /* ignore */ }
-    for (const fn of _listeners) {
-        try { fn(next); } catch { /* ignore */ }
-    }
+        localStorage.setItem(LOCALE_STORAGE_KEY, _preference);
+    } catch { /* storage may be unavailable */ }
+    notifyLocaleChange();
     return _locale;
+}
+
+export function initializeLocale() {
+    if (_initialized) return;
+    _initialized = true;
+    const followSetting = () => {
+        if (getLocalePreference() === "auto") notifyLocaleChange();
+    };
+    app.ui?.settings?.addEventListener?.("Comfy.Locale.change", followSetting);
+    window.addEventListener("languagechange", followSetting);
+    window.addEventListener("storage", (event) => {
+        if (event.key !== LOCALE_STORAGE_KEY) return;
+        _preference = null;
+        notifyLocaleChange();
+    });
+    notifyLocaleChange();
 }
 
 export function toggleLocale() {

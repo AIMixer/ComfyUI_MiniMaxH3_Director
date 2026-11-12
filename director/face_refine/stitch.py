@@ -1,6 +1,7 @@
 """Warp refined crops back onto source frames.
 
-Adapted from ComfyUI-H3-FaceRefine H3FaceStitch (MIT).
+Adapted from ComfyUI-H3-FaceRefine H3FaceStitch (MIT, Carasibana).
+See track.py for the upstream copyright and MIT license notice.
 """
 
 from __future__ import annotations
@@ -40,9 +41,9 @@ def stitch_faces(
 
     paste = str(pack.get("paste_region") or "face_only")
     dilation = int(pack.get("mask_dilation") or 16)
-    feather = int(pack.get("feather") or 24)
-    colour_match = float(pack.get("colour_match") or 1.0)
-    blend = float(pack.get("blend") or 1.0)
+    feather = int(pack.get("feather", 24))
+    colour_match = float(pack.get("colour_match", 1.0))
+    blend = float(pack.get("blend", 1.0))
     cw, ch = transform["canvas"]
     width, height = transform["src_size"]
     face_rects = transform.get("face_rect")
@@ -59,13 +60,18 @@ def stitch_faces(
         except Exception:
             pass
         c1 = min(c0 + chunk, count)
+        if weights is not None and not any(float(w) > 0 for w in weights[c0:c1]):
+            continue
         n = c1 - c0
-        bh_mid = float(boxes[(c0 + c1 - 1) // 2][3])
-        f_can = int(round(feather * (ch / max(bh_mid, 1.0))))
-        f_can = max(1, min(f_can, ch // 3))
+        f_cans = [
+            max(0, min(int(round(feather * ch / max(float(boxes[i][3]), 1.0))), ch // 3, cw // 3))
+            for i in range(c0, c1)
+        ]
+        edge = torch.stack([
+            feather_edge_mask(ch, cw, f_can, dev, torch.float32) for f_can in f_cans
+        ]).unsqueeze(1)
         if paste == "full_crop":
-            one = feather_edge_mask(ch, cw, f_can, dev, torch.float32)
-            mask_can = one.view(1, 1, ch, cw).expand(n, 1, ch, cw)
+            mask_can = edge
         else:
             mask_can = torch.cat(
                 [
@@ -76,7 +82,7 @@ def stitch_faces(
                             cw * 0.25, ch * 0.25, cw * 0.5, ch * 0.5
                         ),
                         dilation,
-                        f_can,
+                        f_cans[i - c0],
                         "ellipse" if paste == "face_ellipse" else "rect",
                         dev,
                         torch.float32,
@@ -85,6 +91,8 @@ def stitch_faces(
                 ],
                 dim=0,
             )
+            # A face larger than the crop still needs a soft boundary at the canvas edge.
+            mask_can *= edge
         th = torch.empty((n, 2, 3), dtype=torch.float32, device=dev)
         for j, i in enumerate(range(c0, c1)):
             x, y, bw, bh = (float(v) for v in boxes[i])
@@ -98,6 +106,8 @@ def stitch_faces(
         patch_can = refined_crops[c0:c1, ..., :3].to(dev).movedim(-1, 1).float()
         patch = F.grid_sample(patch_can, grid, mode="bilinear", padding_mode="zeros", align_corners=False)
         m = F.grid_sample(mask_can.to(dev), grid, mode="bilinear", padding_mode="zeros", align_corners=False).clamp(0, 1)
+        inside = (grid[..., 0].abs() <= 1) & (grid[..., 1].abs() <= 1)
+        m *= inside.unsqueeze(1)
         patch = patch.movedim(1, -1)
         m = m.movedim(1, -1)
         dst = torch.as_tensor(source[c0:c1], dtype=torch.long, device=out.device)
@@ -116,7 +126,8 @@ def stitch_faces(
                 if i < len(weights):
                     wv[j] *= float(weights[i])
         mm_ = m * wv
-        out[dst] = ((1.0 - mm_) * base + mm_ * patch).to(out.device, dt)
+        pasted = (1.0 - mm_) * base + mm_ * patch
+        out[dst] = torch.where(mm_ > 0, pasted, base).to(out.device, dt)
     return out
 
 

@@ -413,7 +413,6 @@ def sample_selflift_stage(
         model_name=str(pack.get("h3_latent_model") or ""),
         model=pack.get("latent_upscale_ref"),
         enable_chunking=bool(pack.get("enable_latent_chunking")),
-        fallback=upsample,
         prefix_steps=prefix_steps,
     )
     lifted_vae = _force_spatial(lifted_vae, target_lat_h, target_lat_w, upsample)

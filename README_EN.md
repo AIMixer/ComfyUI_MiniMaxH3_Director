@@ -1,4 +1,15 @@
-# ComfyUI MiniMax H3 Director
+# MiniMax H3 Director Pro
+
+Based on [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director), independently maintained by [H-Bole](https://github.com/H-Bole). Supports MiniMax H3 and the two Pika H3 Flex task adapters. Original attribution and Apache-2.0 licensing are retained; this fork is not an official Pika or MiniMax release.
+
+**This repository:** [H-Bole/ComfyUI-MiniMax-H3-Director-Pro](https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro).
+
+Select **H3 / Pika-H3** in the Director. Pika exposes text, first-frame, last-frame, first-and-last-frame and multimodal-reference generation. The six-step recipe is fixed; missing adapters fail before sampling. Language supports Auto / 中文 / English; Auto follows ComfyUI before falling back to the browser. Source-audio conditioning is optional and off by default, separate from exporting the original audio.
+
+[Pro usage and compatibility](docs/pro-guide.md) · [性能与验收](docs/performance.md) · [Upstream PR / Issue review](docs/upstream-review.md)
+
+Upstream contribution: [consolidation PR #278](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director/pull/278), including the current Pro version, attribution and validation limits; awaiting upstream review.
+
 
 Multi-segment AV timeline director for **official ComfyUI MiniMax-H3**.  
 Repository: [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director)
@@ -85,9 +96,9 @@ Refine `nvidia_rtx_vsr` needs an NVIDIA GPU: `pip install nvidia-vfx --extra-ind
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director.git
+git clone https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git
 
-pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
+pip install -r ComfyUI-MiniMax-H3-Director-Pro/requirements.txt
 ```
 
 Restart ComfyUI.
@@ -96,8 +107,16 @@ Restart ComfyUI.
 
 1. Open **ComfyUI Manager**
 2. Choose **Install via Git URL**
-3. Enter `https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director.git` and install
+3. Enter `https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git` and install
 4. Restart ComfyUI
+
+## Updating
+
+Open any `MiniMaxH3Director` node and click **Check update** on the right side of its toolbar. When new commits are available, the dialog shows the current and latest versions plus recent commits. Confirm **Update now** to fast-forward only this plugin, then restart ComfyUI to load the new version. The plugin never checks in the background or modifies files silently.
+
+In-app updates require an independent Git checkout, a branch that tracks a same-named remote branch, a clean worktree, and an empty generation queue. Cancelling the confirmation leaves files unchanged. The completion dialog calls out dependency-file changes. Non-Git installs, diverged history, and local changes are never forcibly overwritten; use ComfyUI Manager or update manually instead.
+
+The updater never restarts ComfyUI automatically. Save the current workflow, then restart manually when the completion dialog asks you to.
 
 ## Models & workflow downloads
 
@@ -125,15 +144,37 @@ This repo ships examples under `example_workflows/`:
 | `minimax_h3_director_external_groups_r2v.json` | r2v | **ref2va** | External Group×N → Combine → `r2v_groups` |
 | `minimax_h3_director_二采_加速.json` | r2v | **ref2va** | Refine second sample (SIGMAS + H3 latent); `images` and `images_pre_refine` each save a clip |
 
-### Recommended model files
+### Model installation and Pika task pairing
 
-| Role | Filename | Directory |
-|------|----------|-----------|
-| UNET (t2v / i2v / fl2v) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| UNET (r2v / v2v / rv2v) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` |
-| Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
-| Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` |
+[Full model list, individual downloads, installation paths and five task pairs](docs/models.md) (shared Chinese/English reference), covering the Comfy tutorial configuration and the locally verified community hybrid/INT4 configuration used by this repository's Pika API examples. Both use the same two VAEs and task LoRAs. Renaming original Pika adapters does not convert them to Comfy format.
+
+With **Pika-H3**, Director loads the task LoRA internally at strength 1; do not load it again externally. The 25-step defaults below describe H3; Pika uses its fixed six-step recipe.
+
+[Pika five-task API examples](example_workflows/pika_pro/README.md) target `POST /prompt`; they are not UI workflows that can be dragged onto the canvas. The original H3 examples listed above are UI workflows.
+
+### 2X video VAE (optional)
+
+Connect a 2X-class VAE (e.g. `MiniMax-H3-X2-Detail-v1.safetensors`) to the node's
+`video_vae` slot — **no workflow rewiring needed**. Director detects the packed
+decode head internally and unpacks it back to double resolution.
+
+The only difference from the stock video VAE is the decoder projection: stock
+emits 3 channels, the 2X head emits 12 packed subpixel channels (2×2 PixelShuffle).
+Director handles the unpacking, so:
+- a stock VAE takes the completely untouched original path (bit-identical output)
+- a 2X VAE yields `images` at twice the edge length (e.g. 864×480 → 1728×960)
+
+Companion node (community, not required):
+`MiniMax H3 VAE Decode (fast)` from `ComfyUI-MiniMaxH3_LatentUpscaler` can perform
+the 2X decode outside the graph, which is useful when you want to keep the native
+16X result and additionally export a high-resolution version. The pattern is the
+same as the `selflift-Avatar` workflow: keep the plain video VAE for sampling, then
+fork one extra branch that decodes with the 2X VAE.
+
+> SelfLift's internal "decode → upscale → re-encode" step always runs at the stock
+> 16X ratio so the size chain stays closed; the 2X head only affects the final
+> exported frames.
+
 
 ## Quick start
 
@@ -213,8 +254,8 @@ Mirror the two official conditioning nodes and feed **multi-group** batches into
 
 | | |
 |---|---|
-| **Maintainer** | [AIMixer](https://github.com/AIMixer) |
-| **Repository** | [github.com/AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director) |
+| **Upstream author** | [AIMixer](https://github.com/AIMixer) |
+| **Upstream repository** | [github.com/AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director) |
 | **Sibling plugin** | [ComfyUI_Bernini_Director](https://github.com/AIMixer/ComfyUI_Bernini_Director) |
 | **Author QQ** | **3697688140** |
 | **Bilibili** | [space.bilibili.com/1997403556](https://space.bilibili.com/1997403556) |

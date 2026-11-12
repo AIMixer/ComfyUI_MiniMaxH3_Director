@@ -1,4 +1,15 @@
-# ComfyUI MiniMax H3 Director
+# MiniMax H3 导演台 Pro
+
+基于 [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director)，由 [H-Bole](https://github.com/H-Bole) **独立维护**。支持 MiniMax H3 与 Pika H3 Flex 两种任务适配器，保留上游署名及 Apache-2.0 许可证。本仓库是社区维护版。
+
+**本仓库：**[H-Bole/ComfyUI-MiniMax-H3-Director-Pro](https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro)。
+
+导演台顶部选择 **H3 / Pika-H3**。Pika 支持纯文、首帧、尾帧、首尾帧、多模态参考；固定六步配方，适配器缺失时在采样前报错。语言支持自动／中文／English，自动优先跟随 ComfyUI。原声参与生成是独立可选功能，默认关闭，与导出采用原声分开。
+
+[Pro 使用与兼容说明](docs/pro-guide.md) · [性能与验收](docs/performance.md) · [上游 PR／Issue 处理记录](docs/upstream-review.md)
+
+上游回馈：[汇总 PR #278](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director/pull/278)，包含当前 Pro 版本、来源与验证边界，待上游审阅。
+
 
 基于 **ComfyUI 官方 MiniMax-H3** 的多段音视频导演台插件。仓库地址：[AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director)
 
@@ -89,9 +100,9 @@ Refine 的 `nvidia_rtx_vsr` 另需 NVIDIA GPU，可 `pip install nvidia-vfx --ex
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director.git
+git clone https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git
 
-pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
+pip install -r ComfyUI-MiniMax-H3-Director-Pro/requirements.txt
 ```
 
 重启 ComfyUI。
@@ -100,8 +111,16 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 
 1. 打开 **ComfyUI Manager**
 2. 选择 **Install via Git URL**
-3. 填入 `https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director.git` 并安装
+3. 填入 `https://github.com/H-Bole/ComfyUI-MiniMax-H3-Director-Pro.git` 并安装
 4. 重启 ComfyUI
+
+## 更新
+
+打开任一 `MiniMaxH3Director` 节点，点击工具栏右侧的 **检查更新**。发现新提交后会先显示当前版本、最新版本和最近提交；确认 **立即更新** 后只对本插件执行 fast-forward 更新，完成后重启 ComfyUI 即可生效。插件不会在后台自动检查或静默修改文件。
+
+自动更新要求插件通过 Git 独立安装、当前分支跟踪同名远程分支、工作区无本地修改且生成队列为空。取消确认不会修改文件。若依赖文件发生变化，完成提示会要求重新安装依赖；非 Git 安装、分叉历史或含本地修改的工作区不会被强制覆盖，请改用 ComfyUI Manager 或手动更新。
+
+更新不会自动重启 ComfyUI；请先保存当前工作流，再按完成提示手动重启。
 
 ## 模型与工作流下载
 
@@ -129,15 +148,32 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 | `minimax_h3_director_external_groups_r2v.json` | r2v | **ref2va** | 外部 Group×N → Combine → `r2v_groups` |
 | `minimax_h3_director_二采_加速.json` | r2v | **ref2va** | 外接 Refine 二采（SIGMAS + H3 latent）；`images` 与 `images_pre_refine` 各出一路成片 |
 
-### 推荐模型文件
+### 模型安装与 Pika 任务配对
 
-| 用途 | 文件名 | 目录 |
-|------|--------|------|
-| UNET (t2v / i2v / fl2v) | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| UNET (r2v / v2v / rv2v) | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` |
-| CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` |
-| Video VAE | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` |
-| Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` |
+[完整模型清单、逐文件下载链接、安装目录和五任务配对](docs/models.md)（中英共用入口），包含 Comfy 官方教程组合，以及本仓库 Pika API 示例使用的社区 hybrid／INT4 已验证组合。两者共用双 VAE 与任务 LoRA；原始 Pika 适配器不能通过改名替代 Comfy 格式文件。
+
+选择 **Pika-H3** 后导演台自动加载任务 LoRA、强度固定 1；不要在外部再次加载同一适配器。下方 25 步默认采样参数属于 H3，Pika 使用固定六步。
+
+[Pika 五任务 API 示例](example_workflows/pika_pro/README.md) 用于 `POST /prompt`，不是可拖入画布的 UI 工作流；上表原版 H3 示例为 UI 工作流。
+
+### 2X 视频 VAE（可选）
+
+把 2X 类 VAE（如 `MiniMax-H3-X2-Detail-v1.safetensors`）接到节点的 `video_vae` 槽即可，
+**无需改动任何工作流接线**。导演台会在内部识别这类 VAE 的解码头并自动还原成 2 倍分辨率。
+
+它与原版 Video VAE 的唯一区别是解码投影层：原版输出 3 通道，2X 版输出 12 通道的
+打包子像素（2×2 PixelShuffle）。导演台会自动完成解包，因此：
+- 普通 VAE 走的是完全未改动的原路径，输出逐位一致
+- 2X VAE 的最终 `images` 为 2 倍边长（例如 864×480 → 1728×960）
+
+配套参考（社区节点，非必需）：`ComfyUI-MiniMaxH3_LatentUpscaler` 的
+`MiniMax H3 VAE Decode (fast)` 可在图外单独做 2X 解码，适合想保留原始 16X 版本
+同时再导出一份高清版本的场景 —— 做法与 `selflift-Avatar` 工作流相同：主采样仍用
+原版 Video VAE，末端分叉一路接 2X VAE 解码。
+
+> SelfLift 内部那道「解码 → 放大 → 再编码」的步骤始终按原版 16X 执行，
+> 以保证尺寸链闭合；2X 只作用于最终导出的帧。
+
 
 ## 快速开始
 
@@ -217,8 +253,8 @@ pip install -r ComfyUI_MiniMaxH3_Director/requirements.txt
 
 | | |
 |---|---|
-| **维护者** | [AI搅拌手 / AIMixer](https://github.com/AIMixer) |
-| **本仓库** | [github.com/AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director) |
+| **上游作者** | [AI搅拌手 / AIMixer](https://github.com/AIMixer) |
+| **上游仓库** | [github.com/AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director) |
 | **姊妹插件** | [ComfyUI_Bernini_Director](https://github.com/AIMixer/ComfyUI_Bernini_Director) |
 | **作者 QQ** | **3697688140** |
 | **B 站** | [space.bilibili.com/1997403556](https://space.bilibili.com/1997403556) |

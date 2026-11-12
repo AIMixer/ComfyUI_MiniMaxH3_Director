@@ -6,11 +6,16 @@ import logging
 
 import torch
 
+from ..lib.audio_io import _pcm_time_for_native, _probe_av_timing, extract_audio_segment, video_has_audio
+from ..lib.video_io import resolve_video_path
+
 from ..lib.image_prep import (
     assert_minimax_canvas,
     cat_frames_variable_size,
     fit_canvas,
     fit_video_long_edge,
+    is_keep_aspect,
+    keep_aspect_output,
     resolve_output_dimensions,
 )
 from ..lib.task_prompts import resolve_task_key
@@ -29,6 +34,22 @@ IMAGE_BATCH_KEYS = frozenset()
 
 MIN_GEN_FRAMES = 1
 MIN_GEN_VIDEO_FRAMES = 4
+
+
+def _source_video_of(seg_data) -> dict:
+    """Read a segment's declared finished-video source, if any.
+
+    Thin lazy wrapper so ``gen_timeline`` does not import ``plan`` at module
+    load time (plan imports gen_timeline). Never raises.
+    """
+    if not isinstance(seg_data, dict):
+        return {}
+    try:
+        from .plan import _parse_source_video
+
+        return _parse_source_video(seg_data)
+    except Exception:  # noqa: BLE001 - never block a run
+        return {}
 
 
 def is_gen_task_key(task_key: str) -> bool:
@@ -210,13 +231,22 @@ def _load_fl2v_segment_refs(
     height: int,
     output_mode: str,
     ref_max_size: int,
+    materialize_media: bool = True,
 ):
     """Build SegmentRef 0/1 from mixed-timeline fl2v start/end images."""
     from .fl2v_timeline import _fit_image, _unify_fl2v_pair_canvas
-    from .plan import SegmentRef
+    from .plan import SegmentRef, _load_refs
 
     start_raw = _fl2v_image_raw(seg_data, 0)
     end_raw = _fl2v_image_raw(seg_data, 1)
+    if not materialize_media:
+        refs = []
+        for index, raw in ((0, start_raw), (1, end_raw)):
+            if isinstance(raw, dict):
+                item = dict(raw)
+                item["index"] = index
+                refs.extend(_load_refs([item], materialize_media=False))
+        return refs
     start_img = None
     end_img = None
     if start_raw:
@@ -276,6 +306,41 @@ def _resolve_gen_image_source_dims(
         sh = int(gi.get("height") or 0)
         if sw > 0 and sh > 0:
             return sw, sh
+    return 0, 0
+
+
+def _keep_aspect_source_dims(
+    segment_ranges: list[tuple[int, int, dict]],
+    *,
+    edit_mode: str,
+    global_block: dict,
+) -> tuple[int, int]:
+    """Size of the first picture the run uses — start image, first-frame image or
+    first reference — for 跟随图片 / Keep aspect ratio. Sizes stored by the UI are
+    used when present; otherwise the file is read (runs queued by other tools only
+    carry the file name). (0, 0) when the run has no picture (t2v)."""
+    from .plan import load_reference_tensor
+
+    candidates: list = []
+    for _start, _end, seg_data in segment_ranges:
+        candidates.append(_resolve_gen_image_ref(seg_data, edit_mode=edit_mode, global_block=global_block))
+        candidates.append(seg_data.get("startImage"))
+        candidates.extend(seg_data.get("refs") or [])
+    candidates.append(global_block.get("genImage"))
+    candidates.extend(global_block.get("refs") or [])
+    for ref in candidates:
+        if not isinstance(ref, dict) or not (ref.get("imageFile") or ref.get("imageB64")):
+            continue
+        w, h = int(ref.get("width") or 0), int(ref.get("height") or 0)
+        if w > 0 and h > 0:
+            return w, h
+        try:
+            tensor = load_reference_tensor(ref)
+        except Exception as exc:
+            log.warning("Keep aspect ratio: could not read %s (%s)", ref.get("imageFile"), exc)
+            tensor = None
+        if tensor is not None and tensor.dim() >= 3:
+            return int(tensor.shape[-2]), int(tensor.shape[-3])
     return 0, 0
 
 
@@ -371,11 +436,13 @@ def build_gen_director_plan(
     width: int,
     height: int,
     ref_max_size: int,
+    materialize_media: bool = True,
 ):
     """Build DirectorPlan for generation timeline modes (lazy import avoids cycles)."""
     from .plan import (
         DirectorPlan,
         SegmentPlan,
+        SegmentRefAudio,
         _load_ref_audios,
         _load_ref_videos,
         _load_refs,
@@ -402,7 +469,10 @@ def build_gen_director_plan(
 
     submode = gen_submode(timeline, task_key)
     prompt = global_block.get("prompt") or global_prompt or ""
-    global_refs = _load_refs(global_block.get("refs") or [])
+    global_refs = _load_refs(
+        global_block.get("refs") or [],
+        materialize_media=materialize_media,
+    )
     # r2v/r2i shared「公共参数」: off unless timeline.global.commonEnabled is set.
     common_enabled = bool(
         global_block.get("commonEnabled")
@@ -449,7 +519,17 @@ def build_gen_director_plan(
         frame_rate=fps,
     )
 
-    if submode == "gen_blank":
+    keep_dims = None
+    if is_keep_aspect(output_block):
+        kw, kh = _keep_aspect_source_dims(segment_ranges, edit_mode=edit_mode, global_block=global_block)
+        keep_dims = keep_aspect_output(output_block, kw, kh)
+        if keep_dims:
+            log.info("Keep aspect ratio: picture %dx%d -> canvas %dx%d", kw, kh, keep_dims[0], keep_dims[1])
+    if keep_dims:
+        out_mode = "fixed"
+        out_w, out_h = keep_dims
+        ref_max = max(out_w, out_h)
+    elif submode == "gen_blank":
         out_mode = "fixed"
         fw = int(output_block.get("width") or timeline.get("width") or width or 0)
         fh = int(output_block.get("height") or timeline.get("height") or height or 0)
@@ -496,7 +576,7 @@ def build_gen_director_plan(
         source_video = torch.full(
             (max(1, len(segment_ranges)), 16, 16, 3), 0.5, dtype=torch.float32
         )
-    else:
+    elif materialize_media:
         source_clips = _build_gen_source_clips(
             segment_ranges,
             task_key=task_key,
@@ -514,6 +594,11 @@ def build_gen_director_plan(
             source_video = torch.full((len(source_clips), 16, 16, 3), 0.5, dtype=torch.float32)
         else:
             source_video = cat_frames_variable_size(source_clips)
+    else:
+        source_clips = []
+        source_video = torch.full(
+            (max(1, len(segment_ranges)), 16, 16, 3), 0.5, dtype=torch.float32
+        )
 
     from .segment_continuity import resolve_segment_continuity_from_prev
 
@@ -565,7 +650,10 @@ def build_gen_director_plan(
             else:
                 seg_prompt = local_prompt or prompt
             # r2v/r2i + commonEnabled: merge shared global.refs; same slot → group wins.
-            local_refs = _load_refs(seg_data.get("refs") or [])
+            local_refs = _load_refs(
+                seg_data.get("refs") or [],
+                materialize_media=materialize_media,
+            )
             if seg_task_key_preview in ("r2v", "r2i") and common_enabled and global_refs:
                 seg_refs = merge_indexed_refs(global_refs, local_refs)
             else:
@@ -590,9 +678,11 @@ def build_gen_director_plan(
                 height=out_h,
                 output_mode=out_mode,
                 ref_max_size=ref_max,
+                materialize_media=materialize_media,
             )
         seg_ref_audios = []
         seg_ref_videos = []
+        seg_ref_video_audios = []
         if edit_mode == "global":
             seg_ref_audios = segment_ref_audios_for_context(
                 seg_task_key,
@@ -619,7 +709,12 @@ def build_gen_director_plan(
                 if isinstance(legacy, dict) and (legacy.get("videoFile") or legacy.get("fileName")):
                     if not any(int(v.get("index", v.get("slot", -1))) == 0 for v in raw_vids if isinstance(v, dict)):
                         raw_vids = [{"index": 0, **legacy}, *list(raw_vids or [])]
-                local_videos = _load_ref_videos(raw_vids, timeline, seg_len)
+                local_videos = _load_ref_videos(
+                    raw_vids,
+                    timeline,
+                    seg_len,
+                    materialize_media=materialize_media,
+                )
                 if common_enabled:
                     common_vids = list(
                         global_block.get("refVideos") or global_block.get("ref_videos") or []
@@ -639,11 +734,26 @@ def build_gen_director_plan(
                         ):
                             common_vids = [{"index": 0, **g_legacy}, *common_vids]
                     common_videos = (
-                        _load_ref_videos(common_vids, timeline, seg_len) if common_vids else []
+                        _load_ref_videos(
+                            common_vids,
+                            timeline,
+                            seg_len,
+                            materialize_media=materialize_media,
+                        ) if common_vids else []
                     )
                     seg_ref_videos = merge_indexed_refs(common_videos, local_videos)
                 else:
                     seg_ref_videos = local_videos
+        if materialize_media:
+            for video in seg_ref_videos:
+                path = resolve_video_path(video.meta)
+                if video_has_audio(path) is False:
+                    continue
+                video_pts0, audio_start, frame_dur = _probe_av_timing(path, fallback_fps=fps)
+                start_sec = _pcm_time_for_native(0, video_pts0=video_pts0, audio_start=audio_start, frame_dur=frame_dur)
+                audio = extract_audio_segment(path, start_sec, int(video.tensor.shape[0]) / fps)
+                if audio is not None:
+                    seg_ref_video_audios.append(SegmentRefAudio(index=video.index, audio=audio, audio_file=video.video_file))
         if seg_task_key in ("r2v", "r2i") and not seg_refs and not seg_ref_videos and not seg_ref_audios:
             log.warning(
                 "gen segment #%d task=%s has no reference media — will behave like "
@@ -651,7 +761,9 @@ def build_gen_director_plan(
                 idx + 1,
                 seg_task_key,
             )
-        if seg_task_key == "i2v":
+        if not materialize_media:
+            seg_source = None
+        elif seg_task_key == "i2v":
             if idx < len(source_clips):
                 seg_source = source_clips[idx].clone()
             else:
@@ -689,12 +801,16 @@ def build_gen_director_plan(
                 refs=seg_refs,
                 ref_audios=seg_ref_audios,
                 ref_videos=seg_ref_videos,
+                ref_video_audios=seg_ref_video_audios,
                 negative_prompt=seg_negative,
                 source_clip=seg_source,
                 continuity_from_prev=resolve_segment_continuity_from_prev(
                     seg_data if isinstance(seg_data, dict) else {},
                     segment_index=idx,
                 ),
+                # Video-as-segment: finished video feeding this segment's pixels
+                # and latents instead of sampling (see seed_from_video.py).
+                source_video=_source_video_of(seg_data),
                 ref_image_size=resolve_ref_image_size(
                     seg_data if isinstance(seg_data, dict) else {},
                     timeline,

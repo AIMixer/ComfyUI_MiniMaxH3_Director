@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from ..frame_align import minimax_align_frame_count
+from ..h3_x2_decode import decode_video_latent
 from .inject import inject_video_latent
 from .stitch import stitch_faces
 from .track import track_and_crop
@@ -23,10 +24,7 @@ def _pad_frames(frames: torch.Tensor, length: int) -> torch.Tensor:
 
 
 def _decode_video(samples, vae) -> torch.Tensor:
-    from nodes import VAEDecode
-
-    images, = VAEDecode().decode(vae, samples)
-    return images
+    return decode_video_latent(vae, samples, context="director.face_refine")
 
 
 def apply_segment_face_refine(
@@ -46,8 +44,6 @@ def apply_segment_face_refine(
     shift_cache=None,
 ) -> tuple[torch.Tensor, str]:
     """Return (stitched frames [N,...], report). Caller keeps a copy of `frames` for compare."""
-    from ...nodes.conditioning import run_minimax_conditioning
-    from ..core_sampling import sample_single_stage
     from ..plan import (
         official_ref_image_size,
         ref_audios_to_dict,
@@ -55,20 +51,7 @@ def apply_segment_face_refine(
         refs_to_kwargs_for_context,
         resolve_ref_image_size,
     )
-    from ..refine_pack import parse_refine_sigmas
-    from ...lib.image_prep import assert_minimax_canvas, limit_ref_image_dict
-
-    if frames is None or not isinstance(frames, torch.Tensor) or frames.ndim != 4:
-        raise ValueError("FaceRefine 需要解码后的视频帧。")
-    base = frames[..., :3].contiguous().float().cpu()
-    n_src = int(base.shape[0])
-    crops, transform, track_note = track_and_crop(base, pack)
-    if crops is None or transform is None:
-        return base[:n_src].contiguous(), track_note
-    canvas_w, canvas_h = transform["canvas"]
-    assert_minimax_canvas(int(canvas_w), int(canvas_h))
-    gen_len = minimax_align_frame_count(int(crops.shape[0]))
-    crop_in = _pad_frames(crops, gen_len)
+    from ...lib.image_prep import limit_ref_image_dict
 
     ref_kwargs = refs_to_kwargs_for_context(seg.task_key, seg.refs)
     ref_images = {}
@@ -90,24 +73,66 @@ def apply_segment_face_refine(
         cache=getattr(plan, "audio_decode_cache", None),
     )
     size_arg = official_ref_image_size(resolve_ref_image_size(seg, plan))
-    if audio_vae is None:
-        raise ValueError("FaceRefine 需要 audio_vae（与导演台 r2v 相同）。")
+    def prepare_latent(latent, start, end):
+        from copy import copy
+        from ..audio_freeze import apply_first_pass_audio_freeze, freeze_requested
 
-    positive, _negative, latent, cond_hint = run_minimax_conditioning(
-        clip=clip,
-        vae=vae,
-        audio_vae=audio_vae,
+        if not freeze_requested(plan)[0]:
+            return
+
+        shot = copy(seg)
+        shot.start_frame = int(seg.start_frame) + start
+        shot.end_frame = int(seg.start_frame) + end
+        shot_audios = {}
+        fps = float(plan.frame_rate)
+        for key, audio in (ref_audios or {}).items():
+            audio = dict(audio)
+            sr = int(audio["sample_rate"])
+            audio["waveform"] = audio["waveform"][..., round(start * sr / fps):round(end * sr / fps)]
+            shot_audios[key] = audio
+        apply_first_pass_audio_freeze(
+            plan, shot, latent=latent, audio_vae=audio_vae,
+            ref_audios=shot_audios, ref_video_audios=None, trim_frames=0,
+        )
+
+    return refine_face_video(
+        frames=frames, pack=pack, model=model, vae=vae, audio_vae=audio_vae, clip=clip,
+        seed=seed, cfg=cfg, shift_video=shift_video, shift_audio=shift_audio,
+        shift_cache=shift_cache, ref_images=ref_images, ref_audios=ref_audios,
         prompt=seg.prompt or plan.global_prompt or "a person, face close-up",
-        width=int(canvas_w),
-        height=int(canvas_h),
-        length=int(gen_len),
-        task_key="r2v",
-        ref_images=ref_images,
-        ref_videos=None,
-        ref_audios=ref_audios,
-        ref_image_size=size_arg,
+        ref_image_size=size_arg, segment_index=int(getattr(seg, "index", 0)),
+        prepare_latent=prepare_latent,
     )
-    latent = inject_video_latent(latent, crop_in, vae)
+
+
+def refine_face_video(
+    *, frames, pack, model, vae, audio_vae, clip, seed=42, cfg=1.0,
+    shift_video=12.0, shift_audio=3.0, shift_cache=None,
+    ref_images=None, ref_audios=None, prompt="a person, face close-up",
+    ref_image_size="match", segment_index=0, prepare_latent=None,
+):
+    """Shared postprocess for Director and already-rendered videos; never changes audio."""
+    from ...nodes.conditioning import run_minimax_conditioning
+    from ..core_sampling import sample_single_stage
+    from ..refine_pack import parse_refine_sigmas
+    from ...lib.image_prep import assert_minimax_canvas
+    from .strength import apply_face_strength
+
+    if frames is None or not isinstance(frames, torch.Tensor) or frames.ndim != 4 or len(frames) == 0:
+        raise ValueError("FaceRefine 需要非空的视频帧 IMAGE。")
+    if audio_vae is None:
+        raise ValueError("FaceRefine 需要 H3 audio_vae。")
+    base = frames[..., :3].detach().float().cpu().contiguous()
+    crops, transform, track_note = track_and_crop(base, pack)
+    if crops is None:
+        return base, track_note
+    canvas_w, canvas_h = transform["canvas"]
+    assert_minimax_canvas(int(canvas_w), int(canvas_h))
+    if pack.get("refine_model") is not None:
+        model = pack["refine_model"]
+    if pack.get("reference_image") is not None:
+        ref_images = {"ref_image_0": pack["reference_image"][:1]}
+    prompt = pack.get("prompt") or prompt
     sigma_t = None
     if pack.get("has_sigmas_tensor") and pack.get("sigmas_tensor") is not None:
         sigma_t = pack.get("sigmas_tensor")
@@ -115,34 +140,67 @@ def apply_segment_face_refine(
         sigma_t = parse_refine_sigmas(pack.get("sigmas_parsed"), fallback=False)
     fr_seed = int(seed)
     if str(pack.get("seed_mode") or "inherit") == "offset":
-        fr_seed = int(seed) + 1 + int(getattr(seg, "index", 0) or 0)
-    sampled = sample_single_stage(
-        model=model,
-        positive=positive,
-        negative=[],
-        latent=latent,
-        seed=fr_seed,
-        cfg=float(cfg),
-        steps=int(pack.get("steps") or 8),
-        sampler_name=str(pack.get("sampler") or "euler"),
-        scheduler=str(pack.get("scheduler") or "simple"),
-        shift_video=float(shift_video),
-        shift_audio=float(shift_audio),
-        denoise=float(pack.get("denoise") or 0.40),
-        sigmas=sigma_t,
-        phase_name="sample",
-        shift_cache=shift_cache,
-    )
-    refined = _decode_video(sampled, vae)
-    if refined.ndim != 4:
-        raise RuntimeError(f"FaceRefine decode 返回了非视频张量: {tuple(getattr(refined, 'shape', ()))}")
-    refined = refined[: int(crops.shape[0]), ..., :3].float().cpu()
-    if refined.shape[0] < crops.shape[0]:
-        refined = _pad_frames(refined, crops.shape[0])
+        fr_seed = int(seed) + 1 + int(segment_index)
+    refined = crops.clone()
+    notes = []
+    for a, b in transform.get("shot_ranges") or [(0, len(crops))]:
+        if not any(transform["detected"][a:b]):
+            notes.append(f"shot {a}:{b} skipped: no face")
+            continue
+        gen_len = minimax_align_frame_count(b - a)
+        crop_in = _pad_frames(crops[a:b], gen_len)
+        if a:
+            from ..vram_cleanup import cleanup_segment_vram
+            if shift_cache is not None:
+                shift_cache.clear()
+            cleanup_segment_vram(enabled=True, unload_models=True)
+        positive, _, latent, _ = run_minimax_conditioning(
+            clip=clip, vae=vae, audio_vae=audio_vae, prompt=prompt,
+            width=int(canvas_w), height=int(canvas_h), length=gen_len,
+            task_key="r2v", ref_images=ref_images, ref_videos=None,
+            ref_audios=ref_audios, ref_image_size=ref_image_size,
+        )
+        latent = inject_video_latent(latent, crop_in, vae)
+        if prepare_latent is not None:
+            prepare_latent(latent, a, b)
+        sample_model = model
+        strength_note = "constant strength"
+        if pack.get("adaptive_strength"):
+            shot_transform = {
+                "face_sizes": transform["face_sizes"][a:b] + [transform["face_sizes"][b-1]] * (gen_len - (b-a)),
+                "detected": transform["detected"][a:b] + [transform["detected"][b-1]] * (gen_len - (b-a)),
+                "shot_ranges": [(0, b - a)],
+            }
+            sample_model, latent, strength_note = apply_face_strength(
+                model, latent, shot_transform, pack,
+            )
+        sampled = sample_single_stage(
+            model=sample_model,
+            positive=positive,
+            negative=[],
+            latent=latent,
+            seed=fr_seed,
+            cfg=float(cfg),
+            steps=int(pack.get("steps") or 8),
+            sampler_name=str(pack.get("sampler") or "euler"),
+            scheduler=str(pack.get("scheduler") or "simple"),
+            shift_video=float(shift_video),
+            shift_audio=float(shift_audio),
+            denoise=float(pack.get("denoise") or 0.40),
+            sigmas=sigma_t,
+            phase_name="sample",
+            shift_cache=shift_cache,
+        )
+        decoded = _decode_video(sampled, vae)
+        if decoded.ndim != 4 or decoded.shape[0] < b - a:
+            raise RuntimeError("FaceRefine 解码帧数不足或形状无效。")
+        refined[a:b] = decoded[:b-a, ..., :3].float().cpu()
+        notes.append(f"shot {a}:{b}: {strength_note}")
+        del sampled, decoded, latent, positive
     stitched = stitch_faces(base, refined, transform, pack)
-    stitched = stitched[:n_src].contiguous().cpu().float()
+    stitched = stitched[:len(base)].contiguous().cpu().float()
     note = (
         f"{track_note}; sample {pack.get('sampler')} steps={pack.get('steps')} "
-        f"denoise={float(pack.get('denoise') or 0):.2f} seed={fr_seed} | {cond_hint}"
+        f"denoise={float(pack.get('denoise') or 0):.2f} seed={fr_seed}; " + "; ".join(notes)
     )
     return stitched, note

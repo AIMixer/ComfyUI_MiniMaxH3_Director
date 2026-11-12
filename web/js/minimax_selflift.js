@@ -3,6 +3,7 @@
 import { app } from "../../scripts/app.js";
 
 const SELFLIFT_CLASS = "MiniMaxH3DirectorSelfLift";
+const AVATAR_CLASS = "MiniMaxH3DirectorAvatarSelfLift";
 const DIRECTOR_CLASSES = new Set(["MiniMaxH3Director", "ComfyMiniMaxH3Director"]);
 const BYPASS_MODES = new Set([2, 4]);
 
@@ -323,6 +324,27 @@ function hiresModelLinked(node) {
 export function collectSelfLiftWitness(director) {
     const src = resolveSelfLiftNode(director);
     if (!src) return null;
+    if ((src.comfyClass || src.type) === AVATAR_CLASS) {
+        const hires = linkedSourceNode(src.graph, src, "high_res_model");
+        return {
+            enabled: true,
+            backend: "avatar",
+            transition_step: widgetNum(src, "transition_step", 6),
+            lowres_scale: widgetNum(src, "lowres_scale", 0.5),
+            rho: widgetNum(src, "rho", 0),
+            w_min: widgetNum(src, "w_min", 0.5),
+            w_max: widgetNum(src, "w_max", 1),
+            upscaler_model: widgetStr(src, "upscaler_model", "none"),
+            highres_tiling: widgetBool(src, "highres_tiling", false),
+            tiling_mode: widgetStr(src, "tiling_mode", "auto"),
+            tiling_tiles: widgetNum(src, "tiling_tiles", 2),
+            tiling_axis: widgetStr(src, "tiling_axis", "auto"),
+            highres_tiling_mode: widgetStr(src, "highres_tiling_mode", "spatial"),
+            highres_token_chunk: widgetNum(src, "highres_token_chunk", 4096),
+            highres_weight_cache_gb: widgetNum(src, "highres_weight_cache_gb", 4),
+            sample_model: hires && !nodeMuted(hires) ? true : null,
+        };
+    }
     return {
         enabled: true,
         split_mode: widgetStr(src, "split_mode", "highres_steps"),
@@ -419,6 +441,17 @@ function refreshLinkedDirectorCache(delay = 120) {
 app.registerExtension({
     name: "minimax.h3.director.selflift",
     async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData?.name === AVATAR_CLASS) {
+            for (const name of ["onWidgetChanged", "onConnectionsChange"]) {
+                const original = nodeType.prototype[name];
+                nodeType.prototype[name] = function (...args) {
+                    const result = original?.apply(this, args);
+                    refreshLinkedDirectorCache();
+                    return result;
+                };
+            }
+            return;
+        }
         if (nodeData?.name !== SELFLIFT_CLASS) return;
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function (...args) {

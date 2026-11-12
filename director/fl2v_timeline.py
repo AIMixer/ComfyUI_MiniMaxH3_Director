@@ -18,7 +18,14 @@ from typing import Any
 
 import torch
 
-from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge, resolve_output_dimensions
+from ..lib.image_prep import (
+    assert_minimax_canvas,
+    fit_canvas,
+    fit_video_long_edge,
+    is_keep_aspect,
+    keep_aspect_output,
+    resolve_output_dimensions,
+)
 from ..lib.task_prompts import resolve_task_key, task_type_option_label, TASK_PROMPT_BY_KEY
 
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.fl2v")
@@ -517,11 +524,13 @@ def build_fl2v_director_plan(
     width: int,
     height: int,
     ref_max_size: int,
+    materialize_media: bool = True,
 ):
     from .plan import (
         DirectorPlan,
         SegmentPlan,
         SegmentRef,
+        _load_refs,
         _parse_run_selection,
         _resolve_export_mode,
     )
@@ -574,19 +583,34 @@ def build_fl2v_director_plan(
     dim_src = dim_shot.get("start") or dim_shot.get("end") or dim_shot
     src_w = int(dim_src.get("width") or dim_shot.get("width") or 0)
     src_h = int(dim_src.get("height") or dim_shot.get("height") or 0)
-    out_w, out_h, ref_max, out_mode = resolve_output_dimensions(
-        src_w or int(width or 832),
-        src_h or int(height or 480),
-        mode=out_mode,
-        long_edge=int(
-            output_block.get("longEdge")
-            or output_block.get("long_edge")
-            or ref_max_size
-            or 848
-        ),
-        fixed_width=int(output_block.get("width") or timeline.get("width") or width),
-        fixed_height=int(output_block.get("height") or timeline.get("height") or height),
-    )
+    keep_dims = None
+    if is_keep_aspect(output_block):
+        kw, kh = src_w, src_h
+        first = dim_shot.get("start") or dim_shot.get("end")
+        if not (kw > 0 and kh > 0) and isinstance(first, dict):
+            try:
+                img = _load_image_ref(first)
+                kh, kw = int(img.shape[-3]), int(img.shape[-2])
+            except Exception as exc:
+                log.warning("Keep aspect ratio: could not read the first frame (%s)", exc)
+        keep_dims = keep_aspect_output(output_block, kw, kh)
+    if keep_dims:
+        out_w, out_h = keep_dims
+        ref_max, out_mode = max(out_w, out_h), "fixed"
+    else:
+        out_w, out_h, ref_max, out_mode = resolve_output_dimensions(
+            src_w or int(width or 832),
+            src_h or int(height or 480),
+            mode=out_mode,
+            long_edge=int(
+                output_block.get("longEdge")
+                or output_block.get("long_edge")
+                or ref_max_size
+                or 848
+            ),
+            fixed_width=int(output_block.get("width") or timeline.get("width") or width),
+            fixed_height=int(output_block.get("height") or timeline.get("height") or height),
+        )
     assert_minimax_canvas(out_w, out_h)
 
     export_mode = _resolve_export_mode(output_block)
@@ -617,7 +641,7 @@ def build_fl2v_director_plan(
         start_f = int(shot.get("timeline_start") or 0)
         fc = max(MIN_FL2V_FRAMES, int(shot["frameCount"]))
         user_prompt = (shot.get("prompt") or "").strip() or fallback_prompt
-        full_prompt = reinforce_fl2v_prompt(
+        full_prompt = user_prompt if timeline.get("generationFamily") == "Pika-H3" else reinforce_fl2v_prompt(
             user_prompt,
             has_end_frame=end_kf is not None,
             has_start_frame=start_kf is not None,
@@ -629,42 +653,60 @@ def build_fl2v_director_plan(
         )
 
         start_img = None
-        if start_kf is not None:
-            start_ref = {
-                "imageFile": start_kf.get("imageFile") or "",
-                "imageB64": start_kf.get("imageB64") or "",
-            }
-            start_img = _fit_image(
-                _load_image_ref(start_ref),
-                width=out_w,
-                height=out_h,
-                output_mode=out_mode,
-                ref_max_size=ref_max,
-            )
-
         end_img = None
-        if end_kf is not None:
-            end_ref = {
-                "imageFile": end_kf.get("imageFile") or "",
-                "imageB64": end_kf.get("imageB64") or "",
-            }
-            end_img = _fit_image(
-                _load_image_ref(end_ref),
-                width=out_w,
-                height=out_h,
-                output_mode=out_mode,
-                ref_max_size=ref_max,
-            )
-        start_img, end_img = _unify_fl2v_pair_canvas(start_img, end_img)
-        refs: list[SegmentRef] = []
-        if start_img is not None:
-            refs.append(SegmentRef(index=0, tensor=start_img[:1].clone()))
-        if end_img is not None:
-            refs.append(SegmentRef(index=1, tensor=end_img[:1].clone()))
+        if materialize_media:
+            if start_kf is not None:
+                start_ref = {
+                    "imageFile": start_kf.get("imageFile") or "",
+                    "imageB64": start_kf.get("imageB64") or "",
+                }
+                start_img = _fit_image(
+                    _load_image_ref(start_ref),
+                    width=out_w,
+                    height=out_h,
+                    output_mode=out_mode,
+                    ref_max_size=ref_max,
+                )
+
+            if end_kf is not None:
+                end_ref = {
+                    "imageFile": end_kf.get("imageFile") or "",
+                    "imageB64": end_kf.get("imageB64") or "",
+                }
+                end_img = _fit_image(
+                    _load_image_ref(end_ref),
+                    width=out_w,
+                    height=out_h,
+                    output_mode=out_mode,
+                    ref_max_size=ref_max,
+                )
+            start_img, end_img = _unify_fl2v_pair_canvas(start_img, end_img)
+            refs: list[SegmentRef] = []
+            if start_img is not None:
+                refs.append(SegmentRef(index=0, tensor=start_img[:1].clone()))
+            if end_img is not None:
+                refs.append(SegmentRef(index=1, tensor=end_img[:1].clone()))
+        else:
+            refs = []
+            for index, keyframe in ((0, start_kf), (1, end_kf)):
+                if isinstance(keyframe, dict):
+                    refs.extend(
+                        _load_refs(
+                            [{
+                                "index": index,
+                                "imageFile": keyframe.get("imageFile") or "",
+                                "imageB64": keyframe.get("imageB64") or "",
+                            }],
+                            materialize_media=False,
+                        )
+                    )
 
         # Last-only: no source_clip — otherwise held end would be read as first_frame.
         # Empty shot: dummy clip; ImageToVideo gets no keyframes (text-to-video).
-        if start_img is not None:
+        if not materialize_media:
+            source_clip = None
+            source_clips.append(torch.full((1, 16, 16, 3), 0.5, dtype=torch.float32))
+        elif start_img is not None:
             source_clip = _build_fl2v_endpoint_source(start_img, end_img, fc)
             source_clips.append(source_clip[:1].clone())
         elif end_img is not None:

@@ -11,8 +11,10 @@ from .nodes.conditioning import (
 from .nodes.director import MiniMaxH3Director
 from .nodes.director_refine import MiniMaxH3DirectorRefine
 from .nodes.director_selflift import MiniMaxH3DirectorSelfLift
+from .nodes.director_avatar_selflift import MiniMaxH3DirectorAvatarSelfLift
 from .nodes.director_semantic_bridge import MiniMaxH3DirectorSemanticBridge
 from .nodes.director_face_refine import MiniMaxH3DirectorFaceRefine
+from .nodes.face_refine_video import MiniMaxH3FaceRefineVideo
 from .nodes.director_groups import (
     MiniMaxH3DirectorGroupImageToVideo,
     MiniMaxH3DirectorGroupReferenceToVideo,
@@ -23,8 +25,10 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3Director": MiniMaxH3Director,
     "MiniMaxH3DirectorRefine": MiniMaxH3DirectorRefine,
     "MiniMaxH3DirectorSelfLift": MiniMaxH3DirectorSelfLift,
+    "MiniMaxH3DirectorAvatarSelfLift": MiniMaxH3DirectorAvatarSelfLift,
     "MiniMaxH3DirectorSemanticBridge": MiniMaxH3DirectorSemanticBridge,
     "MiniMaxH3DirectorFaceRefine": MiniMaxH3DirectorFaceRefine,
+    "MiniMaxH3FaceRefineVideo": MiniMaxH3FaceRefineVideo,
     # Legacy type id kept so older workflows still load.
     "ComfyMiniMaxH3Director": MiniMaxH3Director,
     "MiniMaxH3DirectorConditioning": MiniMaxH3DirectorConditioning,
@@ -37,12 +41,14 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MiniMaxH3Director": "MiniMaxH3Director",
+    "MiniMaxH3Director": "MiniMax H3 Director Pro",
     "MiniMaxH3DirectorRefine": "MiniMax H3 Director Refine",
     "MiniMaxH3DirectorSelfLift": "MiniMax H3 Director SelfLift",
+    "MiniMaxH3DirectorAvatarSelfLift": "MiniMax H3 Director 原版 SelfLift 桥接",
     "MiniMaxH3DirectorSemanticBridge": "MiniMax H3 Director Semantic Bridge",
     "MiniMaxH3DirectorFaceRefine": "MiniMax H3 Director FaceRefine",
-    "ComfyMiniMaxH3Director": "MiniMaxH3Director",
+    "MiniMaxH3FaceRefineVideo": "H3 已有视频脸部精修",
+    "ComfyMiniMaxH3Director": "MiniMax H3 Director Pro",
     "MiniMaxH3DirectorConditioning": "MiniMax H3 Director Conditioning",
     "MiniMaxH3DirectorPlannerConditioning": "MiniMax H3 Director Planner Conditioning",
     "MiniMaxH3DirectorGroupImageToVideo": "MiniMax H3 Director Group (Image to Video)",

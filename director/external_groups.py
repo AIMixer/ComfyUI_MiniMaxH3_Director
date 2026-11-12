@@ -11,7 +11,13 @@ from typing import Any
 
 import torch
 
-from ..lib.image_prep import assert_minimax_canvas, fit_canvas, fit_video_long_edge, resolve_output_dimensions
+from ..lib.image_prep import (
+    assert_minimax_canvas,
+    fit_canvas,
+    fit_video_long_edge,
+    keep_aspect_output,
+    resolve_output_dimensions,
+)
 from ..lib.ref_audios import MAX_REFERENCE_AUDIOS
 from ..lib.ref_images import MAX_REFERENCE_IMAGES
 from ..lib.ref_videos import MAX_REFERENCE_VIDEOS
@@ -466,6 +472,11 @@ def _resolve_dims(timeline: dict, width: int, height: int, ref_max_size: int, sa
         out_mode = "long_edge"
     src_w = int(sample_img.shape[2]) if sample_img is not None else int(width or 864)
     src_h = int(sample_img.shape[1]) if sample_img is not None else int(height or 480)
+    keep_dims = keep_aspect_output(output_block, src_w, src_h) if sample_img is not None else None
+    if keep_dims:
+        out_w, out_h = keep_dims
+        assert_minimax_canvas(out_w, out_h)
+        return out_w, out_h, max(out_w, out_h), "fixed", _resolve_export_mode(output_block)
     out_w, out_h, ref_max, out_mode = resolve_output_dimensions(
         src_w,
         src_h,
@@ -728,7 +739,7 @@ def build_plan_from_external_groups(
                     else None
                 )
                 if seg_task_key in {"fl2v", "i2v"}:
-                    prompt = reinforce_fl2v_prompt(
+                    prompt = prompt if timeline.get("generationFamily") == "Pika-H3" else reinforce_fl2v_prompt(
                         prompt,
                         has_end_frame=end_img is not None,
                         has_start_frame=start_img is not None,
@@ -799,7 +810,7 @@ def build_plan_from_external_groups(
             ]
             audio_idxs = usable_ref_audio_indices(ref_audios)
             prompt = drop_unusable_audio_prompt_tags(prompt, audio_idxs)
-            prompt = reinforce_r2v_prompt(
+            prompt = prompt if timeline.get("generationFamily") == "Pika-H3" else reinforce_r2v_prompt(
                 prompt,
                 ref_indices=[r.index for r in refs],
                 video_indices=[v.index for v in ref_videos],

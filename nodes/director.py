@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import comfy.samplers
 
 from ..director.executor_core import execute_director_plan_core
+from ..director.seed_from_video import (
+    enable_assemble_mode_when_nothing_selected,
+)
 from .director_common import (
     finalize_director_outputs,
     prepare_director_plan,
@@ -46,6 +50,11 @@ def director_timeline_required_inputs() -> dict:
 
 class MiniMaxH3Director:
     """In-node timeline Director using ComfyUI official MiniMax H3 pipeline."""
+
+    def __init__(self):
+        self._base_model = None
+        self._lora_loaders = {}
+        self._lora_models = {}
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -191,6 +200,10 @@ class MiniMaxH3Director:
                         ),
                     },
                 ),
+                "pika_flex": ("BOOLEAN", {"default": False, "tooltip": "Legacy Pika switch; use generation_family for new workflows."}),
+                "video_decode": (["regular", "tiled"], {"default": "regular", "tooltip": "Tiled: spatial 512/64, temporal 64/8."}),
+                "generation_family": (["H3", "Pika-H3"], {"default": "H3"}),
+                "audio_conditioning": (["none", "source_lock"], {"default": "none", "tooltip": "Source-audio conditioning, independent of export audio selection."}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -314,9 +327,31 @@ class MiniMaxH3Director:
         export_source_images=False,
         export_pre_face_refine=False,
         cache_name="",
+        video_decode="regular",
+        pika_flex=False,
+        generation_family="H3",
+        audio_conditioning="none",
         **kwargs,
     ):
         del kwargs
+        pika_flex = bool(pika_flex) or generation_family == "Pika-H3"
+        if str(timeline_data or "").strip():
+            timeline = json.loads(timeline_data)
+            timeline["generationFamily"] = "Pika-H3" if pika_flex else "H3"
+            timeline_data = json.dumps(timeline, ensure_ascii=False)
+        if self._base_model is not model:
+            self._base_model = model
+            self._lora_loaders.clear()
+            self._lora_models.clear()
+
+        # 全部片段都是现成视频 → 走拼接：先把时间线标成全跑，避免空选择报错，
+        # 之后每段都命中播种缓存，采样器一次都不会触发。
+        try:
+            timeline_data, _assembling = enable_assemble_mode_when_nothing_selected(timeline_data)
+            if _assembling:
+                print("[MiniMax H3 Director] 未勾选任何片段 → 直接拼接已有内容，不走模型生成")
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[MiniMax H3 Director] 拼接模式判定跳过：{_exc}")
 
         plan = prepare_director_plan(
             timeline_data=timeline_data,
@@ -337,6 +372,11 @@ class MiniMaxH3Director:
         )
         codec = str(cache_frames_codec or "raw").strip().lower()
         plan.cache_frames_codec = "ffv1" if codec == "ffv1" else "raw"
+
+        # Video-as-segment: any segment declaring ``sourceVideo`` gets its cache
+        # (pixels + AV latent + export audio) written from that finished video, so
+        # the segment is not sampled and the next segment continues from it.
+        plan.raw.setdefault("output", {})["audioConditioning"] = str(audio_conditioning)
 
         try:
             combined, segment_outputs, segment_audios, report, export_frame_counts, pre_combined, pre_segments, held_for_confirmation, pre_face_combined, pre_face_segments = (
@@ -360,6 +400,10 @@ class MiniMaxH3Director:
                     clear_vram_before_refine=clear_vram_before_refine,
                     clear_vram_before_face_refine=clear_vram_before_face_refine,
                     export_pre_face_refine=export_pre_face_refine,
+                    video_decode=video_decode,
+                    pika_flex=pika_flex,
+                    lora_loader_cache=self._lora_loaders,
+                    lora_model_cache=self._lora_models,
                 )
             )
 
@@ -386,3 +430,6 @@ class MiniMaxH3Director:
             for item in getattr(plan, "global_ref_audios", None) or []:
                 if getattr(item, "audio_path", ""):
                     item.audio = None
+            from ..director.vram_cleanup import release_director_plan_memory
+
+            release_director_plan_memory(plan)

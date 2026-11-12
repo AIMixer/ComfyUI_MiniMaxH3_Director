@@ -183,6 +183,16 @@ class MiniMaxH3DirectorFaceRefine:
                         "tooltip": "可选。接线后覆盖步数 / 调度器 / denoise。",
                     },
                 ),
+                "refine_model": ("MODEL", {"tooltip": "独立修脸模型；不接时沿用片段模型。Pika主生成可另接未叠加LoRA的H3底模修脸。"}),
+                "reference_image": ("IMAGE", {"tooltip": "可选清晰人物参考；不接时沿用片段参考图。不会自动挑选生成帧。"}),
+                "prompt": ("STRING", {"default": "", "multiline": True, "tooltip": "可选修脸专用提示词；留空沿用片段提示词。"}),
+                "cut_detection": (["none", "auto"], {"default": "none", "tooltip": "auto按真实硬切镜独立跟踪、平滑与修复。"}),
+                "cut_threshold": ("FLOAT", {"default": 3.0, "min": 0.1, "max": 100.0, "step": 0.1}),
+                "max_gap_frames": ("INT", {"default": 6, "min": 0, "max": 240}),
+                "adaptive_strength": ("BOOLEAN", {"default": False, "tooltip": "小脸加强、大脸减弱；同时修正H3视频遮罩的MODEL采样行为。"}),
+                "large_face_multiplier": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.05}),
+                "face_px_small": ("FLOAT", {"default": 30.0, "min": 1.0, "max": 800.0}),
+                "face_px_large": ("FLOAT", {"default": 120.0, "min": 1.0, "max": 1600.0}),
             },
         }
 
@@ -220,7 +230,6 @@ class MiniMaxH3DirectorFaceRefine:
         sigmas=None,
         **kwargs,
     ):
-        del kwargs
         return (
             pack_face_refine(
                 detector=detector,
@@ -241,5 +250,10 @@ class MiniMaxH3DirectorFaceRefine:
                 colour_match=colour_match,
                 blend=blend,
                 sigmas=sigmas,
+                **{key: kwargs[key] for key in (
+                    "refine_model", "reference_image", "prompt", "cut_detection", "cut_threshold",
+                    "max_gap_frames", "adaptive_strength", "large_face_multiplier", "face_px_small",
+                    "face_px_large",
+                ) if key in kwargs},
             ),
         )

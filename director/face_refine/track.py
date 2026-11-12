@@ -1,9 +1,25 @@
 """Per-frame face track + crop.
 
 Adapted from ComfyUI-H3-FaceRefine (MIT, Carasibana): detection, gap fill,
-trajectory smoothing, and sub-pixel affine crop. Identity / SAM / cut-picker
-UI are omitted; this pass follows one subject (largest or most central face)
-with nearest-box continuity.
+trajectory smoothing, shot segmentation, and sub-pixel affine crop.
+https://github.com/Carasibana/ComfyUI-H3-FaceRefine
+
+MIT License — Copyright (c) 2026 Carasibana
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 """
 
 from __future__ import annotations
@@ -71,6 +87,24 @@ def _interp_gaps(vals: np.ndarray, valid: np.ndarray) -> np.ndarray:
     if not valid.any():
         return np.zeros(n, dtype=np.float64)
     return np.interp(idx, idx[valid], vals[valid])
+
+
+def _track_spans(valid: np.ndarray, shots: list, max_gap: int) -> list:
+    """Split smoothing/fill at cuts and long dropouts; never extrapolate endpoints."""
+    spans = []
+    for a, b in shots:
+        hits = np.flatnonzero(valid[a:b]) + a
+        if not len(hits):
+            continue
+        start = prev = int(hits[0])
+        for hit in hits[1:]:
+            hit = int(hit)
+            if hit - prev - 1 > max_gap:
+                spans.append((start, prev + 1))
+                start = hit
+            prev = hit
+        spans.append((start, prev + 1))
+    return spans
 
 
 def _smooth(vals: np.ndarray, window: int, method: str = "gaussian") -> np.ndarray:
@@ -214,6 +248,33 @@ def track_and_crop(
     canvas_w = int(pack.get("canvas_width") or 768)
     canvas_h = int(pack.get("canvas_height") or 768)
     canvas_mode = str(pack.get("canvas_mode") or "manual")
+    max_gap = max(0, int(pack.get("max_gap_frames", 6)))
+    cut_detection = str(pack.get("cut_detection") or "none")
+    cut_detector = None
+    if cut_detection != "none":
+        try:
+            from scenedetect.common import FrameTimecode
+            from scenedetect.detectors import AdaptiveDetector
+
+            cut_detector = AdaptiveDetector(adaptive_threshold=float(pack.get("cut_threshold", 3.0)))
+        except ImportError as exc:
+            raise ImportError("FaceRefine 自动切镜需要 scenedetect；请安装该依赖或将 cut_detection 设为 none。") from exc
+
+    cuts = []
+    all_boxes = []
+    for i in range(n_frames):
+        bgr = _to_bgr_u8(frames[i])
+        if cut_detector is not None:
+            cuts.extend(int(t.frame_num) for t in cut_detector.process_frame(FrameTimecode(i, fps=24.0), bgr))
+        try:
+            res = detector.predict(bgr, conf=conf, verbose=False)[0]
+            all_boxes.append(res.boxes.xyxy.tolist() if len(res.boxes) else [])
+        except Exception as exc:
+            log.debug("Face detect frame %d failed: %s", i, exc)
+            all_boxes.append([])
+    bounds = [0] + sorted({c for c in cuts if 0 < c < n_frames}) + [n_frames]
+    shot_ranges = list(zip(bounds[:-1], bounds[1:]))
+    shot_starts = set(bounds[:-1])
 
     cx = np.zeros(n_frames, dtype=np.float64)
     cy = np.zeros(n_frames, dtype=np.float64)
@@ -222,14 +283,15 @@ def track_and_crop(
     valid = np.zeros(n_frames, dtype=bool)
 
     lock = None  # (cx, cy, h)
+    last_seen = None
     found = 0
     for i in range(n_frames):
-        try:
-            res = detector.predict(_to_bgr_u8(frames[i]), conf=conf, verbose=False)[0]
-            boxes = res.boxes.xyxy.tolist() if len(res.boxes) else []
-        except Exception as exc:
-            log.debug("Face detect frame %d failed: %s", i, exc)
-            boxes = []
+        if i in shot_starts:
+            lock = None
+            last_seen = None
+        elif lock is not None and i - last_seen - 1 > max_gap:
+            lock = None
+        boxes = all_boxes[i]
         if not boxes:
             continue
         if lock is None:
@@ -252,6 +314,7 @@ def track_and_crop(
         cx[i], cy[i], sz[i], fw[i] = pcx, pcy, ph, pw
         valid[i] = True
         lock = (pcx, pcy, ph)
+        last_seen = i
         found += 1
 
     if found == 0:
@@ -264,14 +327,19 @@ def track_and_crop(
         log.warning(note)
         return None, None, note
 
-    raw_cx = _interp_gaps(cx, valid)
-    raw_cy = _interp_gaps(cy, valid)
-    raw_sz = _interp_gaps(sz, valid)
-    raw_fw = _interp_gaps(fw, valid)
-    sm_cx = _smooth(raw_cx, 21)
-    sm_cy = _smooth(raw_cy, 21)
-    sm_sz = _smooth(raw_sz, 51)
-    sm_fw = _smooth(raw_fw, 51)
+    spans = _track_spans(valid, shot_ranges, max_gap)
+    lost_ranges = _track_spans(~valid, shot_ranges, 0)
+    sm_cx, sm_cy, sm_sz, sm_fw = (np.zeros(n_frames) for _ in range(4))
+    face_sizes = np.zeros(n_frames)
+    weights = np.zeros(n_frames)
+    for a, b in spans:
+        for raw, smoothed, window in ((cx, sm_cx, 21), (cy, sm_cy, 21), (sz, sm_sz, 51), (fw, sm_fw, 51)):
+            filled = _interp_gaps(raw[a:b], valid[a:b])
+            smoothed[a:b] = _smooth(filled, window)
+            if raw is sz:
+                face_sizes[a:b] = filled
+        # Missing detections may supply crop context, but never replace source pixels.
+        weights[a:b] = np.clip(_smooth(valid[a:b].astype(np.float64), 11), 0, 1) * valid[a:b]
 
     if canvas_mode != "manual":
         need = float(min(sm_sz.max() * crop_factor, height))
@@ -285,6 +353,11 @@ def track_and_crop(
     boxes: list[tuple[float, float, float, float]] = []
     crops = torch.zeros((n_frames, canvas_h, canvas_w, 3), dtype=frames.dtype)
     for i in range(n_frames):
+        if sm_sz[i] <= 0:
+            box = (0.0, 0.0, float(width), float(height))
+            boxes.append(box)
+            crops[i : i + 1] = affine_crop(frames[i : i + 1], box, canvas_w, canvas_h).to(crops.dtype)
+            continue
         bh = sm_sz[i] * crop_factor
         bw = bh * aspect
         if bw > width:
@@ -297,14 +370,13 @@ def track_and_crop(
         boxes.append(box)
         crops[i : i + 1] = affine_crop(frames[i : i + 1], box, canvas_w, canvas_h).to(crops.dtype)
 
-    weights = np.clip(_smooth(valid.astype(np.float64), 11), 0.0, 1.0)
     face_rect = []
     for i, box in enumerate(boxes):
         bw, bh = max(box[2], 1e-6), max(box[3], 1e-6)
         face_rect.append(
             (
-                float(canvas_w) * 0.5 - 0.5 * float(sm_fw[i]) / bw * canvas_w,
-                float(canvas_h) * 0.5 - 0.5 * float(sm_sz[i]) / bh * canvas_h,
+                (float(sm_cx[i]) - box[0] - 0.5 * float(sm_fw[i])) / bw * canvas_w,
+                (float(sm_cy[i]) - box[1] - 0.5 * float(sm_sz[i])) / bh * canvas_h,
                 float(sm_fw[i]) / bw * canvas_w,
                 float(sm_sz[i]) / bh * canvas_h,
             )
@@ -318,11 +390,15 @@ def track_and_crop(
         "source_frames": int(n_frames),
         "weights": [float(w) for w in weights],
         "detected": [bool(v) for v in valid],
+        "shot_ranges": shot_ranges,  # (start, end), end-exclusive, in source frames.
+        "face_sizes": face_sizes.tolist(),  # Face height in original pixels, before smoothing.
+        "lost_ranges": lost_ranges,  # Undetected/rejected frames, end-exclusive.
         "face_rect": face_rect,
         "crop_factor": float(crop_factor),
     }
     report = (
         f"FaceRefine track: {found}/{n_frames} faces, select={select}, "
-        f"canvas={canvas_w}x{canvas_h} ({canvas_mode}), crop×{crop_factor:g}"
+        f"canvas={canvas_w}x{canvas_h} ({canvas_mode}), crop×{crop_factor:g}, "
+        f"shots={len(shot_ranges)}, max_gap={max_gap}, lost={n_frames - found} frames"
     )
     return crops, transform, report
