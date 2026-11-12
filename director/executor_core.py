@@ -83,7 +83,6 @@ from .segment_cache import (
     resolve_segment_cache_key,
     save_first_pass_cache,
     save_segment_cache,
-    write_segment_seed_record,
 )
 from .segment_mp4_export import (
     copy_segment_mp4_suffix,
@@ -1601,12 +1600,6 @@ def execute_director_plan_core(
         completed_pre_face[seg.index] = pre_face_chunk
         completed_refine_passes[seg.index] = pass_clips
         segment_export_lengths[seg.index] = int(chunk.shape[0])
-        # Ledger: this segment's video fully finished in this run — record the
-        # seed now, per segment, so an interrupted later segment (or a crash)
-        # never rewrites the "last completed seed" of finished ones.
-        write_segment_seed_record(
-            node_id, seg.index, int(getattr(plan, "sample_seed", 0) or 0)
-        )
 
         #「分段导出」: flush mp4 as soon as this segment succeeds (crash-safe).
         # Confirmation hold has no final/second-pass clip yet: save only _pre.

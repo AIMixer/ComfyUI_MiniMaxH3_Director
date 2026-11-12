@@ -1797,67 +1797,6 @@ def inspect_first_pass_cache(
     return _stamp_confirm_refine(result, plan)
 
 
-SEED_RECORD_SUFFIX = ".seed.json"
-_SEED_RECORD_NAME_RE = re.compile(r"^seg_(\d+)\.seed\.json$")
-
-
-def write_segment_seed_record(node_id: str | None, seg_index: int, seed: int) -> None:
-    """Record the seed of the last run that FULLY completed this segment.
-
-    Written exactly once per segment, at the moment its final A/V chunk is
-    accepted — so a run that dies (or gets interrupted) mid-segment leaves
-    the previous record untouched. Lives in the node's segment-cache dir and
-    survives restarts; ``prune_segment_cache`` drops it with the group, but
-    「清空缓存」 deliberately keeps it (the ledger outlives the latents).
-    Never raises.
-    """
-    if not node_id:
-        return
-    try:
-        import time
-
-        root = _cache_dir_or_none(node_id)
-        if root is None:
-            return
-        root.mkdir(parents=True, exist_ok=True)
-        path = root / f"seg_{int(seg_index):04d}{SEED_RECORD_SUFFIX}"
-        payload = {"seed": int(seed), "ts": int(time.time())}
-        _write_via_temp(
-            path,
-            lambda p: p.write_text(json.dumps(payload), encoding="utf-8"),
-        )
-    except Exception as exc:
-        log.debug("Segment seed record write skipped (%s).", exc)
-
-
-def read_seed_records(node_id_or_key: str | None) -> list[dict[str, Any]]:
-    """All ``seg_XXXX.seed.json`` rows for one Director node, sorted by index."""
-    records: list[dict[str, Any]] = []
-    if not node_id_or_key:
-        return records
-    try:
-        root = _cache_dir_or_none(node_id_or_key)
-        if root is None or not root.is_dir():
-            return records
-        for path in root.glob(f"seg_*{SEED_RECORD_SUFFIX}"):
-            match = _SEED_RECORD_NAME_RE.match(path.name)
-            if not match:
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                records.append({
-                    "index": int(match.group(1)),
-                    "seed": int(data.get("seed")),
-                    "ts": data.get("ts"),
-                })
-            except (ValueError, TypeError, OSError):
-                continue
-    except Exception as exc:
-        log.debug("Segment seed records read skipped (%s).", exc)
-    records.sort(key=lambda row: row["index"])
-    return records
-
-
 def clear_segment_cache(node_id: str | None, kind: str = "final") -> int:
     """Delete cached segment files for this Director node.
 
@@ -1885,10 +1824,6 @@ def clear_segment_cache(node_id: str | None, kind: str = "final") -> int:
             if not path.is_file():
                 continue
         except OSError:
-            continue
-        if path.name.endswith(SEED_RECORD_SUFFIX):
-            # The last-seed ledger is not cache: clearing latents must not
-            # erase what seed a finished segment last used.
             continue
         is_pre = ".pre." in path.name
         if kind == "first_pass" and not is_pre:

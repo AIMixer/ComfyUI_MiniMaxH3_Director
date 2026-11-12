@@ -1230,8 +1230,6 @@ const STYLES = `
 .bd-seg-head>b{flex-shrink:0;margin:0}
 .bd-seg-refsize{display:inline-flex;align-items:center;gap:6px;color:#c8c8c8;font-size:11px;white-space:nowrap;margin-left:auto;flex-shrink:0}
 .bd-seg-refsize select{max-width:132px}
-.bd-seg-seed{display:inline-flex;align-items:center;gap:5px;color:#9a9a9a;font-size:11px;background:#0e0e0e;border:1px solid #262626;border-radius:8px;padding:3px 8px;white-space:nowrap}
-.bd-seg-seed.hidden{display:none!important}
 .bd-seg-continuity{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#9ab;cursor:pointer;user-select:none;flex-shrink:0}
 .bd-seg-continuity input{width:14px;height:14px;margin:0;cursor:pointer;accent-color:#6ab0ff}
 .bd-seg-head .bd-meta,.bd-panel.bd-v2v-panel .bd-seg-head .bd-meta,.bd-panel.bd-rv2v-panel .bd-seg-head .bd-meta{color:#8a8a8a;font-size:11px;line-height:1.45;padding:0;min-width:0}
@@ -3215,7 +3213,6 @@ class MiniMaxH3DirectorEditor {
                         <span data-i18n="batch.continuityFromPrev">引用上段</span>
                     </label>
                     <div class="bd-meta" data-r="seg-info"></div>
-                    <span class="bd-seg-seed hidden" data-r="seg-last-seed" hidden></span>
                     <label class="bd-seg-refsize hidden" data-r="seg-ref-image-size-wrap" hidden data-i18n-title="tooltip.refImageSize">
                         <span data-i18n="output.refImageSize.label">参考图尺寸</span>
                         <select class="bd-select" data-r="seg-ref-image-size">
@@ -3380,7 +3377,6 @@ class MiniMaxH3DirectorEditor {
         this.segContinuityFromPrevWrap = this.root.querySelector('[data-r="seg-continuity-from-prev-wrap"]');
         this.segContinuityFromPrevCb = this.root.querySelector('[data-r="seg-continuity-from-prev"]');
         this.segRefImageSizeWrap = this.root.querySelector('[data-r="seg-ref-image-size-wrap"]');
-        this.segLastSeedWrap = this.root.querySelector('[data-r="seg-last-seed"]');
         this.segRefImageSize = this.root.querySelector('[data-r="seg-ref-image-size"]');
         this.segInfo = this.root.querySelector('[data-r="seg-info"]');
         this.segPrompt = this.root.querySelector('[data-r="seg-prompt"]');
@@ -4438,46 +4434,6 @@ class MiniMaxH3DirectorEditor {
             runSelectEnabled: true,
             runSelection: [...(this.timeline.runSelection || [])],
         };
-    }
-
-    /**
-     * Seed ledger: the executor writes seg_XXXX.seed.json on the server the
-     * moment a segment's video FULLY completes (interrupted/failed segments
-     * keep their previous record). Records live in the node's segment-cache
-     * dir, so they survive restarts without the workflow being saved.
-     */
-    async loadSeedRecords() {
-        const node = this.node;
-        try {
-            const params = new URLSearchParams({ node_id: String(node.id) });
-            const cacheName = this.widget("cache_name")?.value;
-            if (cacheName) params.set("cache_name", String(cacheName));
-            const resp = await api.fetchApi(`/minimax/director/seed_records?${params}`);
-            if (!resp.ok) return;
-            const data = await resp.json();
-            const map = {};
-            for (const row of data?.records || []) {
-                const idx = Number(row?.index);
-                const seed = Number(row?.seed);
-                if (Number.isFinite(idx) && Number.isFinite(seed)) {
-                    map[idx] = Math.trunc(seed);
-                }
-            }
-            this._seedRecords = map;
-            if (this.isImageBatch()) this.renderImageBatchGroups?.();
-            else this.scheduleRender?.();
-            this.syncSegmentSeedUI?.();
-        } catch {
-            /* Server offline: keep whatever is already displayed. */
-        }
-    }
-
-    /** Seed to display for one segment: server ledger first, then legacy in-timeline record. */
-    resolveSegmentSeed(seg, index) {
-        const rec = this._seedRecords?.[Number(index)];
-        if (Number.isFinite(Number(rec))) return Math.trunc(Number(rec));
-        const legacy = Number(seg?.lastSeed);
-        return Number.isFinite(legacy) ? Math.trunc(legacy) : null;
     }
 
     getDirectorMode() {
@@ -6749,7 +6705,6 @@ class MiniMaxH3DirectorEditor {
         }
         this.syncSegmentContinuityFromPrevUI();
         this.syncSegmentRefImageSizeUI();
-        this.syncSegmentSeedUI();
     }
 
     /** Per-segment「引用上段」on v2v/rv2v segment panel (index>0 + master on). */
@@ -6789,21 +6744,6 @@ class MiniMaxH3DirectorEditor {
         sel.value = value;
         if (seg && seg.refImageSize !== value) seg.refImageSize = value;
         wrap.title = t("tooltip.refImageSize");
-    }
-
-    /** Read-only seed record chip shown next to the segment ref-image-size. */
-    syncSegmentSeedUI() {
-        const wrap = this.segLastSeedWrap;
-        if (!wrap) return;
-        const idx = this.selectedIndex ?? 0;
-        const seg = this.timeline.segments?.[idx];
-        const seed = this.resolveSegmentSeed?.(seg, idx) ?? Number(seg?.lastSeed);
-        const show = Number.isFinite(seed);
-        wrap.classList.toggle("hidden", !show);
-        wrap.hidden = !show;
-        if (!show) { wrap.textContent = ""; return; }
-        wrap.textContent = `${t("batch.seedLabel")} ${Math.trunc(seed)}`;
-        wrap.title = t("tooltip.batchSeedRecord");
     }
 
     /** Apply ResolutionSelector → fixed width/height on timeline + node widgets. */
@@ -13463,15 +13403,7 @@ app.registerExtension({
         });
 
         api.addEventListener("executing", ({ detail }) => {
-            if (detail == null) {
-                // Whole queue finished: re-read the server-side seed ledger so
-                // every fully completed segment shows the seed it finished with.
-                const graphEnd = app.graph ?? app.canvas?.graph;
-                for (const node of graphEnd?._nodes ?? graphEnd?.nodes ?? []) {
-                    node._minimaxEditor?.loadSeedRecords?.();
-                }
-                return;
-            }
+            if (detail == null) return;
             const node = findDirectorNode(detail);
             const editor = node?._minimaxEditor;
             if (!editor) return;
@@ -13527,7 +13459,6 @@ app.registerExtension({
         bindDirectorDomWidgetSizing(node, node._minimaxDomWidget, () => node._minimaxEditor);
         const editor = initDirectorEditor(node);
         editor?.scheduleRender?.();
-        editor?.loadSeedRecords?.();
         // Workflow size is already on node.size — settle fill after widgets arrange.
         scheduleDirectorLayoutSettle(editor);
     },

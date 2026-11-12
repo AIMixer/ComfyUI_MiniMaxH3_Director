@@ -518,8 +518,6 @@ export const IMAGE_BATCH_STYLES = `
 .bd-batch-r2v .bd-batch-fc input{width:76px;background:#161616;border-color:#3a3a3a;border-radius:6px;padding:5px 8px;font-size:13px}
 .bd-batch-refsize{display:flex;align-items:center;gap:6px;color:#c8c8c8;font-size:12px;background:#0e0e0e;border:1px solid #2a2a2a;border-radius:8px;padding:5px 10px;white-space:nowrap}
 .bd-batch-refsize select{background:#161616;border:1px solid #3a3a3a;border-radius:6px;color:#eee;padding:5px 6px;font-size:12px;max-width:132px}
-.bd-batch-seed{display:inline-flex;align-items:center;gap:5px;color:#9a9a9a;font-size:11px;background:#0e0e0e;border:1px solid #262626;border-radius:8px;padding:4px 8px;white-space:nowrap}
-.bd-batch-seed b{color:#b8e6c8;font-family:Consolas,Monaco,monospace;font-weight:600}
 .bd-batch-del{background:transparent;border:1px solid #553;color:#f88;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer}
 .bd-batch-r2v .bd-batch-del{border-radius:8px;padding:5px 10px;font-size:11px;border-color:#4a3030;color:#f0a0a0}
 .bd-batch-del:disabled{border-color:#3a3a3a;color:#777;opacity:.55;cursor:not-allowed}
@@ -2718,18 +2716,6 @@ function appendBatchCard(list, editor, seg, index, ctx) {
         }
         const meta = document.createElement("div");
         meta.className = "bd-batch-head-meta";
-        const seedWrap = document.createElement("span");
-        seedWrap.className = "bd-batch-seed";
-        seedWrap.title = t("tooltip.batchSeedRecord");
-        const seedLabel = document.createElement("span");
-        seedLabel.setAttribute("data-i18n", "batch.seedLabel");
-        seedLabel.textContent = t("batch.seedLabel");
-        const seedVal = document.createElement("b");
-        const seedNum = editor.resolveSegmentSeed?.(seg, index) ?? Number(seg.lastSeed);
-        seedVal.textContent = Number.isFinite(seedNum) ? String(Math.trunc(seedNum)) : "—";
-        seedWrap.appendChild(seedLabel);
-        seedWrap.appendChild(seedVal);
-        meta.appendChild(seedWrap);
         if (isR2v) {
             const sizeRow = document.createElement("label");
             sizeRow.className = "bd-batch-refsize";
