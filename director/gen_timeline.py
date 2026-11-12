@@ -31,6 +31,22 @@ MIN_GEN_FRAMES = 1
 MIN_GEN_VIDEO_FRAMES = 4
 
 
+def _source_video_of(seg_data) -> dict:
+    """Read a segment's declared finished-video source, if any.
+
+    Thin lazy wrapper so ``gen_timeline`` does not import ``plan`` at module
+    load time (plan imports gen_timeline). Never raises.
+    """
+    if not isinstance(seg_data, dict):
+        return {}
+    try:
+        from .plan import _parse_source_video
+
+        return _parse_source_video(seg_data)
+    except Exception:  # noqa: BLE001 - never block a run
+        return {}
+
+
 def is_gen_task_key(task_key: str) -> bool:
     return task_key in GEN_TASK_KEYS
 
@@ -695,6 +711,9 @@ def build_gen_director_plan(
                     seg_data if isinstance(seg_data, dict) else {},
                     segment_index=idx,
                 ),
+                # Video-as-segment: finished video feeding this segment's pixels
+                # and latents instead of sampling (see seed_from_video.py).
+                source_video=_source_video_of(seg_data),
                 ref_image_size=resolve_ref_image_size(
                     seg_data if isinstance(seg_data, dict) else {},
                     timeline,
