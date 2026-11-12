@@ -35,6 +35,7 @@ from .audio_export import (
     empty_audio_dict,
     resolve_audio_mode,
 )
+from .audio_freeze import apply_first_pass_audio_freeze, freeze_requested
 from .segment_runtime import (
     frames_label,
     resolve_segment_raw_clip,
@@ -536,7 +537,12 @@ def execute_director_plan_core(
     if audio_mode == AUDIO_MODE_MUTE:
         reports.append("Audio: muted — skip audio VAE decode, silent AUDIO output.")
     elif audio_mode == AUDIO_MODE_SOURCE:
-        reports.append("Audio: source — skip audio VAE decode, use original timeline audio.")
+        freeze_hint = (
+            " + audio-token freeze (lipsync)" if freeze_requested(plan)[0] else ""
+        )
+        reports.append(
+            f"Audio: source — skip audio VAE decode, use original timeline audio{freeze_hint}."
+        )
     else:
         reports.append("Audio: generate — decode MiniMax H3 AV latent audio.")
     selected_ui = ext_meta.get("selected")
@@ -1153,6 +1159,22 @@ def execute_director_plan_core(
             progress_node_id, segment_index=progress_index, segment_total=seg_total,
             phase="context_encode", phase_value=1, phase_max=1, **meta,
         )
+
+        # audioMode=source: pin this segment's audio tokens to the real track
+        # (timeline slice / ref cards — same priority the mux uses) so joint AV
+        # attention drives lipsync. No-op for every other audio mode, on cache
+        # hits (marker already present) and on any failure — never raises.
+        freeze_note = apply_first_pass_audio_freeze(
+            plan,
+            seg,
+            latent=latent,
+            audio_vae=audio_vae,
+            ref_audios=ref_audios,
+            ref_video_audios=ref_video_audios,
+            trim_frames=trim_frames,
+        )
+        if freeze_note:
+            reports.append(f"Seg #{seg.index + 1}: audio freeze — {freeze_note}")
 
         # Single / last segment: skip — official H3 also keeps models loaded.
         if clear_vram_between_segments and seg_total > 1:
