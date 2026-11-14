@@ -240,6 +240,7 @@ export async function exportDirectorPack(editor) {
     let missing = [];
     let downloadName = "MiniMaxH3Director.mmxpack.zip";
     let blob = null;
+    let nativeDownload = false;
     try {
         await progress.phase("pack.exportScanning");
         const preview = await postJson("/minimax/director/export_pack", {
@@ -258,27 +259,40 @@ export async function exportDirectorPack(editor) {
         const resp = await api.fetchApi("/minimax/director/export_pack", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ timeline, widgets }),
+            body: JSON.stringify({ timeline, widgets, nativeDownload: true }),
         });
         if (!resp.ok) {
             const text = await resp.text();
             throw new Error(text || t("pack.exportFailed"));
         }
         const ctype = (resp.headers.get("Content-Type") || "").toLowerCase();
-        downloadName = resp.headers.get("X-Pack-Download-Name") || downloadName;
-        const bytes = await readResponseBytes(resp, (ratio) => {
-            progress.bar("pack.exportDownloading", ratio);
-        });
-        await progress.phase("pack.exportSaving");
         if (ctype.includes("application/json")) {
-            const result = JSON.parse(new TextDecoder().decode(bytes));
+            const result = await resp.json();
             downloadName = result.downloadName || downloadName;
             missing = result.missing || [];
-            const raw = result.zipB64;
-            if (!raw) throw new Error(t("pack.exportFailed"));
-            const bin = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
-            blob = new Blob([bin], { type: "application/zip" });
+            if (result.zipB64) {
+                const bin = Uint8Array.from(atob(result.zipB64), (c) => c.charCodeAt(0));
+                blob = new Blob([bin], { type: "application/zip" });
+            } else if (result.filename) {
+                // Upstream 31149e2: let the browser stream large packs to disk.
+                await progress.phase("pack.exportSaving");
+                const base = api.apiURL("/minimax/director/download_pack");
+                const link = document.createElement("a");
+                link.href = `${base}?filename=${encodeURIComponent(result.filename)}&download=${encodeURIComponent(downloadName)}&consume=1`;
+                link.download = downloadName;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                nativeDownload = true;
+            } else {
+                throw new Error(t("pack.exportFailed"));
+            }
         } else {
+            // Compatibility with a server that still streams the POST response.
+            downloadName = resp.headers.get("X-Pack-Download-Name") || downloadName;
+            const bytes = await readResponseBytes(resp, (ratio) => {
+                progress.bar("pack.exportDownloading", ratio);
+            });
             try {
                 missing = JSON.parse(resp.headers.get("X-Pack-Missing") || "[]");
             } catch {
@@ -286,8 +300,11 @@ export async function exportDirectorPack(editor) {
             }
             blob = new Blob([bytes], { type: "application/zip" });
         }
-        if (!blob.size) throw new Error(t("pack.exportFailed"));
-        downloadBlob(blob, downloadName);
+        if (!nativeDownload) {
+            await progress.phase("pack.exportSaving");
+            if (!blob || !blob.size) throw new Error(t("pack.exportFailed"));
+            downloadBlob(blob, downloadName);
+        }
     } finally {
         progress.close();
     }

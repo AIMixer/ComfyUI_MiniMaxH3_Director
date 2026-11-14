@@ -6,6 +6,7 @@ Zip layout uses ASCII paths that match the English UI:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import hashlib
@@ -646,7 +647,10 @@ def build_export_pack(timeline: dict, widgets: dict | None = None, *, dry_run: b
                 rel = _posix(path.relative_to(staging))
                 if not _is_ascii_pack_path(rel):
                     raise ValueError(f"Non-ASCII pack path: {rel}")
-                zf.write(path, rel)
+                # Adapted from upstream 31149e2: avoid recompressing media,
+                # while retaining compression for timeline/group metadata.
+                compression = zipfile.ZIP_STORED if path.suffix.lower() in MEDIA_EXTS else zipfile.ZIP_DEFLATED
+                zf.write(path, rel, compress_type=compression)
         zip_bytes = int(zip_path.stat().st_size)
         if zip_bytes <= 0:
             _unlink_quiet(zip_path)
@@ -1087,7 +1091,8 @@ async def minimax_export_pack(request):
     widgets = body.get("widgets") if isinstance(body.get("widgets"), dict) else {}
     dry_run = bool(body.get("dryRun") or body.get("dry_run"))
     try:
-        result = build_export_pack(timeline, widgets, dry_run=dry_run)
+        # Upstream 31149e2: disk/zip work must not block ComfyUI's event loop.
+        result = await asyncio.to_thread(build_export_pack, timeline, widgets, dry_run=dry_run)
     except Exception as exc:
         log.warning("Director pack export failed: %s", exc)
         return web.Response(status=400, text=str(exc))
@@ -1118,6 +1123,11 @@ async def minimax_export_pack(request):
         result["downloadName"] = download_name
         result["bytes"] = size
         return web.json_response(result)
+    # New frontends opt in; an already-open Pro page keeps its streamed POST.
+    if body.get("nativeDownload") is True:
+        result["downloadName"] = download_name
+        result["bytes"] = size
+        return web.json_response(result)
     return await _send_zip_file(request, path, download_name, extra, unlink_after=True)
 
 
@@ -1130,7 +1140,7 @@ async def minimax_download_pack(request):
         return web.Response(status=404, text="Pack not found.")
     download_name = str(request.query.get("download") or filename)
     download_name = re.sub(r"[^A-Za-z0-9._-]+", "_", download_name) or filename
-    return await _send_zip_file(request, path, download_name)
+    return await _send_zip_file(request, path, download_name, unlink_after=request.query.get("consume") == "1")
 
 
 async def minimax_import_pack(request):

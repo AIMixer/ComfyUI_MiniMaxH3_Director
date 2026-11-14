@@ -4542,9 +4542,14 @@ class MiniMaxH3DirectorEditor {
         // re-shows it on top of the green progress title.
         const running = !!this.runStatusEl?.classList.contains("active");
         this.runSelectBar?.classList.toggle("hidden", !enabled || running);
+        const canDeleteBatch = enabled && this.isImageBatch() && this.usesBatchTimeline()
+            && !this.hasExternalI2vGroups?.() && !this.hasExternalR2vGroups?.();
+        this.batchDelSelectedBtn?.classList.toggle("hidden", !canDeleteBatch);
+        if (this.batchDelSelectedBtn) this.batchDelSelectedBtn.disabled = true;
         if (!canRunSelect) return;
         this.normalizeRunSelection();
         const count = (this.timeline.runSelection || []).length;
+        if (this.batchDelSelectedBtn) this.batchDelSelectedBtn.disabled = !canDeleteBatch || running || !count;
         const syncAllCb = (cb) => {
             if (!cb) return;
             cb.checked = count >= n && n > 0;
@@ -10969,6 +10974,35 @@ class MiniMaxH3DirectorEditor {
         }
 
         this.commit(false, { syncTimeline: true });
+    }
+
+    /** Adapted from upstream f0cb69c: checked, locally-owned batch groups only. */
+    deleteCheckedSegments() {
+        if (!this.isRunSelectEnabled() || !this.isImageBatch() || !this.usesBatchTimeline()) return;
+        if (this.hasExternalI2vGroups?.() || this.hasExternalR2vGroups?.()) return;
+        if (this.runStatusEl?.classList.contains("active")) return;
+        const n = this.getRunnableSegmentCount();
+        const indices = [...new Set(this.timeline.runSelection || [])]
+            .filter((i) => Number.isInteger(i) && i >= 0 && i < n)
+            .sort((a, b) => b - a);
+        if (!indices.length) return;
+        const previousIndex = this.selectedIndex;
+        const previousGroup = this.timeline.segments[previousIndex];
+        // Descending removals preserve the indices of groups still to be removed.
+        // The existing batch delete path flushes drafts and keeps one group.
+        for (const index of indices) {
+            if (this.getRunnableSegmentCount() <= 1) break;
+            this.selectedIndex = index;
+            this.deleteSelectedSegment();
+        }
+        const survivingIndex = this.timeline.segments.indexOf(previousGroup);
+        this.selectedIndex = survivingIndex >= 0 ? survivingIndex
+            : clamp(previousIndex ?? 0, 0, this.getRunnableSegmentCount() - 1);
+        this.timeline.runSelection = Array.from({ length: this.getRunnableSegmentCount() }, (_, i) => i);
+        this.commit(false, { syncTimeline: true });
+        this.updateRunSelectUI();
+        this.renderImageBatchGroups();
+        this.scheduleRender();
     }
 
     compactSegmentsAfterDelete() {

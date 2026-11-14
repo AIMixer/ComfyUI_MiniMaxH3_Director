@@ -723,6 +723,7 @@ export function mountImageBatchPanel(root) {
                 <input type="checkbox" data-r="batch-run-all-cb">
                 <span data-i18n="toolbar.selectAll">全选</span>
             </label>
+            <button type="button" class="bd-btn bd-btn-danger hidden" data-a="batch-del-selected" data-i18n="batch.deleteChecked" data-i18n-title="tooltip.batchDeleteChecked">删除所选</button>
             <button type="button" class="bd-btn" data-a="batch-group-prev" data-i18n="toolbar.prevGroup" data-i18n-title="tooltip.prevGroup">上一组</button>
             <button type="button" class="bd-btn" data-a="batch-group-next" data-i18n="toolbar.nextGroup" data-i18n-title="tooltip.nextGroup">下一组</button>
             <button type="button" class="bd-btn" data-a="batch-duplicate" data-i18n="toolbar.duplicateGroup" data-i18n-title="tooltip.duplicateGroup">复制当前分组</button>
@@ -761,6 +762,11 @@ export function wireBatchRunSelectControls(editor, batchUi) {
     editor.batchRunSelectAllCb = batchUi.runSelectAllCb;
     editor.batchDetailModeBtn = batchUi.detailModeBtn;
     editor.batchPicker = batchUi.picker;
+    editor.batchDelSelectedBtn = batchUi.panel?.querySelector?.('[data-a="batch-del-selected"]');
+    editor.batchDelSelectedBtn?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        editor.deleteCheckedSegments?.();
+    });
     batchUi.runSelectBtn?.addEventListener("click", (e) => {
         e.stopPropagation();
         editor.toggleRunSelectMode?.();

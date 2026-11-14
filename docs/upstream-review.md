@@ -1,3 +1,13 @@
+# 上游跟进（2026-11-15）
+
+本次检查 AIMixer 上游从 `4c6245e518dd8a494f3afc4f3cccd53f22d82d10` 到 `85c66f59d6b13bec71324271258fcae07a2a5898` 的四个提交，选择性适配 JiuChenTian 的 [31149e2](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director/commit/31149e285f7556f77d5cd9786c289ab28cae8374) 与 [f0cb69c](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director/commit/f0cb69cfb4fd1dfb07a10101935730d25e94bbd4)：
+
+- 导演包构建移到工作线程；媒体免重复压缩，JSON 继续压缩。大包由新版页面使用浏览器原生下载，保留旧页面 POST ZIP 与小包 base64 路径；消耗式下载退出后清理临时包。
+- 本地 batch 素材组增加“删除所选”；运行中或外接组控制时禁用，全选时保留第一组。保留 Pro 的 Pika、音频选项和按名称恢复参数逻辑，不改变节点输入输出或工作流格式。
+- 暂不引入全局素材去重：现有组内 `genImage` / `startImage` 可能共用目标路径，直接叠加全局映射存在引用冲突风险；这是静态审查结论，未对上游完整复现。种子展示及逐段落盘已被上游后续提交撤回，按最终净变化不引入。
+
+验证：Python 编译与 JavaScript 语法、真实 PNG 导演包导出/导入、Pro 参数保留、aiohttp 小包和 49 MiB 合成载荷下载（ZIP 哈希/CRC、清理、旧 POST 兼容）、工作线程执行，以及实际 JavaScript 函数在模拟 DOM/API/编辑器中的下载和批删边界检查通过。合成载荷不是可播放视频；未做实际浏览器下载落盘、GPU 生成回归或实际大时间线性能测量，不据此宣称全部功能或画质验收。
+
 # 上游 PR／Issue 处理记录（2026-11-02）
 
 上游基线：[4c6245e518dd](https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director/commit/4c6245e518dd8a494f3afc4f3cccd53f22d82d10)。已检查全部 **71 个 PR（20 个未关闭）及 205 个 Issue** 的正文、差异和讨论；原始API快照与哈希留在本机维护记录，不包含私人运行资料到本仓库。状态以本次快照为界。
