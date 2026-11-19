@@ -527,6 +527,7 @@ const DIRECTOR_WIDGET_LABEL_KEYS = {
     clear_vram_between_segments: "widget.clearVram",
     clear_vram_before_refine: "widget.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.clearVramBeforeFaceRefine",
+    clear_vram_before_decode: "widget.clearVramBeforeDecode",
     cache_frames_codec: "widget.cacheFramesCodec",
     cache_name: "widget.cacheName",
     export_source_images: "widget.exportSourceImages",
@@ -539,6 +540,7 @@ const DIRECTOR_WIDGET_TOOLTIP_KEYS = {
     clear_vram_between_segments: "widget.tooltip.clearVram",
     clear_vram_before_refine: "widget.tooltip.clearVramBeforeRefine",
     clear_vram_before_face_refine: "widget.tooltip.clearVramBeforeFaceRefine",
+    clear_vram_before_decode: "widget.tooltip.clearVramBeforeDecode",
     cache_frames_codec: "widget.tooltip.cacheFramesCodec",
     cache_name: "widget.tooltip.cacheName",
     export_source_images: "widget.tooltip.exportSourceImages",
@@ -1761,6 +1763,7 @@ const PERF_WIDGET_ORDER = [
     // configure 阶段按位置塞 widgets_values 时会整体错位一位 —— 实测它抢到了
     // BDGROUP「性能」的值。
     "cache_name",
+    "clear_vram_before_decode",
 ];
 
 function moveDirectorPerfWidgetsBeforeTimeline(node) {

@@ -161,6 +161,21 @@ def director_perf_inputs() -> dict:
                 ),
             },
         ),
+        # 同样必须追加在 cache_name 之后（数组末尾）：前端按位置恢复
+        # widgets_values，插在中间会让旧工作流后面的控件取值整体错位。
+        "clear_vram_before_decode": (
+            "BOOLEAN",
+            {
+                "default": False,
+                "tooltip": (
+                    "解码前清理显存（只卸 DiT）：采样结束、视频 VAE 解码开始前，"
+                    "只卸载扩散模型（DiT），文本编码器与视频/音频 VAE 保持驻留，"
+                    "下一段不用重新加载 VAE。默认关。"
+                    "12GB 等小显存卡勾上可避免 DiT 权重与 VAE 解码抢显存导致的长时间空转；"
+                    "显存充裕的卡不用勾，否则下一段采样要多一次 DiT 加载。"
+                ),
+            },
+        ),
     }
 
 
