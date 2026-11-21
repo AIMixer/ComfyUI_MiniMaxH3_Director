@@ -236,6 +236,7 @@ def prepare_director_plan(
     semantic_bridge=None,
     refine=None,
     face_refine=None,
+    vsr=None,
 ):
     from ..director.external_groups import (
         build_plan_from_external_groups,
@@ -281,6 +282,7 @@ def prepare_director_plan(
         plan = _attach_semantic_bridge(plan, semantic_bridge)
         plan = _attach_refine(plan, refine)
         plan = _attach_face_refine(plan, face_refine)
+        plan = _attach_vsr(plan, vsr)
         log.info(
             "MiniMax H3 Director: external %s groups × %d (task=%s) | %s",
             family,
@@ -310,6 +312,7 @@ def prepare_director_plan(
     plan = _attach_semantic_bridge(plan, semantic_bridge)
     plan = _attach_refine(plan, refine)
     plan = _attach_face_refine(plan, face_refine)
+    plan = _attach_vsr(plan, vsr)
     log.info(plan_summary(plan).replace("\n", " | "))
     return plan
 
@@ -343,6 +346,13 @@ def _attach_face_refine(plan, face_refine):
     from ..director.face_refine.pack import normalize_face_refine_pack
 
     plan.face_refine = normalize_face_refine_pack(face_refine)
+    return plan
+
+
+def _attach_vsr(plan, vsr):
+    from ..director.relay_vsr.pack import normalize_relay_vsr_pack
+
+    plan.vsr = normalize_relay_vsr_pack(vsr)
     return plan
 
 

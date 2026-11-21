@@ -298,6 +298,7 @@ class DirectorPlan:
     selflift: dict | None = None
     semantic_bridge: dict | None = None
     face_refine: dict | None = None
+    vsr: dict | None = None
     # Sampling knobs stamped at execute time (first-pass cache fingerprint).
     sample_seed: int = 0
     sample_cfg: float = 1.0
@@ -1122,6 +1123,14 @@ def plan_summary(plan: DirectorPlan) -> str:
             face_line = None
         if face_line:
             lines.append(face_line)
+        try:
+            from .relay_vsr.pack import relay_vsr_report_line
+
+            vsr_line = relay_vsr_report_line(plan)
+        except Exception:
+            vsr_line = None
+        if vsr_line:
+            lines.append(vsr_line)
         if plan.continuity_enabled:
             pinned = [
                 seg.index + 1
@@ -1237,6 +1246,14 @@ def plan_summary(plan: DirectorPlan) -> str:
         face_line = None
     if face_line:
         lines.append(face_line)
+    try:
+        from .relay_vsr.pack import relay_vsr_report_line
+
+        vsr_line = relay_vsr_report_line(plan)
+    except Exception:
+        vsr_line = None
+    if vsr_line:
+        lines.append(vsr_line)
     if plan.run_indices is not None:
         selected = sorted(plan.run_indices)
         skipped = [i + 1 for i in range(plan.segment_count) if i not in plan.run_indices]

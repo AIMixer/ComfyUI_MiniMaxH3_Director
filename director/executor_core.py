@@ -524,6 +524,10 @@ def execute_director_plan_core(
         reports.append("VRAM: 二采前清理显存已开启（一采结束后、二采开始前卸载模型）。")
     if clear_vram_before_face_refine:
         reports.append("VRAM: 脸修前清理显存已开启（解码后、FaceRefine 开始前卸载模型）。")
+    from .relay_vsr.pack import relay_vsr_enabled, relay_vsr_report_line
+
+    if relay_vsr_enabled(plan):
+        reports.append(relay_vsr_report_line(plan) or "RelayVSR: on")
     if export_pre_face_refine:
         extra = (
             "；分段导出另存 seg_XXXX_facepre.mp4"
@@ -1566,6 +1570,17 @@ def execute_director_plan_core(
             )
             if not run_refine:
                 pre_chunk = chunk
+        if relay_vsr_enabled(plan) and not hold_after_first:
+            cleanup_segment_vram(enabled=True, unload_models=True)
+            from .relay_vsr.sample import apply_segment_relay_vsr
+
+            t_vsr = time.perf_counter()
+            chunk = apply_segment_relay_vsr(chunk, plan.vsr)
+            vsr_s = time.perf_counter() - t_vsr
+            reports.append(
+                f"Segment {ui_idx + 1}/{timeline_seg_total}: "
+                f"RelayVSR {int(chunk.shape[2])}x{int(chunk.shape[1])} ({vsr_s:.1f}s)"
+            )
         handoff = {
             "trim_frames": int(trim_frames),
             "export_frames": int(chunk.shape[0]),

@@ -376,6 +376,9 @@ def segment_cache_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[str,
     from .face_refine.pack import face_refine_fingerprint
 
     fp.update(face_refine_fingerprint(plan))
+    from .relay_vsr.pack import relay_vsr_fingerprint
+
+    fp.update(relay_vsr_fingerprint(plan))
     from .selflift.pack import selflift_fingerprint
 
     fp.update(selflift_fingerprint(plan))

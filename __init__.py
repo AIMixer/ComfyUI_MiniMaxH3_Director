@@ -13,6 +13,7 @@ from .nodes.director_refine import MiniMaxH3DirectorRefine
 from .nodes.director_selflift import MiniMaxH3DirectorSelfLift
 from .nodes.director_semantic_bridge import MiniMaxH3DirectorSemanticBridge
 from .nodes.director_face_refine import MiniMaxH3DirectorFaceRefine
+from .nodes.director_relay_vsr import MiniMaxH3DirectorRelayVSR
 from .nodes.director_groups import (
     MiniMaxH3DirectorGroupImageToVideo,
     MiniMaxH3DirectorGroupReferenceToVideo,
@@ -25,6 +26,7 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3DirectorSelfLift": MiniMaxH3DirectorSelfLift,
     "MiniMaxH3DirectorSemanticBridge": MiniMaxH3DirectorSemanticBridge,
     "MiniMaxH3DirectorFaceRefine": MiniMaxH3DirectorFaceRefine,
+    "MiniMaxH3DirectorRelayVSR": MiniMaxH3DirectorRelayVSR,
     # Legacy type id kept so older workflows still load.
     "ComfyMiniMaxH3Director": MiniMaxH3Director,
     "MiniMaxH3DirectorConditioning": MiniMaxH3DirectorConditioning,
@@ -42,6 +44,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3DirectorSelfLift": "MiniMax H3 Director SelfLift",
     "MiniMaxH3DirectorSemanticBridge": "MiniMax H3 Director Semantic Bridge",
     "MiniMaxH3DirectorFaceRefine": "MiniMax H3 Director FaceRefine",
+    "MiniMaxH3DirectorRelayVSR": "MiniMax H3 Director RelayVSR",
     "ComfyMiniMaxH3Director": "MiniMaxH3Director",
     "MiniMaxH3DirectorConditioning": "MiniMax H3 Director Conditioning",
     "MiniMaxH3DirectorPlannerConditioning": "MiniMax H3 Director Planner Conditioning",
