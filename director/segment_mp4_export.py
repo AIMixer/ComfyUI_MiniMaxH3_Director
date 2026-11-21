@@ -29,27 +29,68 @@ log = logging.getLogger("ComfyUI-MiniMaxH3-Director.director.mp4_export")
 
 VIDEO_EXPORT_TASKS = frozenset({"t2v", "i2v", "r2v", "fl2v", "v2v", "rv2v"})
 
+#「分段导出」和「延迟合并」都要逐段落盘 mp4；后者跑完再从磁盘合并成一条。
+SEGMENT_MP4_EXPORT_MODES = frozenset({"segments", "deferred"})
+
+
+def segment_mp4_export_enabled(plan: DirectorPlan) -> bool:
+    """True when this run writes per-segment mp4 files as it goes."""
+    return getattr(plan, "export_mode", "all") in SEGMENT_MP4_EXPORT_MODES
+
+
+RUN_META_NAME = "_run_meta.json"
+
+
+def _write_run_meta(root: Path, plan: DirectorPlan) -> None:
+    """Best-effort run-level metadata so「合并成片」can scope runs to a project.
+
+    Old run folders have no meta file; readers must treat that as「未分组」.
+    """
+    try:
+        import json
+
+        meta = {
+            "version": 1,
+            "projectId": str(getattr(plan, "project_id", "") or ""),
+            "projectName": str((getattr(plan, "raw", None) or {}).get("projectName") or ""),
+            "segmentIndices": [int(seg.index) for seg in (getattr(plan, "segments", None) or [])],
+            "createdAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        (root / RUN_META_NAME).write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        log.warning("Segment mp4 run meta write failed (%s); continuing.", exc)
+
 
 def new_segment_mp4_run_dir(plan: DirectorPlan) -> Path | None:
-    """Create ``minimax_seg_export/<YYYYMMDD_HHMMSS>/`` for one Director execute.
+    """Create a per-run segment folder for one Director execute.
 
-    Returns None when not in segments mode or the output dir is unavailable.
+    New run landing structure (per project top-level folder):
+      ``minimax_seg_export/<project_id>/<YYYYMMDD_HHMMSS>/``  (when a project is active)
+      ``minimax_seg_export/<YYYYMMDD_HHMMSS>/``               (no project / legacy)
+
+    Returns None when not in segments/deferred mode or the output dir is unavailable.
     """
-    if getattr(plan, "export_mode", "all") != "segments":
+    if not segment_mp4_export_enabled(plan):
         return None
     try:
         base = Path(folder_paths.get_output_directory()) / "minimax_seg_export"
         base.mkdir(parents=True, exist_ok=True)
+        pid = str(getattr(plan, "project_id", "") or "").strip().strip("/\\")
+        root_dir = (base / pid) if pid else base
+        root_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        root = base / stamp
+        root = root_dir / stamp
         if root.exists():
             # Same-second collision (rare): append a short suffix.
             for i in range(1, 1000):
-                candidate = base / f"{stamp}_{i:03d}"
+                candidate = root_dir / f"{stamp}_{i:03d}"
                 if not candidate.exists():
                     root = candidate
                     break
         root.mkdir(parents=True, exist_ok=False)
+        _write_run_meta(root, plan)
         log.info("MiniMax H3 Director segment mp4 run dir: %s", root)
         return root
     except OSError as exc:
@@ -114,7 +155,7 @@ def maybe_export_segment_mp4(
 
     Returns the absolute path string on success, otherwise None.
     """
-    if run_dir is None or getattr(plan, "export_mode", "all") != "segments":
+    if run_dir is None or not segment_mp4_export_enabled(plan):
         return None
     task = str(getattr(seg, "task_key", "") or getattr(plan, "global_task_key", "") or "")
     if task not in VIDEO_EXPORT_TASKS:
@@ -196,7 +237,7 @@ def copy_segment_mp4_suffix(
     dest_suffix: str,
 ) -> str | None:
     """Copy ``seg_XXXX.mp4`` to ``seg_XXXX_<suffix>.mp4``. Never raises."""
-    if run_dir is None or getattr(plan, "export_mode", "all") != "segments":
+    if run_dir is None or not segment_mp4_export_enabled(plan):
         return None
     tag = _safe_mp4_suffix(dest_suffix)
     if not tag:

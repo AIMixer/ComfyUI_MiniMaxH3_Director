@@ -191,6 +191,125 @@ def slice_av_prefix(latent: dict, n_frames: int) -> dict:
         ) from exc
 
 
+AV_TAIL_KEEP_STEPS = 27  # ≥ 56-frame max pin (17 steps) + phase-feasibility margin
+AV_TAIL_CROP_STEP = 15  # 5 keeps the phase grid; ×3 keeps 17-frame/85-tick audio cycles exact
+CONTINUITY_DROPPED_PX_KEY = "continuity_prefix_dropped_px"
+
+
+def crop_av_head(latent: dict, drop_steps: int) -> dict:
+    """Drop the first ``drop_steps`` steps (and matching audio ticks) of an AV latent.
+
+    Hard copies the kept tail (``.contiguous()``) so ``torch.save`` serializes
+    only the kept region instead of the original underlying storage.
+    """
+    drop = max(0, int(drop_steps))
+    if drop <= 0:
+        return dict(latent)
+    streams = list(_streams_from_latent(latent))
+    video = streams[0]
+    squeezed = False
+    if video.ndim == 4:
+        video = video.unsqueeze(0)
+        squeezed = True
+    total_steps = int(video.shape[2])
+    if drop >= total_steps:
+        raise ValueError(
+            f"Director continuity: cannot drop {drop} steps from a "
+            f"{total_steps}-step AV latent."
+        )
+    dropped_px = pixel_frames_for_latent_t(drop)
+    head = video[:, :, drop:].contiguous()
+    if squeezed:
+        head = head.squeeze(0)
+    streams[0] = head
+    if len(streams) > 1 and torch.is_tensor(streams[1]):
+        audio = streams[1]
+        drop_ticks = int(round(dropped_px / float(FPS) * AUDIO_HZ))
+        if drop_ticks >= int(audio.shape[-1]):
+            raise ValueError(
+                f"Director continuity: cannot drop {drop_ticks} audio ticks from "
+                f"{int(audio.shape[-1])}."
+            )
+        if drop_ticks > 0:
+            streams[1] = audio[..., drop_ticks:].contiguous()
+    out = dict(latent)
+    out.pop("noise_mask", None)
+    out["samples"] = _repack_av_streams(streams, latent)
+    return out
+
+
+def av_head_dropped_px(latent: dict | None) -> int:
+    """Pixel frames previously dropped from a cached AV latent's head (0 = full)."""
+    if not isinstance(latent, dict):
+        return 0
+    try:
+        return max(0, int(latent.get(CONTINUITY_DROPPED_PX_KEY) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def crop_av_tail_for_cache(av_latent: dict) -> tuple[dict, int]:
+    """Keep only the continuable tail of an AV latent for disk cache.
+
+    Continuity consumers read the previous segment's latent exclusively
+    through tail windows (``_video_tail_blocks`` / ``_audio_tail_from_latent``),
+    so the head is dead weight on disk (~50% of ``.av.pt``). Dropping a
+    multiple of 15 steps preserves the 5-step phase grid and keeps the audio
+    crop on whole 17-frame/85-tick cycles, so the loader can rebase
+    ``prev_end_frame`` exactly (video pin, audio pin and the SelfLift low
+    carry share that one coordinate). Idempotent: already-cropped payloads
+    pass through unchanged.
+    """
+    if not isinstance(av_latent, dict) or "samples" not in av_latent:
+        return av_latent, 0
+    if av_head_dropped_px(av_latent) > 0:
+        return av_latent, 0
+    try:
+        video = video_from_latent(av_latent)
+    except Exception:
+        return av_latent, 0
+    total_steps = int(video.shape[2])
+    drop = AV_TAIL_CROP_STEP * ((total_steps - AV_TAIL_KEEP_STEPS) // AV_TAIL_CROP_STEP)
+    if drop < AV_TAIL_CROP_STEP:
+        return av_latent, 0
+    try:
+        cropped = crop_av_head(av_latent, drop)
+    except Exception:
+        return av_latent, 0
+    dropped_px = pixel_frames_for_latent_t(drop)
+    cropped[CONTINUITY_DROPPED_PX_KEY] = dropped_px
+    return cropped, dropped_px
+
+
+def align_crop_to_reference(payload: dict | None, reference: dict | None) -> dict | None:
+    """Re-crop an uncropped pin source into a cropped reference's frame space.
+
+    The next segment pins from the previous final AV (tail-cropped on disk),
+    but canvas mismatch falls back to the previous first-pass AV and SelfLift
+    re-pins the low carry — those cached latents must share one coordinate
+    frame or the rebased ``prev_end_frame`` misselects the window. Returns
+    ``payload`` unchanged when no alignment is needed or possible.
+    """
+    dropped = av_head_dropped_px(reference)
+    if dropped <= 0 or payload is None or av_head_dropped_px(payload) > 0:
+        return payload
+    steps = dropped // 17 * 5  # exact: dropped_px = 51j → steps = 15j
+    if steps <= 0:
+        return payload
+    try:
+        aligned = crop_av_head(payload, steps)
+    except Exception as exc:
+        log.warning(
+            "Director continuity: could not align a previous pin latent to the "
+            "cropped cache frame space (%s); its pin window may lag by %d frames.",
+            exc,
+            dropped,
+        )
+        return payload
+    aligned[CONTINUITY_DROPPED_PX_KEY] = dropped
+    return aligned
+
+
 def _resize_frames(image: torch.Tensor, width: int, height: int) -> torch.Tensor:
     import comfy.utils
 

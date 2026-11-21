@@ -358,6 +358,30 @@ function graphNodes() {
     return graph?._nodes ?? graph?.nodes ?? [];
 }
 
+/**
+ * Link lookup that tolerates every table shape the frontend has shipped:
+ * newer builds keep `graph.links` a `Map` (and `graph._links` as well), older
+ * ones a plain object keyed by link id, some a plain array. Indexing a Map
+ * silently returns undefined, which made this walk fail and the panel report
+ * 「未找到相连的 MiniMax H3 Director」or「不匹配」.
+ */
+function findGraphLink(graph, linkId) {
+    if (linkId == null || !graph) return null;
+    for (const pool of [graph.links, graph._links]) {
+        if (!pool) continue;
+        let link = null;
+        if (typeof pool.get === "function") {
+            link = pool.get(linkId) ?? pool.get(String(linkId));
+        } else if (Array.isArray(pool)) {
+            link = pool.find((l) => l && (l.id === linkId || l[0] === linkId)) ?? null;
+        } else {
+            link = pool[linkId] ?? pool[String(linkId)] ?? null;
+        }
+        if (link) return link;
+    }
+    return null;
+}
+
 function connectedDirector(refineNode) {
     const graph = refineNode?.graph ?? app.graph ?? app.canvas?.graph;
     for (const candidate of graphNodes()) {
@@ -365,8 +389,9 @@ function connectedDirector(refineNode) {
         if (!DIRECTOR_CLASSES.has(cls)) continue;
         const input = candidate.inputs?.find((item) => item?.name === "refine");
         if (input?.link == null) continue;
-        const link = graph?.links?.[input.link] ?? graph?._links?.[input.link];
-        if (String(link?.origin_id) === String(refineNode.id)) return candidate;
+        const link = findGraphLink(graph, input.link);
+        const originId = link?.origin_id ?? link?.originId ?? link?.[1];
+        if (String(originId) === String(refineNode.id)) return candidate;
     }
     return null;
 }
@@ -378,6 +403,7 @@ function directorValue(node, name, fallback) {
 
 /** Fingerprint key → what the user actually changed. */
 const CACHE_DIFF_LABELS = {
+    project: "项目 ID",
     seed: "seed",
     start: "片段起点",
     end: "片段终点（时间范围变化）",
@@ -408,6 +434,7 @@ const CACHE_DIFF_LABELS = {
     shift_video: "视频 shift",
     shift_audio: "音频 shift",
     "<invalid-meta>": "缓存信息损坏",
+    "<missing-cache>": "该段还没跑过一采（无缓存）",
     external_wiring: "外接组接线",
     external_prompt: "外接组提示词",
     external_length: "外接组时长",
@@ -622,12 +649,12 @@ function renderCacheStatus(node, data, kind = "normal") {
         ? data.cached_seeds.join(", ")
         : "—";
     const diffLabels = CACHE_DIFF_LABELS;
-    const diffs = sortDiffKeys(
-        (Array.isArray(data?.diff_keys) ? data.diff_keys : [])
-            .filter((key) => key !== "<missing-cache>"),
-    )
+    const rawDiffKeys = Array.isArray(data?.diff_keys) ? data.diff_keys : [];
+    const hasMissing = rawDiffKeys.includes("<missing-cache>");
+    const diffs = sortDiffKeys(rawDiffKeys.filter((key) => key !== "<missing-cache>"))
         .slice(0, 12)
         .map((key) => diffLabels[key] || key);
+    if (hasMissing) diffs.push(diffLabels["<missing-cache>"]);
     const selTotal = data?.selected_total;
     const selMatched = data?.selected_matched;
     const selActive = Number.isFinite(selTotal) && Number(selTotal) !== total;
@@ -646,7 +673,25 @@ function renderCacheStatus(node, data, kind = "normal") {
     } else if (confirmReason === "refine_skipped") {
         lines.push("确认二采：不可以 — 当前选中段不会跑二采（如 skip_fl2v）");
     } else {
-        lines.push("确认二采：不可以 — 一采指纹不匹配，Queue 只会写一采 / 重跑一采");
+        const rows = Array.isArray(data?.segments) ? data.segments : [];
+        const selRows = rows.filter((row) => row?.selected);
+        const scope = selRows.length ? selRows : rows;
+        const missRows = scope.filter((row) => row?.status === "missing");
+        const badRows = scope.filter((row) => row?.status && row.status !== "missing" && !row?.matches);
+        if (missRows.length) {
+            lines.push(
+                `确认二采：不可以 — 选中段还没有一采缓存（${missRows.length} 段未跑过一采），Queue 会先跑一采`,
+            );
+        } else {
+            lines.push("确认二采：不可以 — 一采指纹不匹配，Queue 只会写一采 / 重跑一采");
+        }
+        if (badRows.length) {
+            const segNo = badRows
+                .map((row) => row?.segment ?? Number(row?.index) + 1)
+                .slice(0, 12)
+                .join("、");
+            lines.push(`指纹不符段：第 ${segNo} 段`);
+        }
     }
     lines.push(`缓存 seed：${seeds}`);
     lines.push(`当前 seed：${data?.current_seed ?? "—"}`);
@@ -725,7 +770,7 @@ function scheduleCacheStatusRefresh(node, delay = 120) {
     node._mmxCacheStatusTimer = setTimeout(() => refreshFirstPassCacheStatus(node), delay);
 }
 
-function refreshCacheStatusForDirector(director, delay = 120) {
+export function refreshCacheStatusForDirector(director, delay = 120) {
     for (const node of graphNodes()) {
         if (
             isRefineNode(node)
@@ -801,6 +846,13 @@ async function clearSegmentCache(node) {
     }
     renderCacheStatus(node, "正在清空缓存…", "muted");
     try {
+        // Flush the director's timeline_data first so the backend can resolve the
+        // current projectId (cache lives in minimax_seg_cache/<projectId>/).
+        try {
+            director?._minimaxEditor?._writeTimelineWidget?.();
+        } catch {
+            /* best effort */
+        }
         const response = await api.fetchApi("/minimax/director/clear_segment_cache", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -808,6 +860,7 @@ async function clearSegmentCache(node) {
                 node_id: String(director.id),
                 cache_name: String(directorValue(director, "cache_name", "")),
                 kind: "all",
+                timeline_data: String(directorValue(director, "timeline_data", "")),
             }),
         });
         const data = await response.json();
