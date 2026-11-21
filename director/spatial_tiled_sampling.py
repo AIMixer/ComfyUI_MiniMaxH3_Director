@@ -307,6 +307,19 @@ def _install_tile_payloads(cfg_guider, *, axis: str, start: int, end: int, tile_
             )
         new_payload["layout"] = layout
         payload_cond.cond = new_payload
+
+        # H3 caches a 5D video denoise mask in extra_conds before spatial
+        # tiling starts; without cropping it here, model.forward sees the
+        # full-size mask while latent_x is the tile (out * mask → dim
+        # mismatch at the spatial axis).
+        mask_cond = model_conds.get("denoise_mask")
+        if mask_cond is not None and hasattr(mask_cond, "cond"):
+            mask_tensor = mask_cond.cond
+            if isinstance(mask_tensor, torch.Tensor) and mask_tensor.ndim in (4, 5):
+                cropped, did = _crop_generate_video(mask_tensor, full_h, full_w, axis, start, end)
+                if did:
+                    restorations.append((mask_cond, "cond", mask_tensor))
+                    mask_cond.cond = cropped
     return restorations
 
 
