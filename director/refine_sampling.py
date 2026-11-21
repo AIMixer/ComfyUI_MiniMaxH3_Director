@@ -8,6 +8,7 @@ from typing import Any, Callable
 import torch
 
 from ..lib.image_prep import ensure_minimax_canvas
+from .audio_freeze import AUDIO_FREEZE_MARK_KEY
 from .core_sampling import sample_single_stage
 from .refine_pack import (
     DEFAULT_UPSCALE_MEGAPIXELS,
@@ -96,12 +97,18 @@ def _join_av(video_latent: dict, audio_latent, template: dict) -> dict:
     a = audio_latent.get("samples") if isinstance(audio_latent, dict) else audio_latent
     out = dict(template)
     out.pop("noise_mask", None)
+    # Keep the audio-freeze marker (audioMode=source lipsync) across the AV
+    # re-join: the audio stream itself is carried via audio_latent, and the
+    # sampler rebuilds the per-stream keep-mask from this marker.
+    freeze_mark = template.get(AUDIO_FREEZE_MARK_KEY)
     try:
         from comfy_extras.nodes_lt import LTXVConcatAVLatent
 
         joined = LTXVConcatAVLatent.execute(video_latent, audio_latent)
         packed = _unpack(joined)[0]
         if isinstance(packed, dict) and "samples" in packed:
+            if freeze_mark is not None:
+                packed[AUDIO_FREEZE_MARK_KEY] = freeze_mark
             return packed
         out["samples"] = packed
         return out

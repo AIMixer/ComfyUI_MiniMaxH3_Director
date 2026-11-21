@@ -332,6 +332,17 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
             record = groups[index]
             if isinstance(record, dict):
                 payload[EXTERNAL_SEGMENT_FP_KEY] = record
+    # audioMode=source audio-token freeze is part of first-pass identity:
+    # toggling it (env opt-out, version bump) re-samples, and frozen timeline
+    # slices additionally depend on the underlying audio files.
+    from .audio_freeze import fingerprint_flag, timeline_audio_identity
+
+    freeze_flag = fingerprint_flag(plan)
+    if freeze_flag is not None:
+        payload["audio_freeze"] = freeze_flag
+        audio_witness = timeline_audio_identity(plan)
+        if audio_witness:
+            payload["audio_freeze_timeline"] = audio_witness
     return payload
 
 
