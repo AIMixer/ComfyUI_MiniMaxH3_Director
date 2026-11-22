@@ -252,7 +252,7 @@ class MiniMaxH3Director:
         # Do not return NaN: that would re-run every Director queue even when
         # confirm_first_pass is off. Linked Refine is None here, so fingerprint
         # the .pre cache files that only the confirmation hold writes.
-        del kwargs
+        from ..director.master_audio import master_file_signature
         from ..director.segment_cache import (
             first_pass_cache_disk_signature,
             resolve_segment_cache_key,
@@ -260,9 +260,8 @@ class MiniMaxH3Director:
 
         # Must resolve the same directory the executor will read/write, otherwise
         # the confirm-first-pass hold never sees its own written .pre cache.
-        return first_pass_cache_disk_signature(
-            resolve_segment_cache_key(cache_name, unique_id)
-        )
+        cache = first_pass_cache_disk_signature(resolve_segment_cache_key(cache_name, unique_id))
+        return cache, master_file_signature(kwargs.get("timeline_data"))
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "FLOAT", "INT", "IMAGE", "STRING", "IMAGE", "IMAGE")
     RETURN_NAMES = (

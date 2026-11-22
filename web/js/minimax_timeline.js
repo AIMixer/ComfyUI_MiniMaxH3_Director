@@ -1,3 +1,4 @@
+import { MasterAudioTrack, MASTER_LANE_H, MASTER_MAX_SHOT, masterAvailable, masterTiming, masterViewFrames } from "./minimax_master_track.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
@@ -187,6 +188,7 @@ function isContinuityKeepTail(output) {
 
 /** Whether段间引导 controls apply for the current task + segment count. */
 function isContinuityEligible(editor) {
+    if (masterTiming(editor)) return false;
     if (!editor) return false;
     const taskKey = resolveTaskKey(
         editor.getTaskKey?.() || editor.taskTypeWidget?.value || editor.globalTask?.value || "",
@@ -3000,6 +3002,15 @@ class MiniMaxH3DirectorEditor {
         this.viewport.appendChild(this.canvas);
         this.mainBody.appendChild(this.viewport);
         this.ctx = this.canvas.getContext("2d");
+        this.masterAudio = new MasterAudioTrack(this, {
+            upload: uploadToInputSmart,
+            afterEdit: () => {
+                this.commit();
+                this.updateVideoNameLabel();
+                this.updateOutputPreview();
+                this.scheduleSettleRender();
+            },
+        });
 
         const outputBar = document.createElement("div");
         outputBar.className = "bd-output";
@@ -3039,6 +3050,7 @@ class MiniMaxH3DirectorEditor {
                     <option value="generate" data-i18n="output.audio.generate">生成声音</option>
                     <option value="source" data-i18n="output.audio.source">使用原声</option>
                     <option value="mute" data-i18n="output.audio.mute">静音</option>
+                    <option value="master" hidden data-i18n="output.audio.master">使用全局原声</option>
                 </select>
             </span>
             <span class="bd-out-source-wrap hidden" data-r="out-source-wrap" data-i18n-title="widget.tooltip.exportSourceImages">
@@ -3861,7 +3873,7 @@ class MiniMaxH3DirectorEditor {
         });
         this.canvas.addEventListener("contextmenu", (e) => {
             e.preventDefault();
-            if (this.isFl2vMode()) return;
+            if (this.isFl2vMode() || (masterAvailable(this) && this.getMousePos(e).y >= TRACK_Y + TRACK_H)) return;
             this.addSplitAtMouse(e);
         });
         this._onMouseMove = (e) => this.onMouseMove(e);
@@ -3871,6 +3883,12 @@ class MiniMaxH3DirectorEditor {
             const { x, y } = this.getMousePos(e);
             const hit = this.hitTest(x, y);
             this.canvas.classList.remove("bd-grab");
+            if (masterTiming(this) && y >= TRACK_Y + TRACK_H) {
+                this.canvas.style.cursor = "pointer";
+                const seconds = (x / Math.max(1, this.getLayoutWidth())) * this.getTimelineViewFrames() / this.getFrameRate();
+                this.canvas.title = this.masterAudio?.describeTime(seconds) || "";
+                return;
+            }
             if (hit?.type === "run-check" || hit?.type === "split" || hit?.type === "continuity-joint") {
                 this.canvas.style.cursor = "pointer";
                 if (hit.type === "continuity-joint") {
@@ -3971,6 +3989,7 @@ class MiniMaxH3DirectorEditor {
     }
 
     destroy() {
+        this.masterAudio?.destroy();
         clearTimeout(this._syncTimer);
         clearTimeout(this._settleRenderTimer);
         clearTimeout(this._settleRenderLateTimer);
@@ -5618,7 +5637,9 @@ class MiniMaxH3DirectorEditor {
                     const fc = Math.max(1, parseInt(seg.frameCount ?? seg.length, 10) || 1);
                     const raw = Number(seg.durationSec);
                     // During edge drag, frames are authoritative; durationSec may be stale.
-                    const resolved = this._previewSegments
+                    const resolved = masterTiming(this)
+                        ? { frames: fc, durationSec: fc / this.getFrameRate() }
+                        : this._previewSegments
                         ? {
                             frames: fc,
                             durationSec: preferredDurationSecFromFrames(fc, this.getFrameRate()),
@@ -6167,6 +6188,7 @@ class MiniMaxH3DirectorEditor {
 
     /** User-facing seconds for ruler ticks (batch 秒数, not MiniMax-aligned play length). */
     getRulerDurationSec() {
+        if (masterTiming(this)) return this.getTimelineViewFrames() / this.getFrameRate();
         if (this.isFl2vMode()) return Math.max(0.001, getFl2vTotalDurationSec(this));
         if (this.usesBatchTimeline()) {
             const segs = this._previewSegments || this.timeline.segments || [];
@@ -6590,7 +6612,7 @@ class MiniMaxH3DirectorEditor {
         if (this.outExportMode) this.outExportMode.value = out.exportMode === "segments" ? "segments" : "all";
         if (this.outAudioMode) {
             const am = normalizeAudioMode(out.audioMode);
-            this.outAudioMode.value = am;
+            this.outAudioMode.value = masterTiming(this) ? "master" : am;
             if (out.audioMode !== am) {
                 out.audioMode = am;
                 this.timeline.output = { ...out };
@@ -9033,8 +9055,20 @@ class MiniMaxH3DirectorEditor {
         this.scheduleRender();
     }
 
-    frameToX(frame, width) { return (frame / Math.max(1, this.getTotalFrames())) * width; }
-    xToFrame(x, width) { return clamp(Math.round((x / width) * this.getTotalFrames()), 0, this.getTotalFrames()); }
+    getTimelineViewFrames() {
+        const frames = this.getTotalFrames();
+        return masterTiming(this) ? masterViewFrames(frames, this.masterAudio?.info?.duration || 0, this.getFrameRate()) : Math.max(1, frames);
+    }
+
+    frameToX(frame, width) { return (frame / this.getTimelineViewFrames()) * width; }
+    playheadX(width) {
+        const audioFrame = this.masterAudio?.playheadFrame(this.getFrameRate());
+        return this.frameToX(audioFrame ?? this.currentFrame, width);
+    }
+    xToFrame(x, width) {
+        const view = this.getTimelineViewFrames();
+        return clamp(Math.round((x / width) * view), 0, masterTiming(this) ? view : this.getTotalFrames());
+    }
 
     getLayoutWidth() {
         return this._drawWidth || this._measureDrawWidth();
@@ -9305,7 +9339,7 @@ class MiniMaxH3DirectorEditor {
         const width = this.getLayoutWidth();
         if (!width) return null;
         const segs = this._previewSegments || this.timeline.segments;
-        const phx = this.frameToX(this.currentFrame, width);
+        const phx = this.playheadX(width);
         const trackBottom = TRACK_Y + TRACK_H;
 
         if (y <= RULER_H) {
@@ -9397,6 +9431,13 @@ class MiniMaxH3DirectorEditor {
         stopDomEvent(e);
         e.preventDefault();
         const { x, y } = this.getMousePos(e);
+        if (masterAvailable(this) && y >= TRACK_Y + TRACK_H) {
+            if (this.masterAudio?.info) {
+                const frame = this.xToFrame(x, this.getLayoutWidth());
+                if (!this.masterAudio.seek(frame)) this.seekToFrame(frame);
+            }
+            return;
+        }
         const hit = this.hitTest(x, y);
         if (!hit) {
             if (
@@ -9431,7 +9472,8 @@ class MiniMaxH3DirectorEditor {
         }
         const width = this.getLayoutWidth();
         if (hit.type === "playhead" || hit.type === "ruler") {
-            this.currentFrame = this.xToFrame(x, width);
+            const frame = this.xToFrame(x, width);
+            if (!this.masterAudio?.seek(frame)) this.currentFrame = frame;
             this._drag = { kind: "playhead" };
             this.clearSplitSelection();
         } else if (hit.type === "run-check") {
@@ -9501,7 +9543,7 @@ class MiniMaxH3DirectorEditor {
         }
 
         if (this._drag.kind === "playhead") {
-            this.currentFrame = frame;
+            if (!this.masterAudio?.seek(frame)) this.currentFrame = frame;
         } else if (this._drag.kind === "reorder") {
             this._drag.pointerX = x;
             this._drag.pointerY = y;
@@ -9565,8 +9607,12 @@ class MiniMaxH3DirectorEditor {
                 }
             } else if (this._drag.edge === "left") {
                 const prev = segs[i - 1];
-                const minStart = prev ? prev.start + minLen : 0;
-                const maxStart = seg.start + seg.length - minLen;
+                let minStart = prev ? prev.start + minLen : 0;
+                let maxStart = seg.start + seg.length - minLen;
+                if (masterTiming(this)) {
+                    minStart = Math.max(minStart, seg.start + seg.length - MASTER_MAX_SHOT);
+                    if (prev) maxStart = Math.min(maxStart, prev.start + MASTER_MAX_SHOT);
+                }
                 seg.start = clamp(frame, minStart, maxStart);
                 seg.length = (this._edgeSnapshot[i].start + this._edgeSnapshot[i].length) - seg.start;
                 if (isGen || isBatchTrack) seg.frameCount = seg.length;
@@ -9576,7 +9622,7 @@ class MiniMaxH3DirectorEditor {
                 }
             } else {
                 const next = segs[i + 1];
-                const minEnd = seg.start + minLen;
+                let minEnd = seg.start + minLen;
                 let maxEnd;
                 if (next) {
                     maxEnd = this._edgeSnapshot[i + 1].start + this._edgeSnapshot[i + 1].length;
@@ -9585,6 +9631,10 @@ class MiniMaxH3DirectorEditor {
                     maxEnd = seg.start + MAX_GEN_FRAMES;
                 } else {
                     maxEnd = this.getTotalFrames();
+                }
+                if (masterTiming(this)) {
+                    maxEnd = Math.min(maxEnd, seg.start + MASTER_MAX_SHOT);
+                    if (next) minEnd = Math.max(minEnd, next.start + next.length - MASTER_MAX_SHOT);
                 }
                 const end = clamp(frame, minEnd, maxEnd);
                 seg.length = end - seg.start;
@@ -9617,7 +9667,8 @@ class MiniMaxH3DirectorEditor {
                 const seg = segs[index];
                 if (!seg) continue;
                 const fc = Math.max(1, parseInt(seg.frameCount ?? seg.length, 10) || 1);
-                const sec = preferredDurationSecFromFrames(fc, this.getFrameRate());
+                const sec = masterTiming(this) ? +(fc / this.getFrameRate()).toFixed(4)
+                    : preferredDurationSecFromFrames(fc, this.getFrameRate());
                 const play = framesToDurationSec(fc, this.getFrameRate());
                 if (input.value !== String(sec)) input.value = String(sec);
                 input.title = t("batch.durationTooltip", { frames: fc, play });
@@ -9722,7 +9773,7 @@ class MiniMaxH3DirectorEditor {
                     const fc = Math.max(1, parseInt(seg.frameCount ?? seg.length, 10) || 1);
                     seg.frameCount = fc;
                     seg.length = fc;
-                    seg.durationSec = preferredDurationSecFromFrames(fc, this.getFrameRate());
+                    seg.durationSec = masterTiming(this) ? fc / this.getFrameRate() : preferredDurationSecFromFrames(fc, this.getFrameRate());
                 }
                 normalizeImageBatchSegments(this);
                 this.renderImageBatchGroups();
@@ -10832,6 +10883,9 @@ class MiniMaxH3DirectorEditor {
     }
 
     _drawTimelineCanvas(width) {
+        this.masterAudio?.update();
+        const showMaster = masterAvailable(this);
+        this.canvasHeight = TRACK_Y + TRACK_H + (showMaster ? MASTER_LANE_H : 0);
         const height = this.canvasHeight;
         const dpr = window.devicePixelRatio || 1;
         const bw = Math.round(width * dpr);
@@ -11141,8 +11195,12 @@ class MiniMaxH3DirectorEditor {
         }
 
         this._drawContinuityJoints(width, segs);
+        if (showMaster) {
+            this.masterAudio?.paint(this.ctx, width, TRACK_Y + TRACK_H,
+                this.getTimelineViewFrames(), total, segs, this.getFrameRate());
+        }
 
-        const phx = this.frameToX(this.currentFrame, width);
+        const phx = this.playheadX(width);
         this.ctx.strokeStyle = "#ff4444";
         this.ctx.lineWidth = 2;
         this.ctx.beginPath();
@@ -11207,6 +11265,7 @@ class MiniMaxH3DirectorEditor {
 
     /** Jump to an exact 0-based logical frame; syncs seek bar, preview, playhead. */
     seekToFrame(frame, { fromUi = false } = {}) {
+        this.masterAudio?.leaveAudioClock();
         const total = this.getTotalFrames();
         if (total < 1) return;
         if (this.isPlaying) this._stopPlay();
@@ -12522,6 +12581,7 @@ class MiniMaxH3DirectorEditor {
     }
 
     togglePlay() {
+        this.masterAudio?.leaveAudioClock();
         if (this.isPlaying) {
             this._stopPlay();
             return;

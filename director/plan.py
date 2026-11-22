@@ -290,6 +290,8 @@ class DirectorPlan:
     continuity_redraw: float = 0.10
     # Keep sample-trim remainder (~12f) instead of cropping back to UI length.
     continuity_keep_tail: bool = True
+    master_audio: dict | None = field(default=None, repr=False)
+    master_audio_signature: str = ""
     global_ref_audios: list[SegmentRefAudio] = field(default_factory=list)
     # Full source-video PCM, reused only during this one Director execution and
     # freed when the run ends (replaces the old never-cleared process cache).

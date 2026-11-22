@@ -17,6 +17,8 @@ from ..lib.audio_io import (
     load_reference_audio,
 )
 
+from .master_audio import MASTER_MODE, slice_master
+
 log = logging.getLogger("ComfyUI-MiniMaxH3-Director.audio_export")
 
 SILENT_SAMPLE_RATE = 44100
@@ -42,12 +44,14 @@ def task_passes_source_audio(task_key: str) -> bool:
 
 
 def resolve_audio_mode(plan) -> str:
-    """Return generate | source | mute from timeline.output.audioMode.
+    """Return master for a global track, otherwise generate | source | mute.
 
     ``source`` is honored for v2v/rv2v (source-video extract) and r2v
     (per-segment reference audio). Other tasks (including mixed) treat it
     as generate.
     """
+    if getattr(plan, "master_audio", None) is not None:
+        return MASTER_MODE
     out = (getattr(plan, "raw", None) or {}).get("output") or {}
     raw = str(out.get("audioMode") or out.get("audio_mode") or AUDIO_MODE_GENERATE).strip().lower()
     aliases = {
@@ -144,6 +148,11 @@ def prepare_segment_audio_for_file_export(
     n_frames = max(0, int(frame_count))
     if n_frames <= 0:
         return None
+
+    if mode == MASTER_MODE:
+        if n_frames != seg.frame_count:
+            raise ValueError("全局音轨导出失败：分镜帧数与时间轴不符。")
+        return slice_master(plan.master_audio, seg.start_frame, seg.end_frame, fps)
 
     if mode == AUDIO_MODE_GENERATE and _audio_has_samples(audio_dict):
         sr = int(audio_dict.get("sample_rate") or SILENT_SAMPLE_RATE)
@@ -383,6 +392,10 @@ def build_director_audio_outputs(
         return [empty_audio_dict(SILENT_SAMPLE_RATE) for _ in images_out], None
 
     # Prefer model audio only in generate mode.
+    if mode == MASTER_MODE:
+        # Finalize once the order and released picture slots are known.
+        return [], None
+
     if mode == AUDIO_MODE_GENERATE and segment_audios:
         # 「全部导出」合并画面时 images_out 只有 1 条，必须把各组音频按时间轴拼接，
         # 否则只会用第 1 组音频并静音填充后半段（第二组及之后无声）。
@@ -538,6 +551,8 @@ def source_audio_report_note(
     source_fallback: str | None = None,
 ) -> str:
     mode = audio_mode or resolve_audio_mode(plan)
+    if mode == MASTER_MODE:
+        return ""
     if mode == AUDIO_MODE_MUTE:
         return "\n\nAudio: muted (silent output)."
     if mode == AUDIO_MODE_SOURCE:

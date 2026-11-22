@@ -539,6 +539,8 @@ def execute_director_plan_core(
         )
     if audio_mode == AUDIO_MODE_MUTE:
         reports.append("Audio: muted — skip audio VAE decode, silent AUDIO output.")
+    elif audio_mode == "master":
+        reports.append("Audio: global master track — no model audio decode; fixed timeline timing.")
     elif audio_mode == AUDIO_MODE_SOURCE:
         reports.append("Audio: source — skip audio VAE decode, use original timeline audio.")
     else:
@@ -814,6 +816,9 @@ def execute_director_plan_core(
                 has_start_frame=has_start,
             )
         elif seg.task_key == "r2v":
+            if plan.master_audio is not None:
+                from .master_audio import master_prompt
+                positive_prompt = master_prompt(positive_prompt)
             ref_idxs = [int(getattr(r, "index", 0)) for r in (seg.refs or []) if r is not None]
             vid_idxs = [int(getattr(v, "index", 0)) for v in (getattr(seg, "ref_videos", None) or []) if v is not None]
             audio_idxs = usable_ref_audio_indices(
@@ -1745,6 +1750,9 @@ def execute_director_plan_core(
         # source video is rejected so v2v/rv2v can passthrough the new clip.
         cached = load_segment_cache(node_id, seg, plan)
         used_stale = False
+        if cached is None and plan.master_audio is not None:
+            raise ValueError(f"全局音轨：第 {seg.index + 1} 镜没有与当前画面/音轨匹配的缓存。"
+                             "请运行全部分镜，或切换分段导出验证选中的镜头。")
         if cached is None:
             cached = load_segment_cache(node_id, seg, plan, allow_stale=True)
             used_stale = cached is not None
@@ -1872,12 +1880,26 @@ def execute_director_plan_core(
         else:
             export_audios.append({})
             missing_audio.append(seg.index + 1)
-    if missing_audio and plan.export_mode == "all":
+    if missing_audio and plan.export_mode == "all" and plan.master_audio is None:
         reports.append(
             "Audio cache missing for segment(s) "
             f"{missing_audio} — those slots are silent in the merge. "
             "Re-run them once (or run all) to refresh audio cache."
         )
+    if plan.master_audio is not None:
+        if output_chunks:
+            expected = 0
+            for seg, chunk in zip(export_segments, output_chunks):
+                if seg.start_frame != expected or int(chunk.shape[0]) != seg.frame_count:
+                    raise ValueError(f"全局音轨：第 {seg.index + 1} 镜导出帧数或起点与时间轴不符。")
+                expected = seg.end_frame
+            if expected != plan.total_frames:
+                raise ValueError("全局音轨：当前导出没有覆盖全部分镜，不能拼接整片。")
+        # Segment-only mode keeps real lengths separately from released poster tensors.
+        for idx in run_list:
+            seg = all_segments[idx]
+            if int(segment_export_lengths.get(idx) or 0) != seg.frame_count:
+                raise ValueError(f"全局音轨：第 {idx + 1} 镜导出帧数与时间轴不符。")
     export_frame_counts = [int(c.shape[0]) for c in export_chunks]
     # segment_outputs path (分段导出 / image batch): keep run-order audios.
     if plan.export_mode == "all" and output_chunks:

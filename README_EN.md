@@ -11,6 +11,14 @@ Repository: [AIMixer/ComfyUI_MiniMaxH3_Director](https://github.com/AIMixer/Comf
 
 **MiniMaxH3Director** is a single-node director for long-form, multi-segment MiniMax H3 audio–video generation — timeline planning, conditioning, sampling, AV decode, and export in one place. It wraps the official `MiniMaxH3ImageToVideo` / `MiniMaxH3ReferenceToVideo` + `MiniMaxH3SigmaShift` + `KSampler` pipeline with native stereo audio.
 
+### Master audio track (music video / lip sync)
+
+Set the storyboard to `r2v` or mixed mode at **24 fps** and choose **Add master audio** below the shot lane. The peak/RMS waveform shares the shot ruler. Click to seek and use **Listen** to preview with a playhead driven by the audio clock. **Cut markers** suggest onsets; they do not move or split shots.
+
+Each `r2v` shot uses its corresponding audio window as H3 conditioning. Other shot types only share the original audio on export. **Export all** takes one continuous slice of the original track, trimming it to the picture or padding silence if the picture outlasts the track. The existing `Create Video → Save Video` workflow is unchanged.
+
+Use in-Director shots rather than wired groups. Segment continuity is disabled with master audio to preserve exact shot lengths. Render all shots first for a full export, or use segment export when testing one shot.
+
 ### Core capabilities
 
 | Feature | Description |

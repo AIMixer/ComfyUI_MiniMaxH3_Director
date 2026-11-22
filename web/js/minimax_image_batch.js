@@ -1,3 +1,4 @@
+import { masterTiming, masterDurationToFrames, MASTER_MAX_SHOT } from "./minimax_master_track.js";
 /** Multi prompt-group UI for t2i / i2i / r2i / t2v / i2v / r2v (prompt batch mode). */
 
 import { api } from "../../scripts/api.js";
@@ -316,7 +317,10 @@ export function wireMediaDuration(mediaEl, durEl, onReady) {
  * User-facing seconds (1 decimal). durationSec is the source of truth when set;
  * only fall back to frames for legacy rows that never stored durationSec.
  */
-function resolveSegmentDurationSec(seg, defFc, fps = 24) {
+function resolveSegmentDurationSec(seg, defFc, fps = 24, editor) {
+    if (masterTiming(editor)) {
+        return Number(seg.durationSec) || (Number(seg.frameCount ?? seg.length) || defFc) / fps;
+    }
     if (seg.durationSec != null && Number.isFinite(Number(seg.durationSec))) {
         const { durationSec } = durationToClampedMiniMaxFrames(seg.durationSec, fps);
         return durationSec;
@@ -336,7 +340,9 @@ function applyBatchSegmentDuration(editor, index, rawSec) {
         minDurationSec(fps),
         maxDurationSec(fps),
     );
-    const { frames, durationSec } = durationToClampedMiniMaxFrames(clamped, fps);
+    const { frames, durationSec } = masterTiming(editor)
+        ? masterDurationToFrames(rawSec, fps)
+        : durationToClampedMiniMaxFrames(clamped, fps);
     seg.durationSec = durationSec;
     seg.frameCount = frames;
     seg.length = frames;
@@ -406,7 +412,7 @@ function flushBatchDurationInputs(editor) {
     // would write the value rendered *before* the group edit back over the
     // duration `syncExternalGroupsTimeline` just rebuilt, so the panel would keep
     // showing the old length (only for the segments whose card is in the DOM).
-    if (editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
+    if (masterTiming(editor) || editor.hasExternalI2vGroups?.() || editor.hasExternalR2vGroups?.()) return;
     for (const input of list.querySelectorAll("input[data-batch-sec-index]")) {
         // A disabled/readOnly control is a mirror: never write it back anywhere.
         if (input.disabled || input.readOnly) continue;
@@ -849,10 +855,11 @@ export function ensureImageBatchTimeline(editor) {
     migrateGlobalRefsIntoBatchSegments(editor, taskKey);
     for (const seg of editor.timeline.segments) {
         if (isVideoBatchTask(taskKey)) {
-            const { frames, durationSec } = durationToClampedMiniMaxFrames(
-                resolveSegmentDurationSec(seg, defFc, batchFrameRate(editor)),
-                batchFrameRate(editor),
-            );
+            const fps = batchFrameRate(editor);
+            const sec = resolveSegmentDurationSec(seg, defFc, fps, editor);
+            const { frames, durationSec } = masterTiming(editor)
+                ? masterDurationToFrames(sec, fps)
+                : durationToClampedMiniMaxFrames(sec, fps);
             seg.durationSec = durationSec;
             seg.frameCount = frames;
             seg.length = frames;
@@ -900,10 +907,10 @@ export function normalizeImageBatchSegments(editor) {
         let fc = 1;
         let durationSec;
         if (isVideo) {
-            const resolved = durationToClampedMiniMaxFrames(
-                clamp(resolveSegmentDurationSec(seg, defFc, batchFrameRate(editor)) || defSec, minDurationSec(batchFrameRate(editor)), maxDurationSec(batchFrameRate(editor))),
-                batchFrameRate(editor),
-            );
+            const fps = batchFrameRate(editor);
+            const sec = resolveSegmentDurationSec(seg, defFc, fps, editor) || defSec;
+            const resolved = masterTiming(editor) ? masterDurationToFrames(sec, fps)
+                : durationToClampedMiniMaxFrames(clamp(sec, minDurationSec(fps), maxDurationSec(fps)), fps);
             fc = resolved.frames;
             durationSec = resolved.durationSec;
             seg.durationSec = durationSec;
@@ -2498,8 +2505,8 @@ function renderBatchGroupPicker(editor, ctx) {
         const meta = document.createElement("span");
         meta.className = "bd-batch-pick-meta";
         if (isVideo) {
-            const sec = resolveSegmentDurationSec(seg, defaultFrameCount(key, batchFrameRate(editor)), batchFrameRate(editor));
-            meta.textContent = `${Number(sec).toFixed(1)}s`;
+            const sec = resolveSegmentDurationSec(seg, defaultFrameCount(key, batchFrameRate(editor)), batchFrameRate(editor), editor);
+            meta.textContent = `${Number(sec).toFixed(masterTiming(editor) ? 2 : 1)}s`;
         } else {
             meta.textContent = `#${index + 1}`;
         }
@@ -2550,7 +2557,7 @@ export function renderImageBatchGroups(editor) {
             || (global.refAudios || []).some((r) => r?.audioFile || r?.fileName)
             || (global.refVideos || []).some((r) => _refHasVideo(r))
         );
-        const hasAnyMedia = hasCommonMedia || (editor.timeline.segments || []).some((s) => (
+        const hasAnyMedia = masterTiming(editor) || hasCommonMedia || (editor.timeline.segments || []).some((s) => (
             (s.refs || []).some((r) => r?.imageFile)
             || (s.refAudios || []).some((r) => r?.audioFile || r?.fileName)
             || (s.refVideos || []).some((r) => (
@@ -2758,14 +2765,16 @@ function appendBatchCard(list, editor, seg, index, ctx) {
             const secRow = document.createElement("label");
             secRow.className = "bd-batch-fc";
             const fps = batchFrameRate(editor);
-            const curSec = resolveSegmentDurationSec(seg, defaultFrameCount(key, fps), fps);
-            const { frames, durationSec: syncedSec } = durationToClampedMiniMaxFrames(curSec, fps);
+            const precise = masterTiming(editor);
+            const curSec = resolveSegmentDurationSec(seg, defaultFrameCount(key, fps), fps, editor);
+            const { frames, durationSec: syncedSec } = precise ? masterDurationToFrames(curSec, fps)
+                : durationToClampedMiniMaxFrames(curSec, fps);
             const playSec = framesToDurationSec(frames, fps);
             seg.durationSec = syncedSec;
             seg.frameCount = frames;
             seg.length = frames;
             seg._videoFrameCount = frames;
-            secRow.innerHTML = `${t("batch.seconds")} <input type="number" data-batch-sec-index="${index}" data-batch-seg-id="${seg.id || ""}" min="${minDurationSec(fps)}" max="${maxDurationSec(fps)}" step="0.1" value="${seg.durationSec}" title="${t("batch.durationTooltip", { frames, play: playSec })}">`;
+            secRow.innerHTML = `${t("batch.seconds")} <input type="number" data-batch-sec-index="${index}" data-batch-seg-id="${seg.id || ""}" min="${precise ? 5 / fps : minDurationSec(fps)}" max="${precise ? MASTER_MAX_SHOT / fps : maxDurationSec(fps)}" step="${precise ? "any" : "0.1"}" value="${precise ? +seg.durationSec.toFixed(4) : seg.durationSec}" title="${t("batch.durationTooltip", { frames, play: playSec })}">`;
             const secInput = secRow.querySelector("input");
             // Do not rewrite value/title while focused: frame snapping would
             // bounce 20.7↔20.5 and interrupt typing. Normalize on blur.
@@ -2776,7 +2785,7 @@ function appendBatchCard(list, editor, seg, index, ctx) {
                 if (!updated) return;
                 if (!secFocused) {
                     const play = framesToDurationSec(updated.frameCount, batchFrameRate(editor));
-                    secInput.value = String(updated.durationSec);
+                    secInput.value = String(precise ? +updated.durationSec.toFixed(4) : updated.durationSec);
                     secInput.title = t("batch.durationTooltip", {
                         frames: updated.frameCount,
                         play,
