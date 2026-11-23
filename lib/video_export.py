@@ -136,7 +136,7 @@ def write_frames_to_mp4(
             "-pix_fmt",
             "yuv420p",
             "-preset",
-            "veryfast",
+            "medium",
             "-crf",
             "18",
             "-movflags",
