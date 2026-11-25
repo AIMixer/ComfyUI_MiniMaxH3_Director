@@ -389,6 +389,8 @@ def build_director_audio_outputs(
         # Also merge when a single clip is present but we still have a full
         # timeline audio table (partial re-run + cached audio restore).
         merge_all = (
+            not export_segments
+            and
             len(images_out) == 1
             and (
                 len(segment_audios) > 1
@@ -401,7 +403,11 @@ def build_director_audio_outputs(
             )
         )
         if merge_all:
-            n_frames = int(getattr(images_out[0], "shape", [0])[0] or 0)
+            n_frames = (
+                sum(int(n or 0) for n in segment_frame_counts)
+                if segment_frame_counts
+                else int(getattr(images_out[0], "shape", [0])[0] or 0)
+            )
             if n_frames <= 0:
                 n_frames = int(output_frame_end or getattr(plan, "total_frames", 0) or 0)
             merged = _merge_generated_segment_audios(
