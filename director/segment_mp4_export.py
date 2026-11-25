@@ -3,7 +3,7 @@
 Best-effort: encode failures must never abort generation. Each run uses a
 timestamp folder: ``output/minimax_seg_export/<YYYYMMDD_HHMMSS>/``.
 
-Files:
+Files (XXXX starts at 0001):
   ``seg_XXXX.mp4`` — final clip (last refine pass / no Refine; FaceRefine stitch if wired)
   ``seg_XXXX_pre.mp4`` — first pass (一采), only when Refine ran
   ``seg_XXXX_pN.mp4`` — refine pass N (分段导出且次数>1)
@@ -62,8 +62,15 @@ def _safe_mp4_suffix(suffix: str) -> str:
 
 
 def segment_mp4_path(run_dir: Path, seg: SegmentPlan, *, suffix: str = "") -> Path:
+    """``seg_0001.mp4`` — numbered from 1 by timeline index, like「素材组 N」.
+
+    ``seg.index`` is 0-based; the file name and the logs/UI use the 1-based
+    position so group 1 on screen is ``seg_0001.mp4`` on disk. Numbering still
+    follows the timeline index (not the run order), so a partial run keeps each
+    clip's own group number.
+    """
     tag = f"_{_safe_mp4_suffix(suffix)}" if _safe_mp4_suffix(suffix) else ""
-    return Path(run_dir) / f"seg_{int(seg.index):04d}{tag}.mp4"
+    return Path(run_dir) / f"seg_{int(seg.index) + 1:04d}{tag}.mp4"
 
 
 def mp4_export_kind(path: str | None) -> str:
