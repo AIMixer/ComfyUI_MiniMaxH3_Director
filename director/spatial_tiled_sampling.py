@@ -148,6 +148,25 @@ def _crop_matching_video(tensor, full_h: int, full_w: int, axis: str, start: int
     return cropped
 
 
+def _crop_mask_to_tile(mask, axis: str, start: int, end: int, full_h: int, full_w: int):
+    """Crop the model-side denoise mask ``[B,1,T,H,W]`` down to one tile.
+
+    ``comfy.model_base.MiniMaxH3.extra_conds`` unpacks the sampler's packed
+    mask with the *full* ``latent_shapes`` once per sampling run and stores the
+    result in the conds. A tiled model call then hands a tile-sized ``x`` to a
+    full-canvas mask, and ``MiniMaxH3Model.forward`` dies on
+    ``out[0] * denoise_mask`` (e.g. 60 vs 86 at W). Crop it per tile, padded the
+    same way the tile latent is, so both sides agree.
+    """
+    if not torch.is_tensor(mask) or mask.ndim != 5:
+        return None
+    if tuple(int(x) for x in mask.shape[-2:]) != (int(full_h), int(full_w)):
+        return None
+    cropped = _crop_spatial_5d(mask, axis, start, end)
+    cropped, _, _ = _pad_even_hw(cropped)
+    return cropped
+
+
 def _crop_ref_block(blk, full_h: int, full_w: int, axis: str, start: int, end: int):
     """Crop a PackedLayout ref whose latent sits on the generate canvas.
 
@@ -279,6 +298,16 @@ def _install_tile_payloads(cfg_guider, *, axis: str, start: int, end: int, tile_
         if shape_cond is not None and hasattr(shape_cond, "cond"):
             restorations.append((shape_cond, "cond", shape_cond.cond))
             shape_cond.cond = tile_shapes
+
+        # The model conds hold the continue/inpaint mask at full canvas size;
+        # tile it too or the DiT forward multiplies a tile by a full frame.
+        mask_cond = model_conds.get("denoise_mask")
+        if mask_cond is not None:
+            full_mask = getattr(mask_cond, "cond", None)
+            tile_mask = _crop_mask_to_tile(full_mask, axis, start, end, full_h, full_w)
+            if tile_mask is not None:
+                restorations.append((mask_cond, "cond", full_mask))
+                mask_cond.cond = tile_mask
 
         payload_cond = model_conds.get("minimax_payload")
         payload = getattr(payload_cond, "cond", None) if payload_cond is not None else None
