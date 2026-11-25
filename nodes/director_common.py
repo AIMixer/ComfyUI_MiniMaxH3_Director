@@ -253,6 +253,7 @@ def prepare_director_plan(
     face_refine=None,
     vsr=None,
 ):
+    from ..director.master_audio import MASTER_TASKS, attach_master, master_record
     from ..director.external_groups import (
         build_plan_from_external_groups,
         validate_external_group_inputs,
@@ -276,6 +277,8 @@ def prepare_director_plan(
     )
 
     if ext_groups is not None and family is not None:
+        if task_key in MASTER_TASKS and master_record(json.loads(timeline_data)):
+            raise ValueError("全局音轨暂不支持外部素材组，请在导演台内编辑分镜。")
         report_director_planning(
             unique_id,
             len(ext_groups),
@@ -323,6 +326,7 @@ def prepare_director_plan(
         height=height,
         ref_max_size=ref_max_size,
     )
+    attach_master(plan, master_record(plan.raw))
     plan = _attach_selflift(plan, selflift)
     plan = _attach_semantic_bridge(plan, semantic_bridge)
     plan = _attach_refine(plan, refine)
@@ -630,6 +634,11 @@ def finalize_director_outputs(
         segment_frame_counts=segment_frame_counts if use_generated else None,
         audio_mode=audio_mode,
     )
+    if plan.master_audio is not None:
+        from ..director.master_audio import export_master_audio
+
+        audio_out = export_master_audio(plan, images_out, split_for_audio, released_slots)
+        report += "\n\n全局音轨：整片使用同一份原始时间轴 PCM；分段导出按各镜头的绝对帧切取。"
     report = report + source_audio_report_note(
         plan,
         audio_out,

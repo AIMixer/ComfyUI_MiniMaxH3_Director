@@ -552,6 +552,9 @@ async def minimax_first_pass_cache_status(request):
             height=int(body.get("height") or 480),
             ref_max_size=int(body.get("ref_max_size") or 864),
         )
+        from .master_audio import attach_master, master_record
+
+        attach_master(plan, master_record(plan.raw), decode=False)
         plan.sample_seed = int(body.get("seed") or 0)
         plan.sample_cfg = float(body.get("cfg") or 1.0)
         plan.sample_steps = int(body.get("steps") or 25)
@@ -627,6 +630,25 @@ def _register_route(routes, method: str, path: str, handler) -> None:
         raise AttributeError("Unsupported ComfyUI route table API")
 
 
+async def minimax_master_peaks(request):
+    import asyncio
+    import av
+    from .master_audio import decode_master, master_peaks, resolve_master_path
+    from .audio_onsets import suggest_cut_onsets
+
+    def inspect():
+        path = resolve_master_path(request.query.get("filename", ""))
+        audio = decode_master(path)
+        return {**master_peaks(audio), "beats": suggest_cut_onsets(audio)}
+
+    try:
+        return web.json_response(await asyncio.to_thread(inspect))
+    except (ValueError, OSError) as exc:
+        return web.Response(status=400, text=str(exc))
+    except av.FFmpegError:
+        return web.Response(status=400, text="无法解码这个音频文件，请试用 WAV 或 MP3。")
+
+
 def register_routes() -> bool:
     """Register MiniMax H3 Director HTTP routes on the ComfyUI PromptServer."""
     global _ROUTES_REGISTERED
@@ -639,6 +661,7 @@ def register_routes() -> bool:
         return False
 
     routes = server.routes
+    _register_route(routes, "GET", "/minimax/director/master_peaks", minimax_master_peaks)
     _register_route(routes, "POST", "/minimax/director/upload_chunk", minimax_upload_video_chunk)
     _register_route(
         routes,

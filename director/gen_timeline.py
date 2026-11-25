@@ -105,6 +105,7 @@ def _gen_segment_ranges(
     default_frame_count: int,
     task_key: str,
     frame_rate: float,
+    master_timing: bool = False,
 ) -> list[tuple[int, int, dict]]:
     ranges: list[tuple[int, int, dict]] = []
     start = 0
@@ -115,6 +116,9 @@ def _gen_segment_ranges(
             task_key=task_key,
             frame_rate=frame_rate,
         )
+        if master_timing:
+            # Edited picture length is independent of H3's aligned sampling budget.
+            fc = max(5, min(498, int(raw.get("frameCount") or raw.get("length") or fc)))
         ranges.append((start, start + fc, raw))
         start += fc
     if not ranges:
@@ -442,11 +446,14 @@ def build_gen_director_plan(
     fps = float(timeline.get("frameRate") or frame_rate or 24)
     default_fc = int(gen_block.get("defaultFrameCount") or total_frames or 81)
 
+    from .master_audio import MASTER_TASKS, master_record
+    master_timing = task_key in MASTER_TASKS and bool(master_record(timeline))
     segment_ranges = _gen_segment_ranges(
         timeline.get("segments") or [],
         default_frame_count=default_fc,
         task_key=task_key,
         frame_rate=fps,
+        master_timing=master_timing,
     )
 
     if submode == "gen_blank":
@@ -644,7 +651,7 @@ def build_gen_director_plan(
                     seg_ref_videos = merge_indexed_refs(common_videos, local_videos)
                 else:
                     seg_ref_videos = local_videos
-        if seg_task_key in ("r2v", "r2i") and not seg_refs and not seg_ref_videos and not seg_ref_audios:
+        if not master_timing and seg_task_key in ("r2v", "r2i") and not seg_refs and not seg_ref_videos and not seg_ref_audios:
             log.warning(
                 "gen segment #%d task=%s has no reference media — will behave like "
                 "t2v/t2i. Upload shared「公共参数」and/or per-group 图片/音频/视频.",

@@ -318,6 +318,8 @@ def _segment_identity_fingerprint(seg: SegmentPlan, plan: DirectorPlan) -> dict[
             else CONTINUITY_PIPELINE_ID
         ),
     }
+    if plan.master_audio_signature:
+        payload["master_audio"] = plan.master_audio_signature
     if plan.continuity_enabled and bool(getattr(plan, "continuity_keep_tail", True)):
         payload["continuity_keep_tail"] = True
     witness = getattr(plan, "external_groups_witness", None)
