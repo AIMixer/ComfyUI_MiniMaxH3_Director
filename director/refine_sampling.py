@@ -9,6 +9,7 @@ import torch
 
 from ..lib.image_prep import ensure_minimax_canvas
 from .core_sampling import sample_single_stage
+from .h3_x2_decode import decode_video_latent
 from .refine_pack import (
     DEFAULT_UPSCALE_MEGAPIXELS,
     canvas_from_source_megapixels,
@@ -75,10 +76,9 @@ def _split_av(samples: dict):
 
 
 def _decode_video(vae, video_latent):
-    from nodes import VAEDecode
-
-    images, = VAEDecode().decode(vae, video_latent)
-    return images
+    # X2-aware: a packed PixelShuffle head is unpacked to real RGB here, so the
+    # upscale below sees the same B*T,H,W,C frames VAEDecode would have produced.
+    return decode_video_latent(vae, video_latent, context="director.refine")
 
 
 def _encode_video(vae, images) -> dict:
