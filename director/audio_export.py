@@ -380,7 +380,13 @@ def build_director_audio_outputs(
     log.info("Director audio mode: %s (task=%s)", mode, getattr(plan, "global_task_key", ""))
 
     if mode == AUDIO_MODE_MUTE:
-        return [empty_audio_dict(SILENT_SAMPLE_RATE) for _ in images_out], None
+        # Zero-length waveforms still count as a track for CreateVideo, and PyAV's
+        # AAC encoder then fails with MemoryError while resampling them. Emit real
+        # frame-length silence so muted exports still mux cleanly.
+        return [
+            _pad_or_trim_audio_to_frames(None, frame_count=int(batch.shape[0]), fps=fps)
+            for batch in images_out
+        ], None
 
     # Prefer model audio only in generate mode.
     if mode == AUDIO_MODE_GENERATE and segment_audios:
